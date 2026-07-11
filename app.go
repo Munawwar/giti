@@ -109,7 +109,6 @@ func (app *gitSkim) buildWindow() {
 	app.diffBuffer = must(gtk.TextBufferNew(nil))
 	app.diffBuffer.CreateTag("added", map[string]any{"background": "#d7f5dd", "foreground": "#174d22"})
 	app.diffBuffer.CreateTag("removed", map[string]any{"background": "#f9d7d9", "foreground": "#682126"})
-	app.diffBuffer.CreateTag("hunk", map[string]any{"foreground": "#654a9b"})
 	app.diffView = must(gtk.TextViewNewWithBuffer(app.diffBuffer))
 	app.diffView.SetEditable(false)
 	app.diffView.SetCursorVisible(false)
@@ -146,7 +145,7 @@ func (app *gitSkim) buildWindow() {
 	app.window.ShowAll()
 	context, _ := app.window.GetStyleContext()
 	for _, renderer := range []*gtk.CellRendererText{historyRenderer, fileRenderer} {
-		renderer.SetProperty("foreground-rgba", context.GetColor(gtk.STATE_FLAG_NORMAL))
+		renderer.SetProperty("foreground", context.GetColor(gtk.STATE_FLAG_NORMAL).String())
 	}
 	app.loadHistory()
 }
@@ -297,16 +296,12 @@ func displayLines(patch string) []displayLine {
 	for _, line := range splitAfterLines(patch) {
 		if strings.HasPrefix(line, "@@") {
 			inHeader = false
-		} else if inHeader && strings.HasPrefix(line, "diff --git ") ||
-			inHeader && strings.HasPrefix(line, "index ") ||
-			inHeader && strings.HasPrefix(line, "--- ") ||
-			inHeader && strings.HasPrefix(line, "+++ ") {
+		} else if inHeader && (strings.HasPrefix(line, "diff --git ") || strings.HasPrefix(line, "index ") ||
+			strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ")) {
 			continue
 		}
 		tag := ""
 		switch {
-		case strings.HasPrefix(line, "@@"):
-			tag = "hunk"
 		case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
 			tag = "added"
 		case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):

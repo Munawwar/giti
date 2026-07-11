@@ -22,8 +22,22 @@ Closing the first window hides one resident process for up to 12 hours. A later 
 
 ## Requirements
 
-- Python 3
-- PyGObject with GTK 3
+- Go 1.24 or newer (build only)
+- GTK 3 development files (`libgtk-3-dev` on Ubuntu)
 - Git
 
-These are already installed on the target Ubuntu system.
+Build and test with:
+
+```sh
+./build.sh
+./test.sh
+```
+
+The test command includes a live GTK smoke test and therefore needs a graphical
+display.
+
+If GTK 3 is installed at runtime but its development package is unavailable and
+you cannot use `sudo`, `./bootstrap-dev-deps.sh` downloads the needed Ubuntu
+development packages into the ignored `.deps` directory. The build scripts use
+that private copy automatically. It can be deleted after installing
+`libgtk-3-dev` system-wide.

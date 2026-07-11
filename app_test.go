@@ -15,7 +15,7 @@ func TestDisplayLinesHideRedundantHeaders(t *testing.T) {
 	if strings.Contains(rendered.String(), "diff --git") || strings.Contains(rendered.String(), "index ") || strings.Contains(rendered.String(), "--- ") {
 		t.Fatalf("redundant header retained: %s", rendered.String())
 	}
-	if len(lines) != 3 || lines[0].tag != "hunk" || lines[1].tag != "removed" || lines[2].tag != "added" {
+	if len(lines) != 3 || lines[0].tag != "" || lines[1].tag != "removed" || lines[2].tag != "added" {
 		t.Fatalf("unexpected styles: %#v", lines)
 	}
 }
