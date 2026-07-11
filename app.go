@@ -22,6 +22,7 @@ type gitSkim struct {
 	stateMu                 sync.Mutex
 	server                  *residentServer
 	historyLimit            int
+	selectionGeneration     uint64
 	historyRows             []historyRow
 	files                   []changedFile
 	currentRow              *historyRow
@@ -121,7 +122,11 @@ func (app *gitSkim) buildWindow() {
 	app.fullFileToggle = must(gtk.CheckButtonNewWithLabel("Show full file"))
 	app.fullFileHandler = app.fullFileToggle.Connect("toggled", app.onFullFileToggled)
 	loadButton := must(gtk.ButtonNewWithLabel("Load 100 more"))
-	loadButton.Connect("clicked", func() { app.historyLimit += 100; app.loadHistory() })
+	loadButton.Connect("clicked", func() {
+		app.window.SetSensitive(false)
+		app.historyLimit += 100
+		app.loadHistory()
+	})
 
 	graphBox := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 4))
 	graphBox.PackStart(scroller(app.historyView), true, true, 0)
@@ -158,12 +163,15 @@ func scroller(child gtk.IWidget) *gtk.ScrolledWindow {
 }
 
 func (app *gitSkim) loadHistory() bool {
+	app.selectionGeneration++
+	generation := app.selectionGeneration
 	preferredKind, preferredRevision := "", ""
 	if app.currentRow != nil {
 		preferredKind, preferredRevision = app.currentRow.kind, app.currentRow.revision
 	}
 	rows, err := app.repository.history(app.historyLimit, !app.whitespaceToggle.GetActive())
 	if err != nil {
+		app.window.SetSensitive(true)
 		app.showError(err)
 		return false
 	}
@@ -186,8 +194,13 @@ func (app *gitSkim) loadHistory() bool {
 		}
 	}
 	if target >= 0 {
-		path := must(gtk.TreePathNewFromIndicesv([]int{target}))
-		app.historyView.SetCursor(path, nil, false)
+		glib.IdleAdd(func() bool {
+			if generation == app.selectionGeneration && target < len(app.historyRows) {
+				path := must(gtk.TreePathNewFromIndicesv([]int{target}))
+				app.historyView.SetCursor(path, nil, false)
+			}
+			return false
+		})
 	}
 	return false
 }
@@ -206,6 +219,9 @@ func (app *gitSkim) onHistorySelected() {
 	if index >= len(app.historyRows) || app.historyRows[index].kind == "connector" {
 		return
 	}
+	app.selectionGeneration++
+	generation := app.selectionGeneration
+	app.window.SetSensitive(false)
 	app.resetFullFile()
 	app.diffBuffer.SetText("")
 	previousPath := ""
@@ -215,6 +231,7 @@ func (app *gitSkim) onHistorySelected() {
 	app.currentRow = &app.historyRows[index]
 	files, err := app.repository.changedFiles(*app.currentRow, !app.whitespaceToggle.GetActive())
 	if err != nil {
+		app.finishSelection(generation)
 		app.showError(err)
 		return
 	}
@@ -230,10 +247,16 @@ func (app *gitSkim) onHistorySelected() {
 	}
 	if len(files) == 0 {
 		app.currentFile = nil
+		app.finishSelection(generation)
 		return
 	}
-	path = must(gtk.TreePathNewFromIndicesv([]int{target}))
-	app.fileView.SetCursor(path, nil, false)
+	glib.IdleAdd(func() bool {
+		if generation == app.selectionGeneration && target < len(app.files) {
+			path := must(gtk.TreePathNewFromIndicesv([]int{target}))
+			app.fileView.SetCursor(path, nil, false)
+		}
+		return false
+	})
 }
 
 func (app *gitSkim) onFileSelected() {
@@ -250,6 +273,8 @@ func (app *gitSkim) onFileSelected() {
 	if index >= len(app.files) {
 		return
 	}
+	generation := app.selectionGeneration
+	app.window.SetSensitive(false)
 	file := &app.files[index]
 	if app.currentFile == nil || *file != *app.currentFile {
 		app.resetFullFile()
@@ -268,10 +293,21 @@ func (app *gitSkim) onFileSelected() {
 	app.diffBuffer.SetText("")
 	patch, err := app.repository.diff(*app.currentRow, *file, !app.whitespaceToggle.GetActive(), app.fullFileToggle.GetActive())
 	if err != nil {
+		app.finishSelection(generation)
 		app.showError(err)
 		return
 	}
 	app.setDiff(patch)
+	app.finishSelection(generation)
+}
+
+func (app *gitSkim) finishSelection(generation uint64) {
+	glib.IdleAdd(func() bool {
+		if generation == app.selectionGeneration {
+			app.window.SetSensitive(true)
+		}
+		return false
+	})
 }
 
 func (app *gitSkim) setDiff(patch string) {
@@ -322,6 +358,7 @@ func splitAfterLines(text string) []string {
 
 func (app *gitSkim) onWhitespaceToggled() {
 	if app.currentRow != nil {
+		app.window.SetSensitive(false)
 		app.loadHistory()
 	}
 }
@@ -339,6 +376,7 @@ func (app *gitSkim) resetFullFile() {
 }
 
 func (app *gitSkim) clearRepositoryView() {
+	app.selectionGeneration++
 	app.historyRows, app.files = nil, nil
 	app.currentRow, app.currentFile = nil, nil
 	app.historyStore.Clear()

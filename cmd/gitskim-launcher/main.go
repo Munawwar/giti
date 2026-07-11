@@ -41,7 +41,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	app := filepath.Join(filepath.Dir(executable), "gitskim-app")
+	appName := "gitskim-app"
+	if strings.HasSuffix(filepath.Base(executable), "-debug") {
+		appName += "-debug"
+	}
+	app := filepath.Join(filepath.Dir(executable), appName)
 	mode := "--resident"
 	if response == "BUSY" {
 		mode = "--ephemeral"
