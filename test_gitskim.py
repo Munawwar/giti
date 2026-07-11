@@ -18,6 +18,7 @@ class RepositoryTests(unittest.TestCase):
             self.git("add", "history.txt")
             self.git("commit", "-m", f"commit {number}")
         self.git("tag", "v1")
+        self.git("branch", "older", "HEAD~5")
 
     def tearDown(self):
         self.temp.cleanup()
@@ -37,6 +38,12 @@ class RepositoryTests(unittest.TestCase):
             commits = [row for row in repository.history(10) if row.kind == "commit"]
             self.assertEqual(len(commits), 10)
             self.assertEqual(commits[0].subject, "commit 11")
+        older = next(
+            row
+            for row in Repository(self.path, "older").history(1)
+            if row.kind == "commit"
+        )
+        self.assertEqual(older.subject, "commit 6")
 
     def test_selection_rows_and_single_file_diffs(self):
         self.write("staged.txt", "staged\n")
@@ -46,9 +53,13 @@ class RepositoryTests(unittest.TestCase):
         rows = repository.history(10)
         self.assertEqual([row.kind for row in rows[:2]], ["unstaged", "staged"])
         unstaged, staged = rows[:2]
-        self.assertEqual([item.path for item in repository.changed_files(unstaged)], ["unstaged.txt"])
+        self.assertEqual(
+            [item.path for item in repository.changed_files(unstaged)], ["unstaged.txt"]
+        )
         self.assertEqual([item.path for item in repository.changed_files(staged)], ["staged.txt"])
-        self.assertIn("+unstaged", repository.diff(unstaged, repository.changed_files(unstaged)[0]))
+        self.assertIn(
+            "+unstaged", repository.diff(unstaged, repository.changed_files(unstaged)[0])
+        )
 
     def test_whitespace_is_ignored_by_default(self):
         self.write("history.txt", "commit        11\n")

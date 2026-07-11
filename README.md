@@ -12,6 +12,8 @@ A deliberately small, fast GTK 3 history and single-file diff viewer.
 
 The initial history contains unstaged and staged entries when present, followed by ten commits. Select a history entry, then a changed file, to view only that file's stacked diff. Whitespace changes are ignored by default; enable **Show whitespace changes** to use Git's regular diff.
 
+The application opens maximized by default. Use **Load 100 more** when the initial ten-commit history is not enough.
+
 ## Requirements
 
 - Python 3

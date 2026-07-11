@@ -96,8 +96,13 @@ class Repository:
             else:
                 files.append(ChangedFile(status, fields[1]))
         if row.kind == "unstaged":
-            files.extend(ChangedFile("??", path) for path in self.run("ls-files", "--others", "--exclude-standard").splitlines())
-        return [item for item in files if item.status == "??" or not ignore_whitespace or self.diff(row, item)]
+            untracked = self.run("ls-files", "--others", "--exclude-standard").splitlines()
+            files.extend(ChangedFile("??", path) for path in untracked)
+        return [
+            item
+            for item in files
+            if item.status == "??" or not ignore_whitespace or self.diff(row, item)
+        ]
 
     def diff(self, row, changed_file, ignore_whitespace=True):
         if changed_file.status == "??":
@@ -134,22 +139,28 @@ class GitSkim(Gtk.Application):
         self.connect("activate", self.on_activate)
 
     def on_activate(self, _application):
-        self.window = Gtk.ApplicationWindow(application=self, title=f"GitSkim — {os.path.basename(self.repository.path)}")
+        self.window = Gtk.ApplicationWindow(
+            application=self, title=f"GitSkim — {os.path.basename(self.repository.path)}"
+        )
         self.window.set_default_size(1200, 760)
         self.window.maximize()
 
         self.history_view = Gtk.TreeView(model=self.history_store, headers_visible=False)
         history_renderer = Gtk.CellRendererText(
-            family="monospace", foreground="#eeeeec", ellipsize=Pango.EllipsizeMode.END
+            family="monospace", ellipsize=Pango.EllipsizeMode.END
         )
         history_column = Gtk.TreeViewColumn("History", history_renderer, text=0)
         history_column.set_expand(True)
         self.history_view.append_column(history_column)
-        self.history_view.get_selection().connect("changed", self.on_history_selected)
+        history_selection = self.history_view.get_selection()
+        history_selection.set_select_function(
+            lambda _selection, model, path, _selected: model[path][1] != "connector"
+        )
+        history_selection.connect("changed", self.on_history_selected)
 
         self.file_view = Gtk.TreeView(model=self.file_store, headers_visible=False)
         file_renderer = Gtk.CellRendererText(
-            family="monospace", foreground="#eeeeec", ellipsize=Pango.EllipsizeMode.MIDDLE
+            family="monospace", ellipsize=Pango.EllipsizeMode.MIDDLE
         )
         file_column = Gtk.TreeViewColumn("Files", file_renderer, text=0)
         file_column.set_expand(True)
@@ -160,7 +171,9 @@ class GitSkim(Gtk.Application):
         self.diff_buffer.create_tag("added", background="#d7f5dd", foreground="#174d22")
         self.diff_buffer.create_tag("removed", background="#f9d7d9", foreground="#682126")
         self.diff_buffer.create_tag("hunk", foreground="#654a9b")
-        self.diff_view = Gtk.TextView(buffer=self.diff_buffer, editable=False, cursor_visible=False, monospace=True)
+        self.diff_view = Gtk.TextView(
+            buffer=self.diff_buffer, editable=False, cursor_visible=False, monospace=True
+        )
         self.diff_view.set_wrap_mode(Gtk.WrapMode.NONE)
 
         self.whitespace_toggle = Gtk.CheckButton(label="Show whitespace changes")
@@ -185,7 +198,7 @@ class GitSkim(Gtk.Application):
         main = Gtk.Paned.new(Gtk.Orientation.HORIZONTAL)
         main.pack1(left, False, False)
         main.pack2(diff_box, True, False)
-        main.set_position(360)
+        main.set_position(280)
         self.window.add(main)
         self.window.show_all()
         GLib.idle_add(self.load_history)
@@ -198,7 +211,6 @@ class GitSkim(Gtk.Application):
         return scroll
 
     def load_history(self, preferred_kind=None, preferred_revision=None):
-        print("gitskim: loading history", file=sys.stderr, flush=True)
         try:
             self.history_rows = self.repository.history(
                 self.history_limit, not self.whitespace_toggle.get_active()
@@ -214,12 +226,13 @@ class GitSkim(Gtk.Application):
             self.history_store.append([label, row.kind, row.revision, str(index)])
             if target is None and row.kind != "connector":
                 target = index
-            if preferred_kind == row.kind and (not preferred_revision or preferred_revision == row.revision):
+            if preferred_kind == row.kind and (
+                not preferred_revision or preferred_revision == row.revision
+            ):
                 target = index
                 preferred_kind = None
         if target is not None:
-            self.history_view.set_cursor(Gtk.TreePath(target))
-        print(f"gitskim: loaded {len(self.history_rows)} history rows", file=sys.stderr, flush=True)
+            self.history_view.set_cursor(Gtk.TreePath.new_from_indices([target]))
         return False
 
     def on_history_selected(self, selection):
@@ -243,7 +256,7 @@ class GitSkim(Gtk.Application):
             if changed_file.path == previous_path:
                 selected = index
         if self.files:
-            self.file_view.set_cursor(Gtk.TreePath(selected or 0))
+            self.file_view.set_cursor(Gtk.TreePath.new_from_indices([selected or 0]))
         else:
             self.current_file = None
             self.set_diff("")
@@ -252,7 +265,10 @@ class GitSkim(Gtk.Application):
         model, tree_iter = selection.get_selected()
         if tree_iter is None or self.current_row is None:
             return
-        self.current_file = self.files[int(model[tree_iter][2])]
+        index = int(model[tree_iter][2])
+        if index >= len(self.files):
+            return
+        self.current_file = self.files[index]
         try:
             patch = self.repository.diff(
                 self.current_row, self.current_file, not self.whitespace_toggle.get_active()
@@ -266,7 +282,13 @@ class GitSkim(Gtk.Application):
         self.diff_buffer.set_text("")
         for line in patch.splitlines(keepends=True):
             end = self.diff_buffer.get_end_iter()
-            tag = "hunk" if line.startswith("@@") else "added" if line.startswith("+") and not line.startswith("+++") else "removed" if line.startswith("-") and not line.startswith("---") else None
+            tag = None
+            if line.startswith("@@"):
+                tag = "hunk"
+            elif line.startswith("+") and not line.startswith("+++"):
+                tag = "added"
+            elif line.startswith("-") and not line.startswith("---"):
+                tag = "removed"
             if tag:
                 self.diff_buffer.insert_with_tags_by_name(end, line, tag)
             else:
