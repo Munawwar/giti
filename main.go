@@ -17,11 +17,15 @@ func main() {
 	}
 	repo, err := newRepository(path, revision)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "gitskim:", err)
+		fmt.Fprintln(os.Stderr, "giti:", err)
 		os.Exit(1)
 	}
 	gtk.Init(nil)
-	app := newGitSkim(repo, resident)
+	app, err := newGiti(repo, resident)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "giti:", err)
+		os.Exit(1)
+	}
 	gtk.Main()
 	if app.server != nil {
 		app.server.stop()

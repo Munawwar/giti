@@ -15,8 +15,8 @@ import (
 )
 
 func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
-	if os.Getenv("GITSKIM_GTK_TEST") == "" {
-		t.Skip("set GITSKIM_GTK_TEST=1 to run the display integration test")
+	if os.Getenv("GITI_GTK_TEST") == "" {
+		t.Skip("set GITI_GTK_TEST=1 to run the display integration test")
 	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -28,10 +28,13 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	gtk.Init(nil)
-	app := newGitSkim(repo, false)
+	app, err := newGiti(repo, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer app.window.Destroy()
 	deadline := time.Now().Add(2 * time.Second)
-	for (!app.window.IsMaximized() || app.currentFile == nil || !app.window.GetSensitive()) && time.Now().Before(deadline) {
+	for (!app.window.IsMaximized() || app.currentFile == nil) && time.Now().Before(deadline) {
 		for gtk.EventsPending() {
 			gtk.MainIteration()
 		}
@@ -59,26 +62,25 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	if !app.fullFileToggle.GetActive() {
 		t.Fatal("full-file mode did not activate")
 	}
+	app.fileView.GrabFocus()
 	app.fileView.SetCursor(must(gtk.TreePathNewFromIndicesv([]int{1})), nil, false)
 	for gtk.EventsPending() {
 		gtk.MainIteration()
 	}
 	start, end = app.diffBuffer.GetBounds()
 	second, _ := app.diffBuffer.GetText(start, end, true)
-	if !app.window.GetSensitive() || app.fullFileToggle.GetActive() || app.currentFile.path != "second.txt" || !strings.Contains(second, "+second") || strings.Contains(second, "+one") {
+	if !app.fileView.IsFocus() || app.fullFileToggle.GetActive() || app.currentFile.path != "second.txt" || !strings.Contains(second, "+second") || strings.Contains(second, "+one") {
 		t.Fatalf("file switch retained state or content: full=%v file=%#v diff=%q", app.fullFileToggle.GetActive(), app.currentFile, second)
 	}
+	app.historyView.GrabFocus()
 	for _, index := range []int{1, 2, 3} {
 		app.historyView.SetCursor(must(gtk.TreePathNewFromIndicesv([]int{index})), nil, false)
-	}
-	if app.window.GetSensitive() {
-		t.Fatal("window remained interactive while graph selection was pending")
 	}
 	for gtk.EventsPending() {
 		gtk.MainIteration()
 	}
-	if !app.window.GetSensitive() || app.currentRow == nil || app.currentRow.subject != "commit 9" || app.currentFile == nil {
-		t.Fatalf("rapid graph selection applied stale state: sensitive=%v row=%#v file=%#v", app.window.GetSensitive(), app.currentRow, app.currentFile)
+	if !app.historyView.IsFocus() || app.currentRow == nil || app.currentRow.subject != "commit 9" || app.currentFile == nil {
+		t.Fatalf("rapid graph selection applied stale state: row=%#v file=%#v", app.currentRow, app.currentFile)
 	}
 	app.resident = true
 	app.window.Close()
@@ -96,6 +98,11 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.server.stop()
+	duplicate := newResidentServer(app)
+	if err = duplicate.start(); err == nil {
+		duplicate.stop()
+		t.Fatal("second resident acquired the process lock")
+	}
 	connection, err := net.Dial("unix", app.server.socketPath)
 	if err != nil {
 		t.Fatal(err)

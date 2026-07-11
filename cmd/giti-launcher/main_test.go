@@ -11,7 +11,7 @@ import (
 func TestContactResident(t *testing.T) {
 	runtimeDir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
-	listener, err := net.Listen("unix", filepath.Join(runtimeDir, "gitskim.sock"))
+	listener, err := net.Listen("unix", filepath.Join(runtimeDir, "giti.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestContactResidentMissing(t *testing.T) {
 	if response := contactResident(openRequest{Path: "/repo", Revision: "HEAD"}); response != "" {
 		t.Fatalf("unexpected response without resident %q", response)
 	}
-	if _, err := os.Stat(filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "gitskim.sock")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "giti.sock")); !os.IsNotExist(err) {
 		t.Fatalf("launcher created a socket: %v", err)
 	}
 }

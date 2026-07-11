@@ -8,5 +8,5 @@ if [ -d "$PRIVATE_PC" ]; then
 fi
 
 mkdir -p "$ROOT/bin"
-go build -gcflags='gitskim=-N -l' -o "$ROOT/bin/gitskim-app-debug" "$ROOT"
-go build -gcflags='gitskim/cmd/gitskim-launcher=-N -l' -o "$ROOT/bin/gitskim-launcher-debug" "$ROOT/cmd/gitskim-launcher"
+go build -gcflags='giti=-N -l' -o "$ROOT/bin/giti-app-debug" "$ROOT"
+go build -gcflags='giti/cmd/giti-launcher=-N -l' -o "$ROOT/bin/giti-launcher-debug" "$ROOT/cmd/giti-launcher"

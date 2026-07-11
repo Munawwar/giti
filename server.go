@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 
 	"github.com/gotk3/gotk3/glib"
 )
@@ -18,8 +19,9 @@ type openRequest struct {
 }
 
 type residentServer struct {
-	application *gitSkim
+	application *giti
 	listener    net.Listener
+	lockFile    *os.File
 	socketPath  string
 }
 
@@ -27,24 +29,39 @@ func runtimeDirectory() string {
 	if path := os.Getenv("XDG_RUNTIME_DIR"); path != "" {
 		return path
 	}
-	return filepath.Join(os.TempDir(), "gitskim-"+strconv.Itoa(os.Getuid()))
+	return filepath.Join(os.TempDir(), "giti-"+strconv.Itoa(os.Getuid()))
 }
 
-func newResidentServer(app *gitSkim) *residentServer {
-	return &residentServer{application: app, socketPath: filepath.Join(runtimeDirectory(), "gitskim.sock")}
+func newResidentServer(app *giti) *residentServer {
+	return &residentServer{application: app, socketPath: filepath.Join(runtimeDirectory(), "giti.sock")}
 }
 
 func (server *residentServer) start() error {
-	if err := os.MkdirAll(filepath.Dir(server.socketPath), 0o700); err != nil {
+	runtimeDir := filepath.Dir(server.socketPath)
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
 		return err
+	}
+	lock, err := os.OpenFile(filepath.Join(runtimeDir, "giti.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	server.lockFile = lock
+	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		lock.Close()
+		server.lockFile = nil
+		return errors.New("another Giti resident is already running")
 	}
 	_ = os.Remove(server.socketPath)
 	listener, err := net.Listen("unix", server.socketPath)
 	if err != nil {
+		server.stop()
 		return err
 	}
 	server.listener = listener
-	if err = os.Chmod(server.socketPath, 0o600); err != nil {
+	if err = os.Chmod(server.socketPath, 0o600); err == nil {
+		err = os.WriteFile(filepath.Join(runtimeDir, "giti.pid"), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600)
+	}
+	if err != nil {
 		server.stop()
 		return err
 	}
@@ -88,4 +105,10 @@ func (server *residentServer) stop() {
 		_ = server.listener.Close()
 	}
 	_ = os.Remove(server.socketPath)
+	_ = os.Remove(filepath.Join(filepath.Dir(server.socketPath), "giti.pid"))
+	if server.lockFile != nil {
+		_ = syscall.Flock(int(server.lockFile.Fd()), syscall.LOCK_UN)
+		_ = server.lockFile.Close()
+		server.lockFile = nil
+	}
 }

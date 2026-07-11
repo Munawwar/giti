@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	fieldMarker     = "__GITSKIM_FIELD__"
-	recordMarker    = "__GITSKIM_COMMIT__"
+	fieldMarker     = "__GITI_FIELD__"
+	recordMarker    = "__GITI_COMMIT__"
 	emptyTree       = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 	fullFileLimit   = 2 * 1024 * 1024
 	diffOutputLimit = 8 * 1024 * 1024

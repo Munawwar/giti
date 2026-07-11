@@ -15,7 +15,7 @@ import (
 
 const idleDuration = 12 * time.Hour
 
-type gitSkim struct {
+type giti struct {
 	repository              *repository
 	resident, busy          bool
 	idleDeadline            time.Time
@@ -44,24 +44,26 @@ func must[T any](value T, err error) T {
 	return value
 }
 
-func newGitSkim(repo *repository, resident bool) *gitSkim {
-	app := &gitSkim{repository: repo, resident: resident, busy: true, historyLimit: 10}
+func newGiti(repo *repository, resident bool) (*giti, error) {
+	app := &giti{repository: repo, resident: resident, busy: true, historyLimit: 10}
+	if resident {
+		app.server = newResidentServer(app)
+		if err := app.server.start(); err != nil {
+			return nil, err
+		}
+	}
 	app.historyStore = must(gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING))
 	app.fileStore = must(gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING))
 	app.buildWindow()
 	if resident {
-		app.server = newResidentServer(app)
-		if err := app.server.start(); err != nil {
-			panic(err)
-		}
 		glib.TimeoutSecondsAdd(60, app.expireIfIdle)
 	}
-	return app
+	return app, nil
 }
 
-func (app *gitSkim) buildWindow() {
+func (app *giti) buildWindow() {
 	app.window = must(gtk.WindowNew(gtk.WINDOW_TOPLEVEL))
-	app.window.SetTitle("GitSkim — " + filepath.Base(app.repository.path))
+	app.window.SetTitle("Giti — " + filepath.Base(app.repository.path))
 	app.window.SetDefaultSize(1200, 760)
 	app.window.Maximize()
 	app.window.Connect("delete-event", func() bool {
@@ -123,7 +125,6 @@ func (app *gitSkim) buildWindow() {
 	app.fullFileHandler = app.fullFileToggle.Connect("toggled", app.onFullFileToggled)
 	loadButton := must(gtk.ButtonNewWithLabel("Load more"))
 	loadButton.Connect("clicked", func() {
-		app.window.SetSensitive(false)
 		app.historyLimit += 100
 		app.loadHistory()
 	})
@@ -162,7 +163,7 @@ func scroller(child gtk.IWidget) *gtk.ScrolledWindow {
 	return scroll
 }
 
-func (app *gitSkim) loadHistory() bool {
+func (app *giti) loadHistory() bool {
 	app.selectionGeneration++
 	generation := app.selectionGeneration
 	preferredKind, preferredRevision := "", ""
@@ -171,7 +172,6 @@ func (app *gitSkim) loadHistory() bool {
 	}
 	rows, err := app.repository.history(app.historyLimit, !app.whitespaceToggle.GetActive())
 	if err != nil {
-		app.window.SetSensitive(true)
 		app.showError(err)
 		return false
 	}
@@ -197,7 +197,8 @@ func (app *gitSkim) loadHistory() bool {
 		glib.IdleAdd(func() bool {
 			if generation == app.selectionGeneration && target < len(app.historyRows) {
 				path := must(gtk.TreePathNewFromIndicesv([]int{target}))
-				app.historyView.SetCursor(path, nil, false)
+				selection, _ := app.historyView.GetSelection()
+				selection.SelectPath(path)
 			}
 			return false
 		})
@@ -205,7 +206,7 @@ func (app *gitSkim) loadHistory() bool {
 	return false
 }
 
-func (app *gitSkim) onHistorySelected() {
+func (app *giti) onHistorySelected() {
 	selection, _ := app.historyView.GetSelection()
 	_, iter, ok := selection.GetSelected()
 	if !ok {
@@ -221,7 +222,6 @@ func (app *gitSkim) onHistorySelected() {
 	}
 	app.selectionGeneration++
 	generation := app.selectionGeneration
-	app.window.SetSensitive(false)
 	app.resetFullFile()
 	app.diffBuffer.SetText("")
 	previousPath := ""
@@ -231,7 +231,6 @@ func (app *gitSkim) onHistorySelected() {
 	app.currentRow = &app.historyRows[index]
 	files, err := app.repository.changedFiles(*app.currentRow, !app.whitespaceToggle.GetActive())
 	if err != nil {
-		app.finishSelection(generation)
 		app.showError(err)
 		return
 	}
@@ -247,20 +246,19 @@ func (app *gitSkim) onHistorySelected() {
 	}
 	if len(files) == 0 {
 		app.currentFile = nil
-		app.finishSelection(generation)
 		return
 	}
 	glib.IdleAdd(func() bool {
 		if generation == app.selectionGeneration && target < len(app.files) {
 			path := must(gtk.TreePathNewFromIndicesv([]int{target}))
-			app.fileView.SetCursor(path, nil, false)
+			selection, _ := app.fileView.GetSelection()
+			selection.SelectPath(path)
 		}
-		app.finishSelection(generation)
 		return false
 	})
 }
 
-func (app *gitSkim) onFileSelected() {
+func (app *giti) onFileSelected() {
 	selection, _ := app.fileView.GetSelection()
 	_, iter, ok := selection.GetSelected()
 	if !ok || app.currentRow == nil {
@@ -298,16 +296,7 @@ func (app *gitSkim) onFileSelected() {
 	app.setDiff(patch)
 }
 
-func (app *gitSkim) finishSelection(generation uint64) {
-	glib.IdleAdd(func() bool {
-		if generation == app.selectionGeneration {
-			app.window.SetSensitive(true)
-		}
-		return false
-	})
-}
-
-func (app *gitSkim) setDiff(patch string) {
+func (app *giti) setDiff(patch string) {
 	app.diffBuffer.SetText("")
 	for _, line := range displayLines(patch) {
 		iter := app.diffBuffer.GetEndIter()
@@ -353,26 +342,25 @@ func splitAfterLines(text string) []string {
 	return lines
 }
 
-func (app *gitSkim) onWhitespaceToggled() {
+func (app *giti) onWhitespaceToggled() {
 	if app.currentRow != nil {
-		app.window.SetSensitive(false)
 		app.loadHistory()
 	}
 }
 
-func (app *gitSkim) onFullFileToggled() {
+func (app *giti) onFullFileToggled() {
 	if app.currentFile != nil {
 		app.onFileSelected()
 	}
 }
 
-func (app *gitSkim) resetFullFile() {
+func (app *giti) resetFullFile() {
 	app.fullFileToggle.HandlerBlock(app.fullFileHandler)
 	app.fullFileToggle.SetActive(false)
 	app.fullFileToggle.HandlerUnblock(app.fullFileHandler)
 }
 
-func (app *gitSkim) clearRepositoryView() {
+func (app *giti) clearRepositoryView() {
 	app.selectionGeneration++
 	app.historyRows, app.files = nil, nil
 	app.currentRow, app.currentFile = nil, nil
@@ -382,7 +370,7 @@ func (app *gitSkim) clearRepositoryView() {
 	app.resetFullFile()
 }
 
-func (app *gitSkim) hideResident() {
+func (app *giti) hideResident() {
 	app.clearRepositoryView()
 	app.window.Hide()
 	app.stateMu.Lock()
@@ -390,7 +378,7 @@ func (app *gitSkim) hideResident() {
 	app.stateMu.Unlock()
 }
 
-func (app *gitSkim) openRepository(path, revision string) bool {
+func (app *giti) openRepository(path, revision string) bool {
 	repo, err := newRepository(path, revision)
 	if err != nil {
 		app.showError(err)
@@ -402,7 +390,7 @@ func (app *gitSkim) openRepository(path, revision string) bool {
 	app.repository, app.historyLimit = repo, 10
 	app.clearRepositoryView()
 	app.whitespaceToggle.SetActive(false)
-	app.window.SetTitle("GitSkim — " + filepath.Base(repo.path))
+	app.window.SetTitle("Giti — " + filepath.Base(repo.path))
 	app.window.ShowAll()
 	app.window.Maximize()
 	app.window.Present()
@@ -410,7 +398,7 @@ func (app *gitSkim) openRepository(path, revision string) bool {
 	return false
 }
 
-func (app *gitSkim) expireIfIdle() bool {
+func (app *giti) expireIfIdle() bool {
 	app.stateMu.Lock()
 	expired := !app.busy && !app.idleDeadline.IsZero() && time.Now().After(app.idleDeadline)
 	app.stateMu.Unlock()
@@ -422,8 +410,8 @@ func (app *gitSkim) expireIfIdle() bool {
 	return true
 }
 
-func (app *gitSkim) showError(err error) {
-	dialog := gtk.MessageDialogNew(app.window, gtk.DIALOG_MODAL, gtk.MESSAGE_ERROR, gtk.BUTTONS_CLOSE, "GitSkim could not load the repository\n\n%s", err)
+func (app *giti) showError(err error) {
+	dialog := gtk.MessageDialogNew(app.window, gtk.DIALOG_MODAL, gtk.MESSAGE_ERROR, gtk.BUTTONS_CLOSE, "Giti could not load the repository\n\n%s", err)
 	dialog.Run()
 	dialog.Destroy()
 }
