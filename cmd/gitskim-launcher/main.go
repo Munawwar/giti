@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -42,10 +43,40 @@ func main() {
 		os.Exit(1)
 	}
 	appName := "gitskim-app"
-	if strings.HasSuffix(filepath.Base(executable), "-debug") {
+	debug := strings.HasSuffix(filepath.Base(executable), "-debug")
+	if debug {
 		appName += "-debug"
 	}
 	app := filepath.Join(filepath.Dir(executable), appName)
+	if response == "" && !debug {
+		runtimeDir := runtimeDirectory()
+		if err = os.MkdirAll(runtimeDir, 0o700); err == nil {
+			var input, log *os.File
+			input, err = os.Open(os.DevNull)
+			if input != nil {
+				defer input.Close()
+			}
+			if err == nil {
+				log, err = os.OpenFile(filepath.Join(runtimeDir, "gitskim.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+			}
+			if log != nil {
+				defer log.Close()
+			}
+			if err == nil {
+				command := exec.Command(app, "--resident", path, revision)
+				command.Stdin, command.Stdout, command.Stderr = input, log, log
+				command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+				if err = command.Start(); err == nil {
+					err = command.Process.Release()
+				}
+			}
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	mode := "--resident"
 	if response == "BUSY" {
 		mode = "--ephemeral"
@@ -57,11 +88,7 @@ func main() {
 }
 
 func contactResident(request openRequest) string {
-	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-	if runtimeDir == "" {
-		runtimeDir = filepath.Join(os.TempDir(), "gitskim-"+strconv.Itoa(os.Getuid()))
-	}
-	connection, err := net.DialTimeout("unix", filepath.Join(runtimeDir, "gitskim.sock"), 250*time.Millisecond)
+	connection, err := net.DialTimeout("unix", filepath.Join(runtimeDirectory(), "gitskim.sock"), 250*time.Millisecond)
 	if err != nil {
 		return ""
 	}
@@ -72,4 +99,11 @@ func contactResident(request openRequest) string {
 	}
 	response, _ := bufio.NewReader(connection).ReadString('\n')
 	return strings.TrimSpace(response)
+}
+
+func runtimeDirectory() string {
+	if path := os.Getenv("XDG_RUNTIME_DIR"); path != "" {
+		return path
+	}
+	return filepath.Join(os.TempDir(), "gitskim-"+strconv.Itoa(os.Getuid()))
 }

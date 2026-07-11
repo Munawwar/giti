@@ -121,7 +121,7 @@ func (app *gitSkim) buildWindow() {
 	app.whitespaceToggle.Connect("toggled", app.onWhitespaceToggled)
 	app.fullFileToggle = must(gtk.CheckButtonNewWithLabel("Show full file"))
 	app.fullFileHandler = app.fullFileToggle.Connect("toggled", app.onFullFileToggled)
-	loadButton := must(gtk.ButtonNewWithLabel("Load 100 more"))
+	loadButton := must(gtk.ButtonNewWithLabel("Load more"))
 	loadButton.Connect("clicked", func() {
 		app.window.SetSensitive(false)
 		app.historyLimit += 100
@@ -255,6 +255,7 @@ func (app *gitSkim) onHistorySelected() {
 			path := must(gtk.TreePathNewFromIndicesv([]int{target}))
 			app.fileView.SetCursor(path, nil, false)
 		}
+		app.finishSelection(generation)
 		return false
 	})
 }
@@ -273,8 +274,6 @@ func (app *gitSkim) onFileSelected() {
 	if index >= len(app.files) {
 		return
 	}
-	generation := app.selectionGeneration
-	app.window.SetSensitive(false)
 	file := &app.files[index]
 	if app.currentFile == nil || *file != *app.currentFile {
 		app.resetFullFile()
@@ -293,12 +292,10 @@ func (app *gitSkim) onFileSelected() {
 	app.diffBuffer.SetText("")
 	patch, err := app.repository.diff(*app.currentRow, *file, !app.whitespaceToggle.GetActive(), app.fullFileToggle.GetActive())
 	if err != nil {
-		app.finishSelection(generation)
 		app.showError(err)
 		return
 	}
 	app.setDiff(patch)
-	app.finishSelection(generation)
 }
 
 func (app *gitSkim) finishSelection(generation uint64) {

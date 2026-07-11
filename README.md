@@ -18,7 +18,13 @@ Enable **Show full file** to expand the selected diff with the unchanged surroun
 
 Rendered patches are capped at 8 MiB. GitSkim terminates larger diff output and shows a truncation notice instead of retaining an unbounded patch in memory. Hiding the resident window also releases its history, file list, and diff contents.
 
-Closing the first window hides one resident process for up to 12 hours. A later invocation reuses that warm process; when its window is already visible, GitSkim opens a separate cold process that exits normally when closed. There is never a pool of dormant processes.
+The first normal invocation starts the resident as a detached background process,
+so its terminal returns immediately. Closing its window hides the resident for
+up to 12 hours. A later invocation reuses that warm process; when its window is
+already visible, GitSkim opens a separate cold process that exits normally when
+closed. There is never a pool of dormant processes. Resident output is written
+to `$XDG_RUNTIME_DIR/gitskim.log` (or `/tmp/gitskim-$UID/gitskim.log` when that
+variable is unset).
 
 ## Ubuntu installation
 
