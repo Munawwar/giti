@@ -1,6 +1,8 @@
 # Giti
 
-A deliberately small, fast GTK 3 history and single-file diff viewer meant to be invoked from a terminal, for the hybrid TUI-GUI workflow loving devs.
+A tiny git history and single-file diff viewer for linux meant to be invoked quickly with window maximized from a terminal, for the hybrid TUI-GUI workflow loving devs.
+
+It starts up in around 200ms as startup time is important for repeat invokes from terminal.
 
 The name was chosen for a short command in the spirit of `gitk`. Its Persian
 meaning of world/universe and life, was a happy coincidence discovered after the
