@@ -3,7 +3,7 @@ import subprocess
 import tempfile
 import unittest
 
-from gitskim import Repository
+from gitskim import FULL_FILE_LIMIT, Repository
 
 
 class RepositoryTests(unittest.TestCase):
@@ -77,6 +77,28 @@ class RepositoryTests(unittest.TestCase):
         files = repository.changed_files(commit)
         self.assertEqual([item.path for item in files], ["history.txt"])
         self.assertIn("+commit 11", repository.diff(commit, files[0]))
+
+    def test_full_file_context_and_size(self):
+        self.write("context.txt", "".join(f"line {number}\n" for number in range(20)))
+        self.git("add", "context.txt")
+        self.git("commit", "-m", "add context fixture")
+        self.write(
+            "context.txt",
+            "changed\n" + "".join(f"line {number}\n" for number in range(1, 20)),
+        )
+        repository = Repository(self.path)
+        unstaged = repository.history(1)[0]
+        changed_file = repository.changed_files(unstaged)[0]
+        self.assertNotIn("line 19", repository.diff(unstaged, changed_file))
+        self.assertIn("line 19", repository.diff(unstaged, changed_file, full_file=True))
+        self.assertLess(repository.file_size(unstaged, changed_file), FULL_FILE_LIMIT)
+
+    def test_limited_git_output(self):
+        repository = Repository(self.path)
+        output, truncated = repository.run_limited("show", "HEAD:history.txt", limit=5)
+        self.assertEqual(output, "commi")
+        self.assertTrue(truncated)
+        self.assertIn("Diff truncated", repository.finish_diff(output, truncated))
 
 
 if __name__ == "__main__":
