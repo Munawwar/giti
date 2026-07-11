@@ -139,3 +139,31 @@ func TestWhitespaceFullFileAndLimits(t *testing.T) {
 		t.Fatalf("fixture unexpectedly large")
 	}
 }
+
+func TestRenameAndCopyDetection(t *testing.T) {
+	path := testRepository(t)
+	if output, err := exec.Command("git", "-C", path, "mv", "history.txt", "renamed.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git mv: %v: %s", err, output)
+	}
+	repo, _ := newRepository(path, "HEAD")
+	rows, _ := repo.history(1, true)
+	files, err := repo.changedFiles(rows[0], true)
+	if err != nil || len(files) != 1 || !strings.HasPrefix(files[0].status, "R") || files[0].oldPath != "history.txt" || files[0].path != "renamed.txt" {
+		t.Fatalf("rename not detected: %#v: %v", files, err)
+	}
+
+	exec.Command("git", "-C", path, "reset", "--hard", "HEAD").Run()
+	original, _ := os.ReadFile(filepath.Join(path, "history.txt"))
+	os.WriteFile(filepath.Join(path, "copied.txt"), original, 0o644)
+	os.WriteFile(filepath.Join(path, "history.txt"), append(original, []byte("modified\n")...), 0o644)
+	exec.Command("git", "-C", path, "add", "history.txt", "copied.txt").Run()
+	rows, _ = repo.history(1, true)
+	files, err = repo.changedFiles(rows[0], true)
+	foundCopy := false
+	for _, file := range files {
+		foundCopy = foundCopy || strings.HasPrefix(file.status, "C") && file.path == "copied.txt"
+	}
+	if err != nil || !foundCopy {
+		t.Fatalf("copy not detected: %#v: %v", files, err)
+	}
+}

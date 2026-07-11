@@ -177,8 +177,10 @@ func (repo *repository) changedFiles(row historyRow, ignoreWhitespace bool) ([]c
 		if trackErr != nil {
 			return nil, trackErr
 		}
-		for _, path := range strings.Fields(untracked) {
-			files = append(files, changedFile{status: "??", path: path})
+		for _, path := range strings.Split(strings.TrimSuffix(untracked, "\n"), "\n") {
+			if path != "" {
+				files = append(files, changedFile{status: "??", path: path})
+			}
 		}
 	}
 	filtered := files[:0]
