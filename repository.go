@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -56,7 +57,22 @@ func newRepository(path, revision string) (*repository, error) {
 }
 
 func (repo *repository) run(args ...string) (string, error) {
-	return repo.runAt(repo.path, args...)
+	return repo.runContext(context.Background(), args...)
+}
+
+func (repo *repository) runContext(ctx context.Context, args ...string) (string, error) {
+	command := exec.CommandContext(ctx, "git", append([]string{"-C", repo.path}, args...)...)
+	output, err := command.Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return "", errors.New(strings.TrimSpace(string(exit.Stderr)))
+		}
+	}
+	return string(output), err
 }
 
 func (repo *repository) runAt(path string, args ...string) (string, error) {
@@ -73,7 +89,11 @@ func (repo *repository) runAt(path string, args ...string) (string, error) {
 }
 
 func (repo *repository) runLimited(limit int, check bool, args ...string) (string, bool, error) {
-	command := exec.Command("git", append([]string{"-C", repo.path}, args...)...)
+	return repo.runLimitedContext(context.Background(), limit, check, args...)
+}
+
+func (repo *repository) runLimitedContext(ctx context.Context, limit int, check bool, args ...string) (string, bool, error) {
+	command := exec.CommandContext(ctx, "git", append([]string{"-C", repo.path}, args...)...)
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		return "", false, err
@@ -90,6 +110,9 @@ func (repo *repository) runLimited(limit int, check bool, args ...string) (strin
 		_ = command.Process.Kill()
 	}
 	waitErr := command.Wait()
+	if ctx.Err() != nil {
+		return "", truncated, ctx.Err()
+	}
 	if readErr != nil && !errors.Is(readErr, io.EOF) {
 		return "", truncated, readErr
 	}
@@ -139,6 +162,10 @@ func (repo *repository) history(count int, ignoreWhitespace bool) ([]historyRow,
 }
 
 func (repo *repository) changedFiles(row historyRow, ignoreWhitespace bool) ([]changedFile, error) {
+	return repo.changedFilesContext(context.Background(), row, ignoreWhitespace)
+}
+
+func (repo *repository) changedFilesContext(ctx context.Context, row historyRow, ignoreWhitespace bool) ([]changedFile, error) {
 	args := []string{"diff", "--name-status", "--find-renames", "--find-copies"}
 	if ignoreWhitespace {
 		args = append(args, "--ignore-all-space")
@@ -146,7 +173,7 @@ func (repo *repository) changedFiles(row historyRow, ignoreWhitespace bool) ([]c
 	if row.kind == "staged" {
 		args = append(args, "--cached")
 	} else if row.kind == "commit" {
-		parents, err := repo.run("show", "-s", "--format=%P", row.revision)
+		parents, err := repo.runContext(ctx, "show", "-s", "--format=%P", row.revision)
 		if err != nil {
 			return nil, err
 		}
@@ -156,7 +183,7 @@ func (repo *repository) changedFiles(row historyRow, ignoreWhitespace bool) ([]c
 		}
 		args = append(args, parent, row.revision)
 	}
-	output, err := repo.run(args...)
+	output, err := repo.runContext(ctx, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +200,7 @@ func (repo *repository) changedFiles(row historyRow, ignoreWhitespace bool) ([]c
 		files = append(files, file)
 	}
 	if row.kind == "unstaged" {
-		untracked, trackErr := repo.run("ls-files", "--others", "--exclude-standard")
+		untracked, trackErr := repo.runContext(ctx, "ls-files", "--others", "--exclude-standard")
 		if trackErr != nil {
 			return nil, trackErr
 		}
@@ -189,7 +216,7 @@ func (repo *repository) changedFiles(row historyRow, ignoreWhitespace bool) ([]c
 			filtered = append(filtered, file)
 			continue
 		}
-		patch, patchErr := repo.diff(row, file, true, false)
+		patch, patchErr := repo.diffContext(ctx, row, file, true, false)
 		if patchErr != nil {
 			return nil, patchErr
 		}
@@ -201,6 +228,10 @@ func (repo *repository) changedFiles(row historyRow, ignoreWhitespace bool) ([]c
 }
 
 func (repo *repository) diff(row historyRow, file changedFile, ignoreWhitespace, fullFile bool) (string, error) {
+	return repo.diffContext(context.Background(), row, file, ignoreWhitespace, fullFile)
+}
+
+func (repo *repository) diffContext(ctx context.Context, row historyRow, file changedFile, ignoreWhitespace, fullFile bool) (string, error) {
 	args := []string{"diff", "--no-ext-diff", "--no-color", "--find-renames", "--find-copies"}
 	check := true
 	if file.status == "??" {
@@ -218,7 +249,7 @@ func (repo *repository) diff(row historyRow, file changedFile, ignoreWhitespace,
 		if row.kind == "staged" {
 			args = append(args, "--cached")
 		} else if row.kind == "commit" {
-			parents, err := repo.run("show", "-s", "--format=%P", row.revision)
+			parents, err := repo.runContext(ctx, "show", "-s", "--format=%P", row.revision)
 			if err != nil {
 				return "", err
 			}
@@ -234,7 +265,7 @@ func (repo *repository) diff(row historyRow, file changedFile, ignoreWhitespace,
 		}
 		args = append(args, file.path)
 	}
-	output, truncated, err := repo.runLimited(diffOutputLimit, check, args...)
+	output, truncated, err := repo.runLimitedContext(ctx, diffOutputLimit, check, args...)
 	if err != nil {
 		return "", err
 	}
@@ -245,6 +276,10 @@ func (repo *repository) diff(row historyRow, file changedFile, ignoreWhitespace,
 }
 
 func (repo *repository) fileSize(row historyRow, file changedFile) int64 {
+	return repo.fileSizeContext(context.Background(), row, file)
+}
+
+func (repo *repository) fileSizeContext(ctx context.Context, row historyRow, file changedFile) int64 {
 	if row.kind == "unstaged" && !strings.HasPrefix(file.status, "D") {
 		if info, err := os.Lstat(filepath.Join(repo.path, file.path)); err == nil {
 			return info.Size()
@@ -255,7 +290,7 @@ func (repo *repository) fileSize(row historyRow, file changedFile) int64 {
 		revisions = append(revisions, ":"+file.path, "HEAD:"+file.path)
 	} else {
 		revisions = append(revisions, row.revision+":"+file.path)
-		if parents, err := repo.run("show", "-s", "--format=%P", row.revision); err == nil {
+		if parents, err := repo.runContext(ctx, "show", "-s", "--format=%P", row.revision); err == nil {
 			if fields := strings.Fields(parents); len(fields) > 0 {
 				path := file.path
 				if file.oldPath != "" {
@@ -266,7 +301,7 @@ func (repo *repository) fileSize(row historyRow, file changedFile) int64 {
 		}
 	}
 	for _, revision := range revisions {
-		if output, err := repo.run("cat-file", "-s", revision); err == nil {
+		if output, err := repo.runContext(ctx, "cat-file", "-s", revision); err == nil {
 			if size, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64); parseErr == nil {
 				return size
 			}

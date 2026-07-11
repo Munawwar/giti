@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -23,6 +24,9 @@ type giti struct {
 	server                  *residentServer
 	historyLimit            int
 	selectionGeneration     uint64
+	diffGeneration          uint64
+	selectionCancel         context.CancelFunc
+	diffCancel              context.CancelFunc
 	historyRows             []historyRow
 	files                   []changedFile
 	currentRow              *historyRow
@@ -165,6 +169,13 @@ func scroller(child gtk.IWidget) *gtk.ScrolledWindow {
 
 func (app *giti) loadHistory() bool {
 	app.selectionGeneration++
+	app.diffGeneration++
+	if app.selectionCancel != nil {
+		app.selectionCancel()
+	}
+	if app.diffCancel != nil {
+		app.diffCancel()
+	}
 	generation := app.selectionGeneration
 	preferredKind, preferredRevision := "", ""
 	if app.currentRow != nil {
@@ -222,6 +233,13 @@ func (app *giti) onHistorySelected() {
 	}
 	app.selectionGeneration++
 	generation := app.selectionGeneration
+	if app.selectionCancel != nil {
+		app.selectionCancel()
+	}
+	if app.diffCancel != nil {
+		app.diffCancel()
+	}
+	app.diffGeneration++
 	app.resetFullFile()
 	app.diffBuffer.SetText("")
 	previousPath := ""
@@ -229,33 +247,41 @@ func (app *giti) onHistorySelected() {
 		previousPath = app.currentFile.path
 	}
 	app.currentRow = &app.historyRows[index]
-	files, err := app.repository.changedFiles(*app.currentRow, !app.whitespaceToggle.GetActive())
-	if err != nil {
-		app.showError(err)
-		return
-	}
-	app.files = files
+	app.currentFile, app.files = nil, nil
 	app.fileStore.Clear()
-	target := 0
-	for fileIndex, file := range files {
-		iter := app.fileStore.Append()
-		app.fileStore.Set(iter, []int{0, 1}, []any{file.label(), strconv.Itoa(fileIndex)})
-		if file.path == previousPath {
-			target = fileIndex
-		}
-	}
-	if len(files) == 0 {
-		app.currentFile = nil
-		return
-	}
-	glib.IdleAdd(func() bool {
-		if generation == app.selectionGeneration && target < len(app.files) {
+	ctx, cancel := context.WithCancel(context.Background())
+	app.selectionCancel = cancel
+	repo, row := app.repository, *app.currentRow
+	ignoreWhitespace := !app.whitespaceToggle.GetActive()
+	go func() {
+		files, loadErr := repo.changedFilesContext(ctx, row, ignoreWhitespace)
+		glib.IdleAdd(func() bool {
+			if ctx.Err() != nil || generation != app.selectionGeneration || repo != app.repository {
+				return false
+			}
+			app.selectionCancel = nil
+			if loadErr != nil {
+				app.showError(loadErr)
+				return false
+			}
+			app.files = files
+			target := 0
+			for fileIndex, file := range files {
+				iter := app.fileStore.Append()
+				app.fileStore.Set(iter, []int{0, 1}, []any{file.label(), strconv.Itoa(fileIndex)})
+				if file.path == previousPath {
+					target = fileIndex
+				}
+			}
+			if len(files) == 0 {
+				return false
+			}
 			path := must(gtk.TreePathNewFromIndicesv([]int{target}))
 			selection, _ := app.fileView.GetSelection()
 			selection.SelectPath(path)
-		}
-		return false
-	})
+			return false
+		})
+	}()
 }
 
 func (app *giti) onFileSelected() {
@@ -272,28 +298,48 @@ func (app *giti) onFileSelected() {
 	if index >= len(app.files) {
 		return
 	}
+	app.diffGeneration++
+	generation, selectionGeneration := app.diffGeneration, app.selectionGeneration
+	if app.diffCancel != nil {
+		app.diffCancel()
+	}
 	file := &app.files[index]
 	if app.currentFile == nil || *file != *app.currentFile {
 		app.resetFullFile()
 	}
 	app.currentFile = file
-	allowed := app.repository.fileSize(*app.currentRow, *file) <= fullFileLimit
-	app.fullFileToggle.HandlerBlock(app.fullFileHandler)
-	app.fullFileToggle.SetSensitive(allowed)
-	if !allowed {
-		app.fullFileToggle.SetActive(false)
-		app.fullFileToggle.SetTooltipText("Disabled for files larger than 2 MiB")
-	} else {
-		app.fullFileToggle.SetTooltipText("")
-	}
-	app.fullFileToggle.HandlerUnblock(app.fullFileHandler)
+	app.fullFileToggle.SetSensitive(false)
 	app.diffBuffer.SetText("")
-	patch, err := app.repository.diff(*app.currentRow, *file, !app.whitespaceToggle.GetActive(), app.fullFileToggle.GetActive())
-	if err != nil {
-		app.showError(err)
-		return
-	}
-	app.setDiff(patch)
+	ctx, cancel := context.WithCancel(context.Background())
+	app.diffCancel = cancel
+	repo, row, selectedFile := app.repository, *app.currentRow, *file
+	ignoreWhitespace, fullFile := !app.whitespaceToggle.GetActive(), app.fullFileToggle.GetActive()
+	go func() {
+		size := repo.fileSizeContext(ctx, row, selectedFile)
+		patch, loadErr := repo.diffContext(ctx, row, selectedFile, ignoreWhitespace, fullFile)
+		glib.IdleAdd(func() bool {
+			if ctx.Err() != nil || generation != app.diffGeneration || selectionGeneration != app.selectionGeneration || repo != app.repository {
+				return false
+			}
+			app.diffCancel = nil
+			if loadErr != nil {
+				app.showError(loadErr)
+				return false
+			}
+			allowed := size <= fullFileLimit
+			app.fullFileToggle.HandlerBlock(app.fullFileHandler)
+			app.fullFileToggle.SetSensitive(allowed)
+			if !allowed {
+				app.fullFileToggle.SetActive(false)
+				app.fullFileToggle.SetTooltipText("Disabled for files larger than 2 MiB")
+			} else {
+				app.fullFileToggle.SetTooltipText("")
+			}
+			app.fullFileToggle.HandlerUnblock(app.fullFileHandler)
+			app.setDiff(patch)
+			return false
+		})
+	}()
 }
 
 func (app *giti) setDiff(patch string) {
@@ -362,6 +408,13 @@ func (app *giti) resetFullFile() {
 
 func (app *giti) clearRepositoryView() {
 	app.selectionGeneration++
+	app.diffGeneration++
+	if app.selectionCancel != nil {
+		app.selectionCancel()
+	}
+	if app.diffCancel != nil {
+		app.diffCancel()
+	}
 	app.historyRows, app.files = nil, nil
 	app.currentRow, app.currentFile = nil, nil
 	app.historyStore.Clear()

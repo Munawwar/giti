@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -165,5 +167,18 @@ func TestRenameAndCopyDetection(t *testing.T) {
 	}
 	if err != nil || !foundCopy {
 		t.Fatalf("copy not detected: %#v: %v", files, err)
+	}
+}
+
+func TestCanceledGitWorkStops(t *testing.T) {
+	repo, err := newRepository(testRepository(t), "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = repo.changedFilesContext(ctx, historyRow{kind: "commit", revision: repo.revision}, true)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled Git work returned %v", err)
 	}
 }

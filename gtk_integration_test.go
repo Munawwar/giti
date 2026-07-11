@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -34,7 +35,7 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	}
 	defer app.window.Destroy()
 	deadline := time.Now().Add(2 * time.Second)
-	for (!app.window.IsMaximized() || app.currentFile == nil) && time.Now().Before(deadline) {
+	for (!app.window.IsMaximized() || app.currentFile == nil || app.diffBuffer.GetCharCount() == 0) && time.Now().Before(deadline) {
 		for gtk.EventsPending() {
 			gtk.MainIteration()
 		}
@@ -64,20 +65,42 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	}
 	app.fileView.GrabFocus()
 	app.fileView.SetCursor(must(gtk.TreePathNewFromIndicesv([]int{1})), nil, false)
-	for gtk.EventsPending() {
-		gtk.MainIteration()
+	deadline = time.Now().Add(2 * time.Second)
+	for (app.currentFile == nil || app.currentFile.path != "second.txt" || app.diffBuffer.GetCharCount() == 0) && time.Now().Before(deadline) {
+		for gtk.EventsPending() {
+			gtk.MainIteration()
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	start, end = app.diffBuffer.GetBounds()
 	second, _ := app.diffBuffer.GetText(start, end, true)
 	if !app.fileView.IsFocus() || app.fullFileToggle.GetActive() || app.currentFile.path != "second.txt" || !strings.Contains(second, "+second") || strings.Contains(second, "+one") {
 		t.Fatalf("file switch retained state or content: full=%v file=%#v diff=%q", app.fullFileToggle.GetActive(), app.currentFile, second)
 	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	wrapper := "#!/bin/sh\ncase \" $* \" in *\" diff --name-status \"*) sleep .3;; esac\nexec " + realGit + " \"$@\"\n"
+	if err = os.WriteFile(filepath.Join(binDir, "git"), []byte(wrapper), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
 	app.historyView.GrabFocus()
+	selectionStarted := time.Now()
 	for _, index := range []int{1, 2, 3} {
 		app.historyView.SetCursor(must(gtk.TreePathNewFromIndicesv([]int{index})), nil, false)
 	}
-	for gtk.EventsPending() {
-		gtk.MainIteration()
+	if elapsed := time.Since(selectionStarted); elapsed > 100*time.Millisecond {
+		t.Fatalf("graph selection blocked GTK for %v", elapsed)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for (app.currentFile == nil || app.diffBuffer.GetCharCount() == 0) && time.Now().Before(deadline) {
+		for gtk.EventsPending() {
+			gtk.MainIteration()
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if !app.historyView.IsFocus() || app.currentRow == nil || app.currentRow.subject != "commit 9" || app.currentFile == nil {
 		t.Fatalf("rapid graph selection applied stale state: row=%#v file=%#v", app.currentRow, app.currentFile)
