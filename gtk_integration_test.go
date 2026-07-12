@@ -34,6 +34,11 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.window.Destroy()
+	theme, themeErr := must(gtk.SettingsGetDefault()).GetProperty("gtk-theme-name")
+	themeName, isThemeName := theme.(string)
+	if themeErr != nil || !isThemeName || strings.HasSuffix(themeName, "-dark") {
+		t.Fatalf("Giti did not force a light GTK theme: theme=%q err=%v", theme, themeErr)
+	}
 	deadline := time.Now().Add(2 * time.Second)
 	for (!app.window.IsMaximized() || app.currentFile == nil || app.diffBuffer.GetCharCount() == 0) && time.Now().Before(deadline) {
 		for gtk.EventsPending() {

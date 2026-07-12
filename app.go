@@ -76,6 +76,13 @@ func newGiti(repo *repository, resident bool) (*giti, error) {
 	if err = settings.SetProperty("gtk-application-prefer-dark-theme", false); err != nil {
 		return nil, err
 	}
+	if value, getErr := settings.GetProperty("gtk-theme-name"); getErr == nil {
+		if theme, ok := value.(string); ok && strings.HasSuffix(theme, "-dark") {
+			if err = settings.SetProperty("gtk-theme-name", strings.TrimSuffix(theme, "-dark")); err != nil {
+				return nil, err
+			}
+		}
+	}
 	app := &giti{repository: repo, resident: resident, busy: true, historyLimit: 10}
 	if resident {
 		app.server = newResidentServer(app)
