@@ -20,12 +20,12 @@ import (
 const idleDuration = 12 * time.Hour
 
 const appCSS = `
-treeview.giti-history.view:selected,
-treeview.giti-history.view:selected:focus {
+treeview.giti-list.view:selected,
+treeview.giti-list.view:selected:focus {
   background-color: #ffe2d2;
   color: #2d1b12;
 }
-treeview.giti-history.view:selected:backdrop {
+treeview.giti-list.view:selected:backdrop {
   background-color: #ffecdf;
   color: #2d1b12;
 }`
@@ -102,7 +102,7 @@ func (app *giti) buildWindow() {
 	app.historyView = must(gtk.TreeViewNewWithModel(app.historyStore))
 	app.historyView.SetHeadersVisible(false)
 	historyContext, _ := app.historyView.GetStyleContext()
-	historyContext.AddClass("giti-history")
+	historyContext.AddClass("giti-list")
 	graphRenderer := must(gtk.CellRendererTextNew())
 	graphRenderer.SetProperty("family", "monospace")
 	graphRenderer.SetProperty("xalign", 0.5)
@@ -144,6 +144,8 @@ func (app *giti) buildWindow() {
 
 	app.fileView = must(gtk.TreeViewNewWithModel(app.fileStore))
 	app.fileView.SetHeadersVisible(false)
+	fileContext, _ := app.fileView.GetStyleContext()
+	fileContext.AddClass("giti-list")
 	fileRenderer := must(gtk.CellRendererTextNew())
 	fileRenderer.SetProperty("family", "monospace")
 	fileRenderer.SetProperty("ellipsize", pango.ELLIPSIZE_MIDDLE)
