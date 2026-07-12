@@ -19,6 +19,17 @@ import (
 
 const idleDuration = 12 * time.Hour
 
+const appCSS = `
+treeview.giti-history.view:selected,
+treeview.giti-history.view:selected:focus {
+  background-color: #ffe2d2;
+  color: #2d1b12;
+}
+treeview.giti-history.view:selected:backdrop {
+  background-color: #ffecdf;
+  color: #2d1b12;
+}`
+
 type giti struct {
 	repository              *repository
 	resident, busy          bool
@@ -30,6 +41,7 @@ type giti struct {
 	diffGeneration          uint64
 	selectionCancel         context.CancelFunc
 	diffCancel              context.CancelFunc
+	styleProvider           *gtk.CssProvider
 	historyRows             []historyRow
 	searchMatches           []historyRow
 	files                   []changedFile
@@ -89,6 +101,8 @@ func (app *giti) buildWindow() {
 
 	app.historyView = must(gtk.TreeViewNewWithModel(app.historyStore))
 	app.historyView.SetHeadersVisible(false)
+	historyContext, _ := app.historyView.GetStyleContext()
+	historyContext.AddClass("giti-history")
 	graphRenderer := must(gtk.CellRendererTextNew())
 	graphRenderer.SetProperty("family", "monospace")
 	graphRenderer.SetProperty("xalign", 0.5)
@@ -186,10 +200,11 @@ func (app *giti) buildWindow() {
 	main.SetPosition(440)
 	app.window.Add(main)
 	app.window.ShowAll()
-	context, _ := app.window.GetStyleContext()
-	for _, renderer := range []*gtk.CellRendererText{graphRenderer, historyRenderer, fileRenderer} {
-		renderer.SetProperty("foreground", context.GetColor(gtk.STATE_FLAG_NORMAL).String())
+	app.styleProvider = must(gtk.CssProviderNew())
+	if err := app.styleProvider.LoadFromData(appCSS); err != nil {
+		panic(err)
 	}
+	gtk.AddProviderForScreen(must(gdk.ScreenGetDefault()), app.styleProvider, uint(gtk.STYLE_PROVIDER_PRIORITY_APPLICATION))
 	app.loadHistory()
 }
 
@@ -227,9 +242,9 @@ func (app *giti) loadHistory() bool {
 		if row.kind == "commit" {
 			refs := ""
 			if row.refs != "" {
-				refs = "\n<span foreground=\"#5b6f8c\">" + html.EscapeString(strings.ReplaceAll(row.refs, "tag: ", "🏷 ")) + "</span>"
+				refs = "\n<span foreground=\"#355070\">" + html.EscapeString(strings.ReplaceAll(row.refs, "tag: ", "🏷 ")) + "</span>"
 			}
-			label = fmt.Sprintf("<b>%s</b>\n<span foreground=\"#6b7280\"><tt>%s</tt>  ·  %s</span>%s", html.EscapeString(row.subject), html.EscapeString(row.revision[:7]), html.EscapeString(row.author), refs)
+			label = fmt.Sprintf("<b>%s</b>\n<span foreground=\"#374151\"><tt>%s</tt>  ·  %s</span>%s", html.EscapeString(row.subject), html.EscapeString(row.revision[:7]), html.EscapeString(row.author), refs)
 		}
 		iter := app.historyStore.Append()
 		app.historyStore.Set(iter, []int{0, 1, 2}, []any{strings.ReplaceAll(row.graph, "*", "◉"), label, row.kind})
@@ -307,7 +322,7 @@ func (app *giti) updateGraphSearch() {
 		label := must(gtk.LabelNew(""))
 		label.SetXAlign(0)
 		label.SetLineWrap(true)
-		label.SetMarkup(fmt.Sprintf("<b>%s</b>\n<span foreground=\"#6b7280\">%s  ·  %s  ·  <tt>%s</tt></span>", html.EscapeString(match.row.subject), html.EscapeString(match.row.date), html.EscapeString(match.row.author), html.EscapeString(match.row.revision[:7])))
+		label.SetMarkup(fmt.Sprintf("<b>%s</b>\n<span foreground=\"#374151\">%s  ·  %s  ·  <tt>%s</tt></span>", html.EscapeString(match.row.subject), html.EscapeString(match.row.date), html.EscapeString(match.row.author), html.EscapeString(match.row.revision[:7])))
 		copySHA := must(gtk.ButtonNewWithLabel("Copy SHA"))
 		copySHA.SetTooltipText(match.row.revision)
 		copySHA.Connect("clicked", func() {
@@ -375,7 +390,7 @@ func (app *giti) setCommitHeader(details commitDetails) {
 		refLabel := must(gtk.LabelNew(""))
 		refLabel.SetXAlign(0)
 		refLabel.SetLineWrap(true)
-		refLabel.SetMarkup("<span foreground=\"#5b6f8c\">" + strings.Join(refs, "  ·  ") + "</span>")
+		refLabel.SetMarkup("<span foreground=\"#355070\">" + strings.Join(refs, "  ·  ") + "</span>")
 		app.commitHeader.PackStart(refLabel, false, false, 0)
 	}
 	if len(details.parents) > 0 {
