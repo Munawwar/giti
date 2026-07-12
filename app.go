@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"html"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -34,6 +35,7 @@ type giti struct {
 	window                  *gtk.Window
 	historyStore, fileStore *gtk.ListStore
 	historyView, fileView   *gtk.TreeView
+	commitHeader            *gtk.Box
 	diffBuffer              *gtk.TextBuffer
 	diffView                *gtk.TextView
 	whitespaceToggle        *gtk.CheckButton
@@ -56,7 +58,7 @@ func newGiti(repo *repository, resident bool) (*giti, error) {
 			return nil, err
 		}
 	}
-	app.historyStore = must(gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING))
+	app.historyStore = must(gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING))
 	app.fileStore = must(gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING))
 	app.buildWindow()
 	if resident {
@@ -81,10 +83,15 @@ func (app *giti) buildWindow() {
 
 	app.historyView = must(gtk.TreeViewNewWithModel(app.historyStore))
 	app.historyView.SetHeadersVisible(false)
+	graphRenderer := must(gtk.CellRendererTextNew())
+	graphRenderer.SetProperty("family", "monospace")
+	graphRenderer.SetProperty("xalign", 0.5)
 	historyRenderer := must(gtk.CellRendererTextNew())
-	historyRenderer.SetProperty("family", "monospace")
 	historyRenderer.SetProperty("ellipsize", pango.ELLIPSIZE_END)
-	historyColumn := must(gtk.TreeViewColumnNewWithAttribute("History", historyRenderer, "text", 0))
+	historyColumn := must(gtk.TreeViewColumnNewWithAttribute("Graph", graphRenderer, "text", 0))
+	historyColumn.SetMinWidth(48)
+	app.historyView.AppendColumn(historyColumn)
+	historyColumn = must(gtk.TreeViewColumnNewWithAttribute("History", historyRenderer, "markup", 1))
 	historyColumn.SetExpand(true)
 	app.historyView.AppendColumn(historyColumn)
 	historySelection, _ := app.historyView.GetSelection()
@@ -93,7 +100,7 @@ func (app *giti) buildWindow() {
 		if err != nil {
 			return false
 		}
-		value, err := model.GetValue(iter, 1)
+		value, err := model.GetValue(iter, 2)
 		if err != nil {
 			return false
 		}
@@ -139,22 +146,28 @@ func (app *giti) buildWindow() {
 	left := must(gtk.PanedNew(gtk.ORIENTATION_VERTICAL))
 	left.Pack1(graphBox, true, false)
 	left.Pack2(scroller(app.fileView), true, false)
-	left.SetPosition(240)
+	left.SetPosition(250)
 
 	toolbar := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
 	toolbar.PackEnd(app.whitespaceToggle, false, false, 8)
 	toolbar.PackEnd(app.fullFileToggle, false, false, 0)
+	app.commitHeader = must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 2))
+	app.commitHeader.SetMarginStart(12)
+	app.commitHeader.SetMarginEnd(12)
+	app.commitHeader.SetMarginTop(8)
+	app.commitHeader.SetMarginBottom(8)
 	diffBox := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 4))
 	diffBox.PackStart(toolbar, false, false, 4)
+	diffBox.PackStart(app.commitHeader, false, false, 0)
 	diffBox.PackStart(scroller(app.diffView), true, true, 0)
 	main := must(gtk.PanedNew(gtk.ORIENTATION_HORIZONTAL))
 	main.Pack1(left, false, false)
 	main.Pack2(diffBox, true, false)
-	main.SetPosition(280)
+	main.SetPosition(440)
 	app.window.Add(main)
 	app.window.ShowAll()
 	context, _ := app.window.GetStyleContext()
-	for _, renderer := range []*gtk.CellRendererText{historyRenderer, fileRenderer} {
+	for _, renderer := range []*gtk.CellRendererText{graphRenderer, historyRenderer, fileRenderer} {
 		renderer.SetProperty("foreground", context.GetColor(gtk.STATE_FLAG_NORMAL).String())
 	}
 	app.loadHistory()
@@ -190,13 +203,16 @@ func (app *giti) loadHistory() bool {
 	app.historyStore.Clear()
 	target := -1
 	for index, row := range rows {
-		refs := ""
-		if row.refs != "" {
-			refs = " (" + row.refs + ")"
+		label := "<b>" + html.EscapeString(row.subject) + "</b>"
+		if row.kind == "commit" {
+			refs := ""
+			if row.refs != "" {
+				refs = "\n<span foreground=\"#5b6f8c\">" + html.EscapeString(strings.ReplaceAll(row.refs, "tag: ", "🏷 ")) + "</span>"
+			}
+			label = fmt.Sprintf("<b>%s</b>\n<span foreground=\"#6b7280\"><tt>%s</tt>  ·  %s</span>%s", html.EscapeString(row.subject), html.EscapeString(row.revision[:7]), html.EscapeString(row.author), refs)
 		}
-		label := strings.TrimRight(fmt.Sprintf("%-8s %s%s", row.graph, row.subject, refs), " ")
 		iter := app.historyStore.Append()
-		app.historyStore.Set(iter, []int{0, 1}, []any{label, row.kind})
+		app.historyStore.Set(iter, []int{0, 1, 2}, []any{strings.ReplaceAll(row.graph, "*", "◉"), label, row.kind})
 		if target < 0 && row.kind != "connector" {
 			target = index
 		}
@@ -215,6 +231,74 @@ func (app *giti) loadHistory() bool {
 		})
 	}
 	return false
+}
+
+func (app *giti) setCommitHeader(details commitDetails) {
+	if children := app.commitHeader.GetChildren(); children != nil {
+		children.Foreach(func(child any) { app.commitHeader.Remove(child.(gtk.IWidget)) })
+		children.Free()
+	}
+	title := must(gtk.LabelNew(""))
+	title.SetXAlign(0)
+	title.SetMarkup("<span size=\"large\" weight=\"bold\">" + html.EscapeString(details.subject) + "</span>")
+	app.commitHeader.PackStart(title, false, false, 0)
+	if details.sha == "" {
+		app.commitHeader.ShowAll()
+		return
+	}
+	meta := must(gtk.LabelNew(""))
+	meta.SetXAlign(0)
+	meta.SetLineWrap(true)
+	meta.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Commit</b> <tt>%s</tt>  ·  <b>Author</b> %s &lt;%s&gt;  ·  %s\n<b>Committer</b> %s &lt;%s&gt;  ·  %s</span>", html.EscapeString(details.sha), html.EscapeString(details.author), html.EscapeString(details.authorEmail), html.EscapeString(details.authored), html.EscapeString(details.committer), html.EscapeString(details.committerEmail), html.EscapeString(details.committed)))
+	app.commitHeader.PackStart(meta, false, false, 0)
+	refs := make([]string, 0, len(details.branches)+4)
+	for _, branch := range details.branches {
+		refs = append(refs, "⎇ "+html.EscapeString(branch))
+	}
+	for index, tag := range details.tags {
+		if index == 3 {
+			refs = append(refs, fmt.Sprintf("and %d more tags", len(details.tags)-index))
+			break
+		}
+		refs = append(refs, "🏷 "+html.EscapeString(tag))
+	}
+	if len(refs) > 0 {
+		refLabel := must(gtk.LabelNew(""))
+		refLabel.SetXAlign(0)
+		refLabel.SetLineWrap(true)
+		refLabel.SetMarkup("<span foreground=\"#5b6f8c\">" + strings.Join(refs, "  ·  ") + "</span>")
+		app.commitHeader.PackStart(refLabel, false, false, 0)
+	}
+	if len(details.parents) > 0 {
+		parents := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 4))
+		parents.PackStart(must(gtk.LabelNew("Parents:")), false, false, 0)
+		for _, parent := range details.parents {
+			parent := parent
+			button := must(gtk.ButtonNewWithLabel("↖ " + parent[:7]))
+			button.SetRelief(gtk.RELIEF_NONE)
+			button.SetTooltipText("Open parent " + parent)
+			button.Connect("clicked", func() {
+				for index, row := range app.historyRows {
+					if row.revision == parent {
+						selection, _ := app.historyView.GetSelection()
+						selection.SelectPath(must(gtk.TreePathNewFromIndicesv([]int{index})))
+						return
+					}
+				}
+				repo, err := newRepository(app.repository.path, parent)
+				if err != nil {
+					app.showError(err)
+					return
+				}
+				app.repository, app.historyLimit = repo, 10
+				app.clearRepositoryView()
+				app.loadHistory()
+			})
+			parents.PackStart(button, false, false, 0)
+		}
+		app.commitHeader.PackStart(parents, false, false, 0)
+	}
+	app.commitHeader.ShowAll()
 }
 
 func (app *giti) onHistorySelected() {
@@ -242,6 +326,7 @@ func (app *giti) onHistorySelected() {
 	app.diffGeneration++
 	app.resetFullFile()
 	app.diffBuffer.SetText("")
+	app.setCommitHeader(commitDetails{subject: "Loading commit details…"})
 	previousPath := ""
 	if app.currentFile != nil {
 		previousPath = app.currentFile.path
@@ -254,15 +339,28 @@ func (app *giti) onHistorySelected() {
 	repo, row := app.repository, *app.currentRow
 	ignoreWhitespace := !app.whitespaceToggle.GetActive()
 	go func() {
+		details, detailsErr := commitDetails{}, error(nil)
+		if row.kind == "commit" {
+			details, detailsErr = repo.commitDetailsContext(ctx, row.revision)
+		}
 		files, loadErr := repo.changedFilesContext(ctx, row, ignoreWhitespace)
 		glib.IdleAdd(func() bool {
 			if ctx.Err() != nil || generation != app.selectionGeneration || repo != app.repository {
 				return false
 			}
 			app.selectionCancel = nil
+			if detailsErr != nil {
+				app.showError(detailsErr)
+				return false
+			}
 			if loadErr != nil {
 				app.showError(loadErr)
 				return false
+			}
+			if row.kind == "commit" {
+				app.setCommitHeader(details)
+			} else {
+				app.setCommitHeader(commitDetails{subject: row.subject})
 			}
 			app.files = files
 			target := 0
@@ -419,6 +517,7 @@ func (app *giti) clearRepositoryView() {
 	app.currentRow, app.currentFile = nil, nil
 	app.historyStore.Clear()
 	app.fileStore.Clear()
+	app.setCommitHeader(commitDetails{})
 	app.diffBuffer.SetText("")
 	app.resetFullFile()
 }

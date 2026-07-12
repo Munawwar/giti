@@ -68,6 +68,39 @@ func TestRevisionFormsAndHistoryLimit(t *testing.T) {
 	}
 }
 
+func TestCommitDetailsIncludesRefsAndMergeParents(t *testing.T) {
+	path := testRepository(t)
+	run := func(args ...string) {
+		output, err := exec.Command("git", append([]string{"-C", path}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	run("checkout", "-b", "side")
+	os.WriteFile(filepath.Join(path, "side.txt"), []byte("side\n"), 0o644)
+	run("add", "side.txt")
+	run("commit", "-m", "side")
+	run("checkout", "main")
+	os.WriteFile(filepath.Join(path, "main.txt"), []byte("main\n"), 0o644)
+	run("add", "main.txt")
+	run("commit", "-m", "main")
+	run("merge", "--no-ff", "side", "-m", "merge side")
+	for _, tag := range []string{"one", "two", "three", "four"} {
+		run("tag", tag)
+	}
+	repo, err := newRepository(path, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	details, err := repo.commitDetailsContext(context.Background(), repo.revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if details.sha != repo.revision || details.author != "Test User" || len(details.parents) != 2 || len(details.tags) != 4 || !strings.Contains(strings.Join(details.branches, " "), "main") {
+		t.Fatalf("unexpected commit details: %#v", details)
+	}
+}
+
 func TestStagedUnstagedAndSingleFileDiffs(t *testing.T) {
 	path := testRepository(t)
 	if err := os.WriteFile(filepath.Join(path, "staged.txt"), []byte("staged\n"), 0o644); err != nil {

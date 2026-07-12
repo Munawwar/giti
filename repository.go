@@ -22,7 +22,12 @@ const (
 )
 
 type historyRow struct {
-	kind, revision, graph, subject, refs string
+	kind, revision, graph, subject, refs, author string
+}
+
+type commitDetails struct {
+	sha, subject, author, authorEmail, authored, committer, committerEmail, committed string
+	parents, branches, tags                                                           []string
 }
 
 type changedFile struct {
@@ -131,7 +136,7 @@ func (repo *repository) runLimitedContext(ctx context.Context, limit int, check 
 }
 
 func (repo *repository) history(count int, ignoreWhitespace bool) ([]historyRow, error) {
-	format := recordMarker + "%H" + fieldMarker + "%P" + fieldMarker + "%D" + fieldMarker + "%s"
+	format := recordMarker + "%H" + fieldMarker + "%an" + fieldMarker + "%D" + fieldMarker + "%s"
 	output, err := repo.run("log", "--graph", "--topo-order", fmt.Sprintf("-n%d", count), "--format="+format, repo.revisionArg)
 	if err != nil {
 		return nil, err
@@ -156,9 +161,37 @@ func (repo *repository) history(count int, ignoreWhitespace bool) ([]historyRow,
 		for len(parts) < 4 {
 			parts = append(parts, "")
 		}
-		rows = append(rows, historyRow{kind: "commit", revision: parts[0], graph: strings.TrimRight(graph, " "), refs: strings.TrimSpace(parts[2]), subject: parts[3]})
+		rows = append(rows, historyRow{kind: "commit", revision: parts[0], graph: strings.TrimRight(graph, " "), author: parts[1], refs: strings.TrimSpace(parts[2]), subject: parts[3]})
 	}
 	return rows, nil
+}
+
+func (repo *repository) commitDetailsContext(ctx context.Context, revision string) (commitDetails, error) {
+	format := strings.Join([]string{"%H", "%s", "%an", "%ae", "%aI", "%cn", "%ce", "%cI", "%P"}, fieldMarker)
+	output, err := repo.runContext(ctx, "show", "-s", "--format="+format, revision)
+	if err != nil {
+		return commitDetails{}, err
+	}
+	parts := strings.Split(strings.TrimSuffix(output, "\n"), fieldMarker)
+	for len(parts) < 9 {
+		parts = append(parts, "")
+	}
+	details := commitDetails{sha: parts[0], subject: parts[1], author: parts[2], authorEmail: parts[3], authored: parts[4], committer: parts[5], committerEmail: parts[6], committed: parts[7], parents: strings.Fields(parts[8])}
+	refs, err := repo.runContext(ctx, "for-each-ref", "--format=%(refname)", "--points-at="+revision)
+	if err != nil {
+		return commitDetails{}, err
+	}
+	for _, ref := range strings.Fields(refs) {
+		switch {
+		case strings.HasPrefix(ref, "refs/tags/"):
+			details.tags = append(details.tags, strings.TrimPrefix(ref, "refs/tags/"))
+		case strings.HasPrefix(ref, "refs/heads/"):
+			details.branches = append(details.branches, strings.TrimPrefix(ref, "refs/heads/"))
+		case strings.HasPrefix(ref, "refs/remotes/"):
+			details.branches = append(details.branches, strings.TrimPrefix(ref, "refs/remotes/"))
+		}
+	}
+	return details, nil
 }
 
 func (repo *repository) changedFiles(row historyRow, ignoreWhitespace bool) ([]changedFile, error) {
