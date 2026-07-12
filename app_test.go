@@ -38,3 +38,19 @@ func TestArguments(t *testing.T) {
 		t.Fatalf("unexpected public arguments: %v %q %q %v", resident, path, revision, err)
 	}
 }
+
+func TestSearchHistoryRanksExactPhrasesAboveSeparateWords(t *testing.T) {
+	rows := []historyRow{
+		{kind: "commit", revision: "1111111", subject: "Fix parser crash"},
+		{kind: "commit", revision: "2222222", subject: "Fix package parser config"},
+		{kind: "commit", revision: "3333333", subject: "Parser cleanup"},
+		{kind: "connector", subject: "ignored"},
+	}
+	matches := searchHistory(rows, "FIX PARSER")
+	if len(matches) != 3 || matches[0].row.revision != "1111111" || matches[1].row.revision != "2222222" || matches[2].row.revision != "3333333" {
+		t.Fatalf("unexpected search ranking: %#v", matches)
+	}
+	if matches[0].score <= matches[1].score || matches[1].score <= matches[2].score {
+		t.Fatalf("scores did not distinguish phrase and word matches: %#v", matches)
+	}
+}

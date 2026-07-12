@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"html"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/gotk3/gotk3/gdk"
 	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
 	"github.com/gotk3/gotk3/pango"
@@ -29,12 +31,16 @@ type giti struct {
 	selectionCancel         context.CancelFunc
 	diffCancel              context.CancelFunc
 	historyRows             []historyRow
+	searchMatches           []historyRow
 	files                   []changedFile
 	currentRow              *historyRow
 	currentFile             *changedFile
 	window                  *gtk.Window
 	historyStore, fileStore *gtk.ListStore
 	historyView, fileView   *gtk.TreeView
+	historySearch           *gtk.SearchEntry
+	historyStack            *gtk.Stack
+	searchResults           *gtk.ListBox
 	commitHeader            *gtk.Box
 	diffBuffer              *gtk.TextBuffer
 	diffView                *gtk.TextView
@@ -108,6 +114,19 @@ func (app *giti) buildWindow() {
 		return kind != "connector"
 	})
 	historySelection.Connect("changed", app.onHistorySelected)
+	app.historySearch = must(gtk.SearchEntryNew())
+	app.historySearch.SetPlaceholderText("Search loaded commits")
+	app.historySearch.SetTooltipText("Case-insensitive: exact phrases rank above separate word matches")
+	app.historySearch.Connect("changed", app.updateGraphSearch)
+	app.searchResults = must(gtk.ListBoxNew())
+	app.searchResults.SetActivateOnSingleClick(true)
+	app.searchResults.SetPlaceholder(must(gtk.LabelNew("No loaded commits match this search.")))
+	app.searchResults.Connect("row-activated", func(_ *gtk.ListBox, result *gtk.ListBoxRow) {
+		app.openSearchResult(result.GetIndex())
+	})
+	app.historyStack = must(gtk.StackNew())
+	app.historyStack.AddNamed(scroller(app.historyView), "graph")
+	app.historyStack.AddNamed(scroller(app.searchResults), "search")
 
 	app.fileView = must(gtk.TreeViewNewWithModel(app.fileStore))
 	app.fileView.SetHeadersVisible(false)
@@ -141,7 +160,8 @@ func (app *giti) buildWindow() {
 	})
 
 	graphBox := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 4))
-	graphBox.PackStart(scroller(app.historyView), true, true, 0)
+	graphBox.PackStart(app.historySearch, false, false, 0)
+	graphBox.PackStart(app.historyStack, true, true, 0)
 	graphBox.PackStart(loadButton, false, false, 0)
 	left := must(gtk.PanedNew(gtk.ORIENTATION_VERTICAL))
 	left.Pack1(graphBox, true, false)
@@ -230,7 +250,96 @@ func (app *giti) loadHistory() bool {
 			return false
 		})
 	}
+	app.updateGraphSearch()
 	return false
+}
+
+type searchMatch struct {
+	row          historyRow
+	score, index int
+}
+
+func searchHistory(rows []historyRow, query string) []searchMatch {
+	phrase := strings.ToLower(strings.TrimSpace(query))
+	words := strings.Fields(phrase)
+	matches := make([]searchMatch, 0, len(rows))
+	for index, row := range rows {
+		if row.kind != "commit" {
+			continue
+		}
+		subject, score := strings.ToLower(row.subject), 0
+		if strings.Contains(subject, phrase) {
+			score = 1000
+		}
+		for _, word := range words {
+			score += strings.Count(subject, word) * 100
+		}
+		if score > 0 {
+			matches = append(matches, searchMatch{row: row, score: score, index: index})
+		}
+	}
+	sort.SliceStable(matches, func(left, right int) bool {
+		return matches[left].score > matches[right].score || matches[left].score == matches[right].score && matches[left].index < matches[right].index
+	})
+	return matches
+}
+
+func (app *giti) updateGraphSearch() {
+	query, _ := app.historySearch.GetText()
+	if strings.TrimSpace(query) == "" {
+		app.searchMatches = nil
+		app.historyStack.SetVisibleChildName("graph")
+		return
+	}
+	if children := app.searchResults.GetChildren(); children != nil {
+		children.Foreach(func(child any) { app.searchResults.Remove(child.(gtk.IWidget)) })
+		children.Free()
+	}
+	matches := searchHistory(app.historyRows, query)
+	app.searchMatches = make([]historyRow, len(matches))
+	for index, match := range matches {
+		app.searchMatches[index] = match.row
+		result := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
+		result.SetMarginStart(8)
+		result.SetMarginEnd(8)
+		result.SetMarginTop(6)
+		result.SetMarginBottom(6)
+		label := must(gtk.LabelNew(""))
+		label.SetXAlign(0)
+		label.SetLineWrap(true)
+		label.SetMarkup(fmt.Sprintf("<b>%s</b>\n<span foreground=\"#6b7280\">%s  ·  %s  ·  <tt>%s</tt></span>", html.EscapeString(match.row.subject), html.EscapeString(match.row.date), html.EscapeString(match.row.author), html.EscapeString(match.row.revision[:7])))
+		copySHA := must(gtk.ButtonNewWithLabel("Copy SHA"))
+		copySHA.SetTooltipText(match.row.revision)
+		copySHA.Connect("clicked", func() {
+			clipboard := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD))
+			clipboard.SetText(match.row.revision)
+		})
+		result.PackStart(label, true, true, 0)
+		result.PackEnd(copySHA, false, false, 0)
+		app.searchResults.Insert(result, -1)
+	}
+	app.historyStack.SetVisibleChildName("search")
+	app.searchResults.ShowAll()
+}
+
+func (app *giti) selectHistoryRevision(revision string) bool {
+	for index, row := range app.historyRows {
+		if row.revision == revision {
+			selection, _ := app.historyView.GetSelection()
+			selection.SelectPath(must(gtk.TreePathNewFromIndicesv([]int{index})))
+			app.historyView.GrabFocus()
+			return true
+		}
+	}
+	return false
+}
+
+func (app *giti) openSearchResult(index int) {
+	if index >= 0 && index < len(app.searchMatches) {
+		revision := app.searchMatches[index].revision
+		app.historySearch.SetText("")
+		app.selectHistoryRevision(revision)
+	}
 }
 
 func (app *giti) setCommitHeader(details commitDetails) {
@@ -278,12 +387,8 @@ func (app *giti) setCommitHeader(details commitDetails) {
 			button.SetRelief(gtk.RELIEF_NONE)
 			button.SetTooltipText("Open parent " + parent)
 			button.Connect("clicked", func() {
-				for index, row := range app.historyRows {
-					if row.revision == parent {
-						selection, _ := app.historyView.GetSelection()
-						selection.SelectPath(must(gtk.TreePathNewFromIndicesv([]int{index})))
-						return
-					}
+				if app.selectHistoryRevision(parent) {
+					return
 				}
 				repo, err := newRepository(app.repository.path, parent)
 				if err != nil {
@@ -513,8 +618,9 @@ func (app *giti) clearRepositoryView() {
 	if app.diffCancel != nil {
 		app.diffCancel()
 	}
-	app.historyRows, app.files = nil, nil
+	app.historyRows, app.files, app.searchMatches = nil, nil, nil
 	app.currentRow, app.currentFile = nil, nil
+	app.historySearch.SetText("")
 	app.historyStore.Clear()
 	app.fileStore.Clear()
 	app.setCommitHeader(commitDetails{})

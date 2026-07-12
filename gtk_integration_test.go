@@ -105,6 +105,22 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	if !app.historyView.IsFocus() || app.currentRow == nil || app.currentRow.subject != "commit 9" || app.currentFile == nil {
 		t.Fatalf("rapid graph selection applied stale state: row=%#v file=%#v", app.currentRow, app.currentFile)
 	}
+	app.historySearch.SetText("CoMmIt 8")
+	if app.historyStack.GetVisibleChildName() != "search" || len(app.searchMatches) == 0 || app.searchMatches[0].subject != "commit 8" {
+		t.Fatalf("search did not limit loaded graph rows: stack=%q matches=%#v", app.historyStack.GetVisibleChildName(), app.searchMatches)
+	}
+	app.openSearchResult(0)
+	deadline = time.Now().Add(2 * time.Second)
+	for (app.currentRow == nil || app.currentRow.subject != "commit 8") && time.Now().Before(deadline) {
+		for gtk.EventsPending() {
+			gtk.MainIteration()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	query, _ := app.historySearch.GetText()
+	if query != "" || app.historyStack.GetVisibleChildName() != "graph" || app.currentRow == nil || app.currentRow.subject != "commit 8" || !app.historyView.IsFocus() {
+		t.Fatalf("search result did not restore graph selection: query=%q stack=%q row=%#v", query, app.historyStack.GetVisibleChildName(), app.currentRow)
+	}
 	app.resident = true
 	app.window.Close()
 	for gtk.EventsPending() {

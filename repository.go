@@ -22,7 +22,7 @@ const (
 )
 
 type historyRow struct {
-	kind, revision, graph, subject, refs, author string
+	kind, revision, graph, subject, refs, author, date string
 }
 
 type commitDetails struct {
@@ -136,7 +136,7 @@ func (repo *repository) runLimitedContext(ctx context.Context, limit int, check 
 }
 
 func (repo *repository) history(count int, ignoreWhitespace bool) ([]historyRow, error) {
-	format := recordMarker + "%H" + fieldMarker + "%an" + fieldMarker + "%D" + fieldMarker + "%s"
+	format := recordMarker + "%H" + fieldMarker + "%an" + fieldMarker + "%as" + fieldMarker + "%D" + fieldMarker + "%s"
 	output, err := repo.run("log", "--graph", "--topo-order", fmt.Sprintf("-n%d", count), "--format="+format, repo.revisionArg)
 	if err != nil {
 		return nil, err
@@ -157,11 +157,11 @@ func (repo *repository) history(count int, ignoreWhitespace bool) ([]historyRow,
 			rows = append(rows, historyRow{kind: "connector", graph: strings.TrimRight(graph, " ")})
 			continue
 		}
-		parts := strings.SplitN(fields, fieldMarker, 4)
-		for len(parts) < 4 {
+		parts := strings.SplitN(fields, fieldMarker, 5)
+		for len(parts) < 5 {
 			parts = append(parts, "")
 		}
-		rows = append(rows, historyRow{kind: "commit", revision: parts[0], graph: strings.TrimRight(graph, " "), author: parts[1], refs: strings.TrimSpace(parts[2]), subject: parts[3]})
+		rows = append(rows, historyRow{kind: "commit", revision: parts[0], graph: strings.TrimRight(graph, " "), author: parts[1], date: parts[2], refs: strings.TrimSpace(parts[3]), subject: parts[4]})
 	}
 	return rows, nil
 }
