@@ -372,10 +372,23 @@ func (app *giti) setCommitHeader(details commitDetails) {
 		app.commitHeader.ShowAll()
 		return
 	}
+	commit := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
+	commitLabel := must(gtk.LabelNew(""))
+	commitLabel.SetXAlign(0)
+	commitLabel.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Commit</b> <tt>%s</tt></span>", html.EscapeString(details.sha)))
+	copySHA := must(gtk.ButtonNewWithLabel("Copy SHA"))
+	copySHA.SetTooltipText(details.sha)
+	copySHA.Connect("clicked", func() {
+		clipboard := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD))
+		clipboard.SetText(details.sha)
+	})
+	commit.PackStart(commitLabel, false, false, 0)
+	commit.PackStart(copySHA, false, false, 0)
+	app.commitHeader.PackStart(commit, false, false, 0)
 	meta := must(gtk.LabelNew(""))
 	meta.SetXAlign(0)
 	meta.SetLineWrap(true)
-	meta.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Commit</b> <tt>%s</tt>  ·  <b>Author</b> %s &lt;%s&gt;  ·  %s\n<b>Committer</b> %s &lt;%s&gt;  ·  %s</span>", html.EscapeString(details.sha), html.EscapeString(details.author), html.EscapeString(details.authorEmail), html.EscapeString(details.authored), html.EscapeString(details.committer), html.EscapeString(details.committerEmail), html.EscapeString(details.committed)))
+	meta.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Author</b> %s &lt;%s&gt;  ·  %s\n<b>Committer</b> %s &lt;%s&gt;  ·  %s</span>", html.EscapeString(details.author), html.EscapeString(details.authorEmail), html.EscapeString(details.authored), html.EscapeString(details.committer), html.EscapeString(details.committerEmail), html.EscapeString(details.committed)))
 	app.commitHeader.PackStart(meta, false, false, 0)
 	refs := make([]string, 0, len(details.branches)+4)
 	for _, branch := range details.branches {
