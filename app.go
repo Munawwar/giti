@@ -69,6 +69,13 @@ func must[T any](value T, err error) T {
 }
 
 func newGiti(repo *repository, resident bool) (*giti, error) {
+	settings, err := gtk.SettingsGetDefault()
+	if err != nil {
+		return nil, err
+	}
+	if err = settings.SetProperty("gtk-application-prefer-dark-theme", false); err != nil {
+		return nil, err
+	}
 	app := &giti{repository: repo, resident: resident, busy: true, historyLimit: 10}
 	if resident {
 		app.server = newResidentServer(app)
