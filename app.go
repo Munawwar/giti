@@ -217,6 +217,16 @@ func scroller(child gtk.IWidget) *gtk.ScrolledWindow {
 	return scroll
 }
 
+func copySHAButton(sha string) *gtk.Button {
+	button := must(gtk.ButtonNewFromIconName("edit-copy-symbolic", gtk.ICON_SIZE_BUTTON))
+	button.SetTooltipText("Copy SHA: " + sha)
+	button.Connect("clicked", func() {
+		clipboard := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD))
+		clipboard.SetText(sha)
+	})
+	return button
+}
+
 func (app *giti) loadHistory() bool {
 	app.selectionGeneration++
 	app.diffGeneration++
@@ -325,14 +335,8 @@ func (app *giti) updateGraphSearch() {
 		label.SetXAlign(0)
 		label.SetLineWrap(true)
 		label.SetMarkup(fmt.Sprintf("<b>%s</b>\n<span foreground=\"#374151\">%s  ·  %s  ·  <tt>%s</tt></span>", html.EscapeString(match.row.subject), html.EscapeString(match.row.date), html.EscapeString(match.row.author), html.EscapeString(match.row.revision[:7])))
-		copySHA := must(gtk.ButtonNewWithLabel("Copy SHA"))
-		copySHA.SetTooltipText(match.row.revision)
-		copySHA.Connect("clicked", func() {
-			clipboard := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD))
-			clipboard.SetText(match.row.revision)
-		})
 		result.PackStart(label, true, true, 0)
-		result.PackEnd(copySHA, false, false, 0)
+		result.PackEnd(copySHAButton(match.row.revision), false, false, 0)
 		app.searchResults.Insert(result, -1)
 	}
 	app.historyStack.SetVisibleChildName("search")
@@ -376,14 +380,8 @@ func (app *giti) setCommitHeader(details commitDetails) {
 	commitLabel := must(gtk.LabelNew(""))
 	commitLabel.SetXAlign(0)
 	commitLabel.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Commit</b> <tt>%s</tt></span>", html.EscapeString(details.sha)))
-	copySHA := must(gtk.ButtonNewWithLabel("Copy SHA"))
-	copySHA.SetTooltipText(details.sha)
-	copySHA.Connect("clicked", func() {
-		clipboard := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD))
-		clipboard.SetText(details.sha)
-	})
 	commit.PackStart(commitLabel, false, false, 0)
-	commit.PackStart(copySHA, false, false, 0)
+	commit.PackStart(copySHAButton(details.sha), false, false, 0)
 	app.commitHeader.PackStart(commit, false, false, 0)
 	meta := must(gtk.LabelNew(""))
 	meta.SetXAlign(0)
