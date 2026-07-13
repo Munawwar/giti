@@ -8,5 +8,5 @@ if [ -d "$PRIVATE_PC" ]; then
 fi
 
 mkdir -p "$ROOT/bin"
-go build -gcflags='giti=-N -l' -o "$ROOT/bin/giti-debug" "$ROOT"
+go build -buildvcs=false -gcflags='giti=-N -l' -o "$ROOT/bin/giti-debug" "$ROOT"
 rm -f "$ROOT/bin/giti-app-debug" "$ROOT/bin/giti-launcher-debug"
