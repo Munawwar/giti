@@ -1,6 +1,6 @@
-# Giti - a gitk alternative
+# Giti - a `gitk` alternative
 
-A `gitk` alternative. A tiny git history diff viewer for linux meant to be invoked quickly from a terminal (with window maximized), for the hybrid TUI-GUI workflow loving devs.
+A git history diff viewer for linux meant to be invoked quickly from a terminal (with window maximized), for the hybrid TUI-GUI workflow loving devs.
 
 Keeping bloat low and starting up quickly were important design choices for repeat invokes from terminal. giti cold starts in ~200ms and warm starts in <100ms.
 
