@@ -34,6 +34,13 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.window.Destroy()
+	loaded := len(app.historyRows)
+	for range 3 {
+		app.loadHistory()
+	}
+	if len(app.historyRows) != loaded || app.historyStore.IterNChildren(nil) != loaded {
+		t.Fatalf("reloading duplicated history: rows=%d model=%d want=%d", len(app.historyRows), app.historyStore.IterNChildren(nil), loaded)
+	}
 	iter, ok := app.historyStore.GetIterFirst()
 	if !ok {
 		t.Fatal("rendered history is empty")
@@ -220,5 +227,49 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	}
 	if string(response) != "OK\n" || app.currentRow == nil || !app.busy {
 		t.Fatalf("warm reopen failed: response=%q row=%#v busy=%v", response, app.currentRow, app.busy)
+	}
+}
+
+func TestGTKGraphTextScaling(t *testing.T) {
+	if os.Getenv("GITI_GTK_SCALE_TEST") == "" {
+		t.Skip("set GITI_GTK_SCALE_TEST=1 and increase GDK_DPI_SCALE")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	gtk.Init(nil)
+	repo, err := newRepository(testRepository(t), "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := newGiti(repo, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.window.Destroy()
+	deadline := time.Now().Add(2 * time.Second)
+	path := must(gtk.TreePathNewFromIndicesv([]int{0}))
+	for app.historyView.GetCellArea(path, app.historyView.GetColumn(0)).GetHeight() <= graphRowHeight && time.Now().Before(deadline) {
+		for gtk.EventsPending() {
+			gtk.MainIteration()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	height := app.historyView.GetCellArea(path, app.historyView.GetColumn(0)).GetHeight()
+	iter, err := app.historyStore.GetIter(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := app.historyStore.GetValue(iter, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := value.GoValue()
+	pixbuf, ok := rendered.(*gdk.Pixbuf)
+	pixbufHeight := 0
+	if ok {
+		pixbufHeight = pixbuf.GetHeight()
+	}
+	if err != nil || !ok || height <= graphRowHeight || pixbufHeight != height {
+		t.Fatalf("scaled graph does not fill its GTK row: cell=%d pixbuf=%T/%d err=%v", height, rendered, pixbufHeight, err)
 	}
 }

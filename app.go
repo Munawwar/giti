@@ -40,6 +40,7 @@ type giti struct {
 	stateMu                 sync.Mutex
 	server                  *residentServer
 	historyLimit            int
+	graphWidth              int
 	selectionGeneration     uint64
 	diffGeneration          uint64
 	selectionCancel         context.CancelFunc
@@ -282,9 +283,10 @@ func (app *giti) loadHistory() bool {
 	for _, row := range rows {
 		graphWidth = max(graphWidth, max(len(row.graph.lanes), len(row.graph.next))*graphLaneWidth)
 	}
+	app.graphWidth = graphWidth
 	target := -1
 	for index, row := range rows {
-		graph, graphErr := renderGraph(row, graphWidth)
+		graph, graphErr := renderGraph(row, graphWidth, graphRowHeight)
 		if graphErr != nil {
 			app.showError(graphErr)
 			return false
@@ -298,6 +300,12 @@ func (app *giti) loadHistory() bool {
 			target, preferredKind = index, ""
 		}
 	}
+	glib.IdleAdd(func() bool {
+		if generation == app.selectionGeneration {
+			app.fitGraphRows()
+		}
+		return false
+	})
 	if target >= 0 {
 		glib.IdleAdd(func() bool {
 			if generation == app.selectionGeneration && target < len(app.historyRows) {
@@ -310,6 +318,36 @@ func (app *giti) loadHistory() bool {
 	}
 	app.updateGraphSearch()
 	return false
+}
+
+func (app *giti) fitGraphRows() {
+	column := app.historyView.GetColumn(0)
+	height := graphRowHeight
+	for index := range app.historyRows {
+		path := must(gtk.TreePathNewFromIndicesv([]int{index}))
+		height = max(height, app.historyView.GetCellArea(path, column).GetHeight())
+	}
+	if height == graphRowHeight {
+		return
+	}
+	for index, row := range app.historyRows {
+		path := must(gtk.TreePathNewFromIndicesv([]int{index}))
+		iter, err := app.historyStore.GetIter(path)
+		if err != nil {
+			continue
+		}
+		value, err := app.historyStore.GetValue(iter, 0)
+		if err == nil {
+			current, valueErr := value.GoValue()
+			if pixbuf, ok := current.(*gdk.Pixbuf); valueErr == nil && ok && pixbuf.GetHeight() == height {
+				continue
+			}
+		}
+		graph, err := renderGraph(row, app.graphWidth, height)
+		if err == nil {
+			app.historyStore.SetValue(iter, 0, graph)
+		}
+	}
 }
 
 func historyLabel(row historyRow) string {

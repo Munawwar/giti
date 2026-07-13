@@ -130,13 +130,13 @@ var graphColors = [][3]float64{
 // renderGraph turns the UI-neutral lane description into a GTK pixbuf. Both
 // halves use the same curve geometry: the current layout above the node and
 // the following commit's layout below it.
-func renderGraph(row historyRow, width int) (*gdk.Pixbuf, error) {
-	surface := cairo.CreateImageSurface(cairo.FORMAT_ARGB32, width, graphRowHeight)
+func renderGraph(row historyRow, width, height int) (*gdk.Pixbuf, error) {
+	surface := cairo.CreateImageSurface(cairo.FORMAT_ARGB32, width, height)
 	context := cairo.Create(surface)
 	defer context.Close()
 	context.SetLineWidth(2)
 	context.SetLineCap(cairo.LINE_CAP_ROUND)
-	center := float64(graphRowHeight) / 2
+	center := float64(height) / 2
 	if row.kind == "commit" {
 		for half, lanes := range [][]graphLane{row.graph.lanes, row.graph.next} {
 			for destination, lane := range lanes {
@@ -150,7 +150,7 @@ func renderGraph(row historyRow, width int) (*gdk.Pixbuf, error) {
 						context.CurveTo(x1, 0, x2, 0, x2, center)
 					} else {
 						context.MoveTo(x1, center)
-						context.CurveTo(x1, graphRowHeight, x2, graphRowHeight, x2, graphRowHeight+center)
+						context.CurveTo(x1, float64(height), x2, float64(height), x2, float64(height)+center)
 					}
 					context.Stroke()
 				}
@@ -170,5 +170,5 @@ func renderGraph(row historyRow, width int) (*gdk.Pixbuf, error) {
 		context.Fill()
 	}
 	surface.Flush()
-	return gdk.PixbufGetFromSurface(surface, 0, 0, width, graphRowHeight)
+	return gdk.PixbufGetFromSurface(surface, 0, 0, width, height)
 }

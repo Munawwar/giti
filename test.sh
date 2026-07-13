@@ -8,3 +8,4 @@ if [ -d "$PRIVATE_PC" ]; then
 fi
 
 GITI_GTK_TEST=1 go test ./...
+GDK_DPI_SCALE=2 GITI_GTK_SCALE_TEST=1 go test -run '^TestGTKGraphTextScaling$' .

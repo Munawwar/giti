@@ -70,11 +70,11 @@ func TestRenderedGraphJoinsShiftedLanesAtBoundary(t *testing.T) {
 		{kind: "commit", revision: "root"},
 	}
 	layoutGraph(rows)
-	upper, err := renderGraph(rows[0], 48)
+	upper, err := renderGraph(rows[0], 48, graphRowHeight)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lower, err := renderGraph(rows[1], 48)
+	lower, err := renderGraph(rows[1], 48, graphRowHeight)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +86,40 @@ func TestRenderedGraphJoinsShiftedLanesAtBoundary(t *testing.T) {
 		if alpha == 0 {
 			t.Fatal("shifted lane is transparent where neighboring curves meet")
 		}
+	}
+}
+
+func TestGraphLayoutSixLanesWithoutOctopusMerge(t *testing.T) {
+	rows := []historyRow{
+		{kind: "commit", revision: "m1", parents: []string{"m2", "s1"}},
+		{kind: "commit", revision: "m2", parents: []string{"m3", "s2"}},
+		{kind: "commit", revision: "m3", parents: []string{"m4", "s3"}},
+		{kind: "commit", revision: "m4", parents: []string{"m5", "s4"}},
+		{kind: "commit", revision: "m5", parents: []string{"root", "s5"}},
+		{kind: "commit", revision: "s1", parents: []string{"root"}},
+		{kind: "commit", revision: "s2", parents: []string{"root"}},
+		{kind: "commit", revision: "s3", parents: []string{"root"}},
+		{kind: "commit", revision: "s4", parents: []string{"root"}},
+		{kind: "commit", revision: "s5", parents: []string{"root"}},
+		{kind: "commit", revision: "root"},
+	}
+	layoutGraph(rows)
+	maximum := 0
+	for index, row := range rows {
+		maximum = max(maximum, len(row.graph.lanes))
+		if index == 0 {
+			continue
+		}
+		for _, lane := range row.graph.lanes {
+			for _, source := range lane.from {
+				if source < 0 || source >= len(rows[index-1].graph.lanes) {
+					t.Fatalf("row %d has invalid source lane %d: %#v", index, source, row.graph)
+				}
+			}
+		}
+	}
+	if maximum != 6 {
+		t.Fatalf("maximum lane count is %d, want 6", maximum)
 	}
 }
 

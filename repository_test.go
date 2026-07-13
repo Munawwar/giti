@@ -60,6 +60,10 @@ func TestRevisionFormsAndHistoryLimit(t *testing.T) {
 		if commits != 10 {
 			t.Fatalf("got %d commits", commits)
 		}
+		last := rows[len(rows)-1]
+		if len(last.graph.next) != 1 || len(last.graph.next[0].from) != 1 {
+			t.Fatalf("limited history does not continue into its lookahead: %#v", last.graph)
+		}
 	}
 	older, _ := newRepository(path, "older")
 	rows, _ := older.history(1, true)
