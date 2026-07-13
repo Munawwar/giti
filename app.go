@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"html"
 	"path/filepath"
@@ -18,6 +19,9 @@ import (
 )
 
 const idleDuration = 12 * time.Hour
+
+//go:embed logo/giti-logo.png
+var appIconPNG []byte
 
 const appCSS = `
 treeview.giti-list.view {
@@ -113,6 +117,8 @@ func newGiti(repo *repository, resident bool) (*giti, error) {
 
 func (app *giti) buildWindow() {
 	app.window = must(gtk.WindowNew(gtk.WINDOW_TOPLEVEL))
+	iconLoader := must(gdk.PixbufLoaderNewWithType("png"))
+	app.window.SetIcon(must(iconLoader.WriteAndReturnPixbuf(appIconPNG)))
 	app.window.SetTitle("Giti — " + filepath.Base(app.repository.path))
 	app.window.SetDefaultSize(1200, 760)
 	app.window.Maximize()

@@ -52,6 +52,10 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	icon, iconErr := app.window.GetIcon()
+	if iconErr != nil || icon == nil || icon.GetWidth() != 256 || icon.GetHeight() != 256 {
+		t.Fatalf("window icon is not the embedded 256px logo: icon=%v err=%v", icon, iconErr)
+	}
 	defer func() {
 		app.clearRepositoryView()
 		app.window.Destroy()

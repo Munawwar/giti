@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Giti blue orbit logo</title>
+  <desc id="desc">An orange Git graph inside blue planetary rings on a dark navy tile.</desc>
+  <defs>
+    <radialGradient id="tile" cx="50%" cy="44%" r="72%">
+      <stop stop-color="#081322"/>
+      <stop offset=".72" stop-color="#0c1729"/>
+      <stop offset="1" stop-color="#101c30"/>
+    </radialGradient>
+    <linearGradient id="orbit" x1="150" y1="190" x2="870" y2="790" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6b83aa"/>
+      <stop offset=".54" stop-color="#314665"/>
+      <stop offset="1" stop-color="#587199"/>
+    </linearGradient>
+    <linearGradient id="git" x1="340" y1="315" x2="650" y2="735" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ff442f"/>
+      <stop offset=".5" stop-color="#ff6534"/>
+      <stop offset="1" stop-color="#ff4932"/>
+    </linearGradient>
+    <linearGradient id="green" x1="480" y1="690" x2="540" y2="760" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#78dc4e"/>
+      <stop offset="1" stop-color="#4fbd4b"/>
+    </linearGradient>
+    <linearGradient id="red" x1="640" y1="380" x2="735" y2="455" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ff443b"/>
+      <stop offset="1" stop-color="#db3440"/>
+    </linearGradient>
+    <clipPath id="tileClip"><rect x="36" y="31" width="952" height="962" rx="190"/></clipPath>
+  </defs>
+
+  <rect x="36" y="31" width="952" height="962" rx="190" fill="url(#tile)"/>
+  <g clip-path="url(#tileClip)">
+    <g fill="#627ba3">
+      <circle cx="365" cy="133" r="4.5"/><circle cx="711" cy="133" r="4.5"/>
+      <circle cx="164" cy="326" r="4.5"/><circle cx="806" cy="847" r="4.5"/>
+      <circle cx="286" cy="862" r="4.5"/><circle cx="709" cy="875" r="4.5"/>
+      <circle cx="821" cy="197" r="33" opacity=".8"/><circle cx="199" cy="806" r="18" opacity=".72"/>
+      <path d="m203 178 6 12 12 6-12 6-6 12-6-12-12-6 12-6zm635 590 5 10 10 5-10 5-5 10-5-10-10-5 10-5z"/>
+    </g>
+
+    <g fill="none" stroke="url(#orbit)" stroke-linecap="round" stroke-linejoin="round">
+      <ellipse cx="512" cy="480" rx="315" ry="322" stroke-width="23"/>
+      <path d="M199 535C116 602 108 677 165 707c88 47 289 2 481-105 167-93 268-195 247-246-12-29-52-39-112-35" stroke-width="21"/>
+      <circle cx="768" cy="286" r="49" fill="url(#tile)" stroke-width="20"/>
+    </g>
+
+    <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="15">
+      <path d="M510 541V350M510 541v186" stroke="url(#git)"/>
+      <path d="M510 541 348 431" stroke="url(#green)"/>
+      <path d="m510 541 162-110" stroke="url(#red)"/>
+    </g>
+    <g fill="url(#tile)" stroke="url(#git)" stroke-width="15">
+      <circle cx="510" cy="315" r="48"/><circle cx="510" cy="541" r="40"/><circle cx="510" cy="752" r="46"/>
+    </g>
+    <circle cx="329" cy="418" r="48" fill="url(#tile)" stroke="url(#green)" stroke-width="15"/>
+    <circle cx="691" cy="418" r="48" fill="url(#tile)" stroke="url(#red)" stroke-width="15"/>
+  </g>
+</svg>
