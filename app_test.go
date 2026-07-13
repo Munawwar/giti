@@ -56,10 +56,13 @@ func TestSearchHistoryRanksExactPhrasesAboveSeparateWords(t *testing.T) {
 }
 
 func TestHistoryLabelDescribesMergeAndEscapesContent(t *testing.T) {
-	label := historyLabel(historyRow{kind: "commit", revision: "123456789", subject: "merge <side>", refs: "HEAD -> main, tag: v1", author: "A & B", parents: []string{"one", "two"}})
-	for _, want := range []string{"merge &lt;side&gt;", "HEAD -&gt; main", "🏷 v1", "A &amp; B", "merge  ·  2 parents"} {
+	label := historyLabel(historyRow{kind: "commit", revision: "123456789", subject: "merge <side>", refs: "HEAD -> main, tag: v1<&>, tag: v2, tag: v3, tag: v4, tag: v5, origin/main", author: "A & B", parents: []string{"one", "two"}})
+	for _, want := range []string{"merge &lt;side&gt;", `background="#d8f0dd"`, "HEAD → main", "origin/main", `foreground="#f8e7a3"`, "• v1&lt;&amp;&gt;", "• v2", "• v3", "• + more", "A &amp; B", "merge  ·  2 parents"} {
 		if !strings.Contains(label, want) {
 			t.Fatalf("history label %q does not contain %q", label, want)
 		}
+	}
+	if strings.Contains(label, "v4") || strings.Contains(label, "v5") || strings.Count(label, `background="#f8e7a3"`) != 4 || !(strings.Index(label, "v1") < strings.Index(label, "+ more") && strings.Index(label, "+ more") < strings.Index(label, "HEAD")) {
+		t.Fatalf("history tags were not capped ahead of branches: %q", label)
 	}
 }

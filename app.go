@@ -354,14 +354,41 @@ func historyLabel(row historyRow) string {
 	if row.kind != "commit" {
 		return "<b>" + html.EscapeString(row.subject) + "</b>"
 	}
-	refs, topology := "", ""
-	if row.refs != "" {
-		refs = "  <span foreground=\"#355070\">" + html.EscapeString(strings.ReplaceAll(row.refs, "tag: ", "🏷 ")) + "</span>"
+	tags, branches := make([]string, 0, 3), make([]string, 0, 2)
+	for _, decoration := range strings.Split(row.refs, ", ") {
+		decoration = strings.TrimSpace(decoration)
+		if strings.HasPrefix(decoration, "tag: ") {
+			tags = append(tags, strings.TrimPrefix(decoration, "tag: "))
+		} else if decoration != "" {
+			branches = append(branches, decoration)
+		}
 	}
+	if len(tags) > 3 {
+		tags = append(tags[:3], "+ more")
+	}
+	var refs strings.Builder
+	for _, tag := range tags {
+		refs.WriteString("  ")
+		// The triangle and rectangle form a five-edged clothing-tag badge.
+		refs.WriteString(`<span foreground="#f8e7a3" letter_spacing="-1024">◀</span><span background="#f8e7a3" foreground="#594600" weight="bold"> • `)
+		refs.WriteString(html.EscapeString(tag))
+		refs.WriteString(` </span>`)
+	}
+	for _, branch := range branches {
+		refs.WriteString("  ")
+		if branch == "HEAD" {
+			refs.WriteString(`<span background="#e5e7eb" foreground="#374151" weight="bold"> HEAD </span>`)
+		} else {
+			refs.WriteString(`<span background="#d8f0dd" foreground="#1f5131" weight="bold"> `)
+			refs.WriteString(html.EscapeString(strings.Replace(branch, "HEAD -> ", "HEAD → ", 1)))
+			refs.WriteString(` </span>`)
+		}
+	}
+	topology := ""
 	if len(row.parents) > 1 {
 		topology = fmt.Sprintf("  ·  merge  ·  %d parents", len(row.parents))
 	}
-	return fmt.Sprintf("<b>%s</b>%s\n<span foreground=\"#374151\"><tt>%s</tt>  ·  %s%s</span>", html.EscapeString(row.subject), refs, html.EscapeString(row.revision[:7]), html.EscapeString(row.author), topology)
+	return fmt.Sprintf("<b>%s</b>%s\n<span foreground=\"#374151\"><tt>%s</tt>  ·  %s%s</span>", html.EscapeString(row.subject), refs.String(), html.EscapeString(row.revision[:7]), html.EscapeString(row.author), topology)
 }
 
 type searchMatch struct {
