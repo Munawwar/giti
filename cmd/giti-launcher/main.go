@@ -40,8 +40,7 @@ func main() {
 			if parseErr == nil && pid != os.Getpid() {
 				executablePath := filepath.Join("/proc", strconv.Itoa(pid), "exe")
 				target, linkErr := os.Readlink(executablePath)
-				name := filepath.Base(target)
-				if linkErr == nil && (name == "giti-app" || name == "giti-app-debug") {
+				if linkErr == nil && isGitiAppPath(target) {
 					_ = syscall.Kill(pid, syscall.SIGTERM)
 					deadline := time.Now().Add(2 * time.Second)
 					_, linkErr = os.Readlink(executablePath)
@@ -118,6 +117,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func isGitiAppPath(target string) bool {
+	name := filepath.Base(strings.TrimSuffix(target, " (deleted)"))
+	return name == "giti-app" || name == "giti-app-debug"
 }
 
 func contactResident(request openRequest) string {

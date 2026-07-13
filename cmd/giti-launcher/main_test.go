@@ -41,3 +41,17 @@ func TestContactResidentMissing(t *testing.T) {
 		t.Fatalf("launcher created a socket: %v", err)
 	}
 }
+
+func TestGitiAppPathRecognizesRebuiltResident(t *testing.T) {
+	for path, expected := range map[string]bool{
+		"/repo/bin/giti-app":                 true,
+		"/repo/bin/giti-app-debug":           true,
+		"/repo/bin/giti-app (deleted)":       true,
+		"/repo/bin/giti-app-debug (deleted)": true,
+		"/usr/bin/unrelated (deleted)":       false,
+	} {
+		if actual := isGitiAppPath(path); actual != expected {
+			t.Errorf("isGitiAppPath(%q) = %v, want %v", path, actual, expected)
+		}
+	}
+}
