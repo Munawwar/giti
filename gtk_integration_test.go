@@ -52,7 +52,10 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer app.window.Destroy()
+	defer func() {
+		app.clearRepositoryView()
+		app.window.Destroy()
+	}()
 	loaded := len(app.historyRows)
 	for range 3 {
 		app.loadHistory()
