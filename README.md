@@ -1,4 +1,4 @@
-# Giti
+# Giti - a gitk alternative
 
 A `gitk` alternative. A tiny git history diff viewer for linux meant to be invoked quickly from a terminal (with window maximized), for the hybrid TUI-GUI workflow loving devs.
 
