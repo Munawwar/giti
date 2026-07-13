@@ -1,0 +1,83 @@
+package main
+
+import "testing"
+
+var testOnlyBinaryMarker = "giti-test-code-must-not-ship-8cf139b7"
+
+func TestGraphLayoutLinear(t *testing.T) {
+	rows := []historyRow{
+		{kind: "commit", revision: "c", parents: []string{"b"}},
+		{kind: "commit", revision: "b", parents: []string{"a"}},
+		{kind: "commit", revision: "a"},
+	}
+	layoutGraph(rows)
+	for index, row := range rows {
+		if row.graph.position != 0 || len(row.graph.lanes) != 1 {
+			t.Fatalf("row %d left the main lane: %#v", index, row.graph)
+		}
+		if index > 0 && (len(row.graph.lanes[0].from) != 1 || row.graph.lanes[0].from[0] != 0) {
+			t.Fatalf("row %d lost its vertical edge: %#v", index, row.graph.lanes)
+		}
+	}
+	if len(rows[0].graph.next) != 1 || rows[0].graph.next[0].from[0] != 0 || testOnlyBinaryMarker == "" {
+		t.Fatalf("next-row edge missing: %#v", rows[0].graph.next)
+	}
+}
+
+func TestGraphLayoutForkMerge(t *testing.T) {
+	rows := []historyRow{
+		{kind: "commit", revision: "merge", parents: []string{"left", "right"}},
+		{kind: "commit", revision: "left", parents: []string{"root"}},
+		{kind: "commit", revision: "right", parents: []string{"root"}},
+		{kind: "commit", revision: "root"},
+	}
+	layoutGraph(rows)
+	if rows[2].graph.position != 1 || len(rows[2].graph.lanes) != 2 {
+		t.Fatalf("side commit is not on its own lane: %#v", rows[2].graph)
+	}
+	root := rows[3].graph
+	if root.position != 0 || len(root.lanes) != 1 || len(root.lanes[0].from) != 2 || root.lanes[0].from[0] != 0 || root.lanes[0].from[1] != 1 {
+		t.Fatalf("merge did not converge at root: %#v", root)
+	}
+}
+
+func TestGraphLayoutOctopusAndIndependentRoots(t *testing.T) {
+	rows := []historyRow{
+		{kind: "commit", revision: "octopus", parents: []string{"one", "two", "three"}},
+		{kind: "commit", revision: "one", parents: []string{"root"}},
+		{kind: "commit", revision: "two", parents: []string{"root"}},
+		{kind: "commit", revision: "three", parents: []string{"root"}},
+		{kind: "commit", revision: "root"},
+		{kind: "commit", revision: "unrelated"},
+	}
+	layoutGraph(rows)
+	if rows[3].graph.position != 1 || len(rows[3].graph.lanes) != 2 {
+		t.Fatalf("third octopus parent is misplaced: %#v", rows[3].graph)
+	}
+	if got := rows[4].graph.lanes[0].from; len(rows[4].graph.lanes) != 1 || len(got) != 2 {
+		t.Fatalf("octopus lanes did not converge: %#v", rows[4].graph)
+	}
+	if rows[5].graph.position != 0 || len(rows[5].graph.lanes) != 1 || len(rows[5].graph.lanes[0].from) != 0 {
+		t.Fatalf("independent root inherited an edge: %#v", rows[5].graph)
+	}
+}
+
+func BenchmarkGraphLayout(b *testing.B) {
+	fixture := make([]historyRow, 500)
+	for index := range fixture {
+		fixture[index] = historyRow{kind: "commit", revision: string(rune(index + 1))}
+		if index+1 < len(fixture) {
+			fixture[index].parents = []string{string(rune(index + 2))}
+		}
+		if index%20 == 0 && index+10 < len(fixture) {
+			fixture[index].parents = append(fixture[index].parents, string(rune(index+11)))
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		rows := make([]historyRow, len(fixture))
+		copy(rows, fixture)
+		layoutGraph(rows)
+	}
+}

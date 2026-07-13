@@ -22,7 +22,9 @@ const (
 )
 
 type historyRow struct {
-	kind, revision, graph, subject, refs, author, date string
+	kind, revision, subject, refs, author, date string
+	parents                                     []string
+	graph                                       graphLayout
 }
 
 type commitDetails struct {
@@ -136,13 +138,13 @@ func (repo *repository) runLimitedContext(ctx context.Context, limit int, check 
 }
 
 func (repo *repository) history(count int, ignoreWhitespace bool) ([]historyRow, error) {
-	format := recordMarker + "%H" + fieldMarker + "%an" + fieldMarker + "%as" + fieldMarker + "%D" + fieldMarker + "%s"
-	output, err := repo.run("log", "--graph", "--topo-order", fmt.Sprintf("-n%d", count), "--format="+format, repo.revisionArg)
+	format := recordMarker + strings.Join([]string{"%H", "%P", "%an", "%as", "%D", "%s"}, fieldMarker)
+	output, err := repo.run("log", "--topo-order", fmt.Sprintf("-n%d", count+1), "--format="+format, repo.revisionArg)
 	if err != nil {
 		return nil, err
 	}
 	rows := make([]historyRow, 0, count+2)
-	for _, synthetic := range []historyRow{{kind: "unstaged", graph: "○", subject: "Unstaged changes"}, {kind: "staged", graph: "○", subject: "Staged changes"}} {
+	for _, synthetic := range []historyRow{{kind: "unstaged", subject: "Unstaged changes"}, {kind: "staged", subject: "Staged changes"}} {
 		files, fileErr := repo.changedFiles(synthetic, ignoreWhitespace)
 		if fileErr != nil {
 			return nil, fileErr
@@ -151,19 +153,20 @@ func (repo *repository) history(count int, ignoreWhitespace bool) ([]historyRow,
 			rows = append(rows, synthetic)
 		}
 	}
+	commits := make([]historyRow, 0, count+1)
 	for _, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
-		graph, fields, found := strings.Cut(line, recordMarker)
-		if !found {
-			rows = append(rows, historyRow{kind: "connector", graph: strings.TrimRight(graph, " ")})
-			continue
-		}
-		parts := strings.SplitN(fields, fieldMarker, 5)
-		for len(parts) < 5 {
+		fields := strings.TrimPrefix(line, recordMarker)
+		parts := strings.SplitN(fields, fieldMarker, 6)
+		for len(parts) < 6 {
 			parts = append(parts, "")
 		}
-		rows = append(rows, historyRow{kind: "commit", revision: parts[0], graph: strings.TrimRight(graph, " "), author: parts[1], date: parts[2], refs: strings.TrimSpace(parts[3]), subject: parts[4]})
+		commits = append(commits, historyRow{kind: "commit", revision: parts[0], parents: strings.Fields(parts[1]), author: parts[2], date: parts[3], refs: strings.TrimSpace(parts[4]), subject: parts[5]})
 	}
-	return rows, nil
+	layoutGraph(commits)
+	if len(commits) > count {
+		commits = commits[:count]
+	}
+	return append(rows, commits...), nil
 }
 
 func (repo *repository) commitDetailsContext(ctx context.Context, revision string) (commitDetails, error) {

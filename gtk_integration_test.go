@@ -34,6 +34,36 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.window.Destroy()
+	iter, ok := app.historyStore.GetIterFirst()
+	if !ok {
+		t.Fatal("rendered history is empty")
+	}
+	value, err := app.historyStore.GetValue(iter, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := value.GoValue()
+	pixbuf, pixbufOK := rendered.(*gdk.Pixbuf)
+	if err != nil || !pixbufOK || pixbuf.GetWidth() < 48 || pixbuf.GetHeight() != graphRowHeight {
+		t.Fatalf("history graph is not a rendered pixbuf: value=%T err=%v", rendered, err)
+	}
+	for index, row := range app.historyRows {
+		if row.refs == "" {
+			continue
+		}
+		iter, err = app.historyStore.GetIter(must(gtk.TreePathNewFromIndicesv([]int{index})))
+		if err == nil {
+			value, err = app.historyStore.GetValue(iter, 0)
+		}
+		if err == nil {
+			rendered, err = value.GoValue()
+			pixbuf, pixbufOK = rendered.(*gdk.Pixbuf)
+		}
+		if err != nil || !pixbufOK || pixbuf.GetHeight() != graphRefHeight {
+			t.Fatalf("ref row graph does not fill its taller cell: value=%T err=%v", rendered, err)
+		}
+		break
+	}
 	theme, themeErr := must(gtk.SettingsGetDefault()).GetProperty("gtk-theme-name")
 	themeName, isThemeName := theme.(string)
 	if themeErr != nil || !isThemeName || strings.HasSuffix(themeName, "-dark") {

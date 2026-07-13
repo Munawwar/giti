@@ -83,3 +83,9 @@ core dump, `coredumpctl info giti-app-debug` shows its metadata and
 `coredumpctl debug giti-app-debug` opens it in GDB. The release and debug
 launchers use separate app binaries, but they intentionally share the resident
 socket; close any running Giti process before starting a debug session.
+
+## License
+
+Giti is free software licensed under the
+[GNU General Public License, version 2 or later](LICENSE). Its graph lane
+layout includes an adaptation of gitg's GPL-licensed implementation.

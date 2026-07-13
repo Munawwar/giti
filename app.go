@@ -20,6 +20,9 @@ import (
 const idleDuration = 12 * time.Hour
 
 const appCSS = `
+treeview.giti-list.view {
+  -GtkTreeView-vertical-separator: 0;
+}
 treeview.giti-list.view:selected,
 treeview.giti-list.view:selected:focus {
   background-color: #ffe2d2;
@@ -98,7 +101,7 @@ func newGiti(repo *repository, resident bool) (*giti, error) {
 			return nil, err
 		}
 	}
-	app.historyStore = must(gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING))
+	app.historyStore = must(gtk.ListStoreNew(gdk.PixbufGetType(), glib.TYPE_STRING, glib.TYPE_STRING))
 	app.fileStore = must(gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING))
 	app.buildWindow()
 	if resident {
@@ -125,12 +128,10 @@ func (app *giti) buildWindow() {
 	app.historyView.SetHeadersVisible(false)
 	historyContext, _ := app.historyView.GetStyleContext()
 	historyContext.AddClass("giti-list")
-	graphRenderer := must(gtk.CellRendererTextNew())
-	graphRenderer.SetProperty("family", "monospace")
-	graphRenderer.SetProperty("xalign", 0.5)
+	graphRenderer := must(gtk.CellRendererPixbufNew())
 	historyRenderer := must(gtk.CellRendererTextNew())
 	historyRenderer.SetProperty("ellipsize", pango.ELLIPSIZE_END)
-	historyColumn := must(gtk.TreeViewColumnNewWithAttribute("Graph", graphRenderer, "text", 0))
+	historyColumn := must(gtk.TreeViewColumnNewWithAttribute("Graph", graphRenderer, "pixbuf", 0))
 	historyColumn.SetMinWidth(48)
 	app.historyView.AppendColumn(historyColumn)
 	historyColumn = must(gtk.TreeViewColumnNewWithAttribute("History", historyRenderer, "markup", 1))
@@ -147,7 +148,7 @@ func (app *giti) buildWindow() {
 			return false
 		}
 		kind, _ := value.GetString()
-		return kind != "connector"
+		return kind != ""
 	})
 	historySelection.Connect("changed", app.onHistorySelected)
 	app.historySearch = must(gtk.SearchEntryNew())
@@ -277,6 +278,10 @@ func (app *giti) loadHistory() bool {
 	}
 	app.historyRows = rows
 	app.historyStore.Clear()
+	graphWidth := 48
+	for _, row := range rows {
+		graphWidth = max(graphWidth, max(len(row.graph.lanes), len(row.graph.next))*graphLaneWidth)
+	}
 	target := -1
 	for index, row := range rows {
 		label := "<b>" + html.EscapeString(row.subject) + "</b>"
@@ -287,9 +292,14 @@ func (app *giti) loadHistory() bool {
 			}
 			label = fmt.Sprintf("<b>%s</b>\n<span foreground=\"#374151\"><tt>%s</tt>  ·  %s</span>%s", html.EscapeString(row.subject), html.EscapeString(row.revision[:7]), html.EscapeString(row.author), refs)
 		}
+		graph, graphErr := renderGraph(row, graphWidth)
+		if graphErr != nil {
+			app.showError(graphErr)
+			return false
+		}
 		iter := app.historyStore.Append()
-		app.historyStore.Set(iter, []int{0, 1, 2}, []any{strings.ReplaceAll(row.graph, "*", "◉"), label, row.kind})
-		if target < 0 && row.kind != "connector" {
+		app.historyStore.Set(iter, []int{0, 1, 2}, []any{graph, label, row.kind})
+		if target < 0 {
 			target = index
 		}
 		if row.kind == preferredKind && (preferredRevision == "" || preferredRevision == row.revision) {
@@ -474,7 +484,7 @@ func (app *giti) onHistorySelected() {
 		return
 	}
 	index := path.GetIndices()[0]
-	if index >= len(app.historyRows) || app.historyRows[index].kind == "connector" {
+	if index >= len(app.historyRows) {
 		return
 	}
 	app.selectionGeneration++

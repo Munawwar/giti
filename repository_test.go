@@ -99,6 +99,15 @@ func TestCommitDetailsIncludesRefsAndMergeParents(t *testing.T) {
 	if details.sha != repo.revision || details.author != "Test User" || len(details.parents) != 2 || len(details.tags) != 4 || !strings.Contains(strings.Join(details.branches, " "), "main") {
 		t.Fatalf("unexpected commit details: %#v", details)
 	}
+	rows, err := repo.history(5, true)
+	if err != nil || len(rows) != 5 || len(rows[0].parents) != 2 || rows[0].graph.position != 0 {
+		t.Fatalf("merge topology was not loaded: rows=%#v err=%v", rows, err)
+	}
+	for _, row := range rows {
+		if row.kind != "commit" || row.revision == "" || len(row.graph.lanes) == 0 {
+			t.Fatalf("history contains a terminal connector or incomplete commit: %#v", row)
+		}
+	}
 }
 
 func TestStagedUnstagedAndSingleFileDiffs(t *testing.T) {
