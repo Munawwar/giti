@@ -22,7 +22,7 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	path := testRepository(t)
-	os.WriteFile(filepath.Join(path, "first.txt"), []byte("one\ntwo\nthree\n"), 0o644)
+	os.WriteFile(filepath.Join(path, "first.txt"), []byte("one\n"+strings.Repeat("more\n", 200)), 0o644)
 	os.WriteFile(filepath.Join(path, "second.txt"), []byte("second\n"), 0o644)
 	repo, err := newRepository(path, "HEAD")
 	if err != nil {
@@ -81,6 +81,32 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	second, _ := app.diffBuffer.GetText(start, end, true)
 	if !app.fileView.IsFocus() || app.fullFileToggle.GetActive() || app.currentFile.path != "second.txt" || !strings.Contains(second, "+second") || strings.Contains(second, "+one") {
 		t.Fatalf("file switch retained state or content: full=%v file=%#v diff=%q", app.fullFileToggle.GetActive(), app.currentFile, second)
+	}
+	app.fileView.SetCursor(must(gtk.TreePathNewFromIndicesv([]int{0})), nil, false)
+	deadline = time.Now().Add(2 * time.Second)
+	for (app.currentFile == nil || app.currentFile.path != "first.txt" || app.diffBuffer.GetCharCount() == 0) && time.Now().Before(deadline) {
+		for gtk.EventsPending() {
+			gtk.MainIteration()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	scroll := app.diffScroller.GetVAdjustment()
+	scroll.SetValue(180)
+	wanted := scroll.GetValue()
+	if wanted == 0 {
+		t.Fatal("fixture did not create a scrollable diff")
+	}
+	app.fileView.SetCursor(must(gtk.TreePathNewFromIndicesv([]int{1})), nil, false)
+	app.fileView.SetCursor(must(gtk.TreePathNewFromIndicesv([]int{0})), nil, false)
+	deadline = time.Now().Add(2 * time.Second)
+	for (app.currentFile == nil || app.currentFile.path != "first.txt" || scroll.GetValue() < wanted-1) && time.Now().Before(deadline) {
+		for gtk.EventsPending() {
+			gtk.MainIteration()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if restored := scroll.GetValue(); app.currentFile == nil || app.currentFile.path != "first.txt" || restored < wanted-1 || restored > wanted+1 {
+		t.Fatalf("file scroll was not restored: got=%v want=%v", restored, wanted)
 	}
 	realGit, err := exec.LookPath("git")
 	if err != nil {

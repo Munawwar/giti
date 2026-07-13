@@ -42,6 +42,7 @@ type giti struct {
 	selectionCancel         context.CancelFunc
 	diffCancel              context.CancelFunc
 	styleProvider           *gtk.CssProvider
+	diffScroll              map[string]scrollPosition
 	historyRows             []historyRow
 	searchMatches           []historyRow
 	files                   []changedFile
@@ -56,9 +57,16 @@ type giti struct {
 	commitHeader            *gtk.Box
 	diffBuffer              *gtk.TextBuffer
 	diffView                *gtk.TextView
+	diffScroller            *gtk.ScrolledWindow
 	whitespaceToggle        *gtk.CheckButton
 	fullFileToggle          *gtk.CheckButton
 	fullFileHandler         glib.SignalHandle
+}
+
+type scrollPosition struct{ horizontal, vertical float64 }
+
+func diffKey(row historyRow, file changedFile) string {
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s", row.kind, row.revision, file.status, file.oldPath, file.path)
 }
 
 func must[T any](value T, err error) T {
@@ -83,7 +91,7 @@ func newGiti(repo *repository, resident bool) (*giti, error) {
 			}
 		}
 	}
-	app := &giti{repository: repo, resident: resident, busy: true, historyLimit: 10}
+	app := &giti{repository: repo, resident: resident, busy: true, historyLimit: 10, diffScroll: make(map[string]scrollPosition)}
 	if resident {
 		app.server = newResidentServer(app)
 		if err := app.server.start(); err != nil {
@@ -209,7 +217,8 @@ func (app *giti) buildWindow() {
 	diffBox := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 4))
 	diffBox.PackStart(toolbar, false, false, 4)
 	diffBox.PackStart(app.commitHeader, false, false, 0)
-	diffBox.PackStart(scroller(app.diffView), true, true, 0)
+	app.diffScroller = scroller(app.diffView)
+	diffBox.PackStart(app.diffScroller, true, true, 0)
 	main := must(gtk.PanedNew(gtk.ORIENTATION_HORIZONTAL))
 	main.Pack1(left, false, false)
 	main.Pack2(diffBox, true, false)
@@ -239,6 +248,12 @@ func copySHAButton(sha string) *gtk.Button {
 		clipboard.SetText(sha)
 	})
 	return button
+}
+
+func (app *giti) rememberDiffScroll() {
+	if app.currentRow != nil && app.currentFile != nil {
+		app.diffScroll[diffKey(*app.currentRow, *app.currentFile)] = scrollPosition{app.diffScroller.GetHAdjustment().GetValue(), app.diffScroller.GetVAdjustment().GetValue()}
+	}
 }
 
 func (app *giti) loadHistory() bool {
@@ -472,6 +487,7 @@ func (app *giti) onHistorySelected() {
 	}
 	app.diffGeneration++
 	app.resetFullFile()
+	app.rememberDiffScroll()
 	app.diffBuffer.SetText("")
 	app.setCommitHeader(commitDetails{subject: "Loading commit details…"})
 	previousPath := ""
@@ -549,15 +565,19 @@ func (app *giti) onFileSelected() {
 		app.diffCancel()
 	}
 	file := &app.files[index]
+	app.rememberDiffScroll()
 	if app.currentFile == nil || *file != *app.currentFile {
 		app.resetFullFile()
 	}
 	app.currentFile = file
 	app.fullFileToggle.SetSensitive(false)
 	app.diffBuffer.SetText("")
+	app.diffScroller.GetHAdjustment().SetValue(0)
+	app.diffScroller.GetVAdjustment().SetValue(0)
 	ctx, cancel := context.WithCancel(context.Background())
 	app.diffCancel = cancel
 	repo, row, selectedFile := app.repository, *app.currentRow, *file
+	position := app.diffScroll[diffKey(row, selectedFile)]
 	ignoreWhitespace, fullFile := !app.whitespaceToggle.GetActive(), app.fullFileToggle.GetActive()
 	go func() {
 		size := repo.fileSizeContext(ctx, row, selectedFile)
@@ -582,6 +602,14 @@ func (app *giti) onFileSelected() {
 			}
 			app.fullFileToggle.HandlerUnblock(app.fullFileHandler)
 			app.setDiff(patch)
+			glib.IdleAdd(func() bool {
+				if generation == app.diffGeneration && selectionGeneration == app.selectionGeneration {
+					horizontal, vertical := app.diffScroller.GetHAdjustment(), app.diffScroller.GetVAdjustment()
+					horizontal.SetValue(min(position.horizontal, max(0, horizontal.GetUpper()-horizontal.GetPageSize())))
+					vertical.SetValue(min(position.vertical, max(0, vertical.GetUpper()-vertical.GetPageSize())))
+				}
+				return false
+			})
 			return false
 		})
 	}()
@@ -661,6 +689,7 @@ func (app *giti) clearRepositoryView() {
 		app.diffCancel()
 	}
 	app.historyRows, app.files, app.searchMatches = nil, nil, nil
+	app.diffScroll = make(map[string]scrollPosition)
 	app.currentRow, app.currentFile = nil, nil
 	app.historySearch.SetText("")
 	app.historyStore.Clear()
