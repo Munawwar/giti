@@ -375,8 +375,7 @@ func historyLabel(row historyRow) string {
 	var refs strings.Builder
 	for _, tag := range tags {
 		refs.WriteString("  ")
-		// The triangle and rectangle form a five-edged clothing-tag badge.
-		refs.WriteString(`<span foreground="#f8e7a3" letter_spacing="-1024">◀</span><span background="#f8e7a3" foreground="#594600" weight="bold"> • `)
+		refs.WriteString(`<span background="#f8e7a3" foreground="#594600" weight="bold"> `)
 		refs.WriteString(html.EscapeString(tag))
 		refs.WriteString(` </span>`)
 	}
