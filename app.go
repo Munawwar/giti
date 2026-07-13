@@ -288,9 +288,9 @@ func (app *giti) loadHistory() bool {
 		if row.kind == "commit" {
 			refs := ""
 			if row.refs != "" {
-				refs = "\n<span foreground=\"#355070\">" + html.EscapeString(strings.ReplaceAll(row.refs, "tag: ", "🏷 ")) + "</span>"
+				refs = "  <span foreground=\"#355070\">" + html.EscapeString(strings.ReplaceAll(row.refs, "tag: ", "🏷 ")) + "</span>"
 			}
-			label = fmt.Sprintf("<b>%s</b>\n<span foreground=\"#374151\"><tt>%s</tt>  ·  %s</span>%s", html.EscapeString(row.subject), html.EscapeString(row.revision[:7]), html.EscapeString(row.author), refs)
+			label = fmt.Sprintf("<b>%s</b>%s\n<span foreground=\"#374151\"><tt>%s</tt>  ·  %s</span>", html.EscapeString(row.subject), refs, html.EscapeString(row.revision[:7]), html.EscapeString(row.author))
 		}
 		graph, graphErr := renderGraph(row, graphWidth)
 		if graphErr != nil {

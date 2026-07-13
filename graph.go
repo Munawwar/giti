@@ -23,7 +23,6 @@ import (
 const (
 	graphLaneWidth = 16
 	graphRowHeight = 44
-	graphRefHeight = 62
 )
 
 type graphLane struct {
@@ -124,15 +123,11 @@ var graphColors = [][3]float64{
 // halves use the same curve geometry: the current layout above the node and
 // the following commit's layout below it.
 func renderGraph(row historyRow, width int) (*gdk.Pixbuf, error) {
-	height := graphRowHeight
-	if row.refs != "" {
-		height = graphRefHeight
-	}
-	surface := cairo.CreateImageSurface(cairo.FORMAT_ARGB32, width, height)
+	surface := cairo.CreateImageSurface(cairo.FORMAT_ARGB32, width, graphRowHeight)
 	context := cairo.Create(surface)
 	context.SetLineWidth(2)
 	context.SetLineCap(cairo.LINE_CAP_ROUND)
-	center := float64(height) / 2
+	center := float64(graphRowHeight) / 2
 	if row.kind == "commit" {
 		for half, lanes := range [][]graphLane{row.graph.lanes, row.graph.next} {
 			for destination, lane := range lanes {
@@ -142,11 +137,11 @@ func renderGraph(row historyRow, width int) (*gdk.Pixbuf, error) {
 					x1 := float64(source*graphLaneWidth + graphLaneWidth/2)
 					x2 := float64(destination*graphLaneWidth + graphLaneWidth/2)
 					if half == 0 {
-						context.MoveTo(x1, 0)
-						context.CurveTo(x1, center, x2, 0, x2, center)
+						context.MoveTo(x1, -center)
+						context.CurveTo(x1, 0, x2, 0, x2, center)
 					} else {
 						context.MoveTo(x1, center)
-						context.CurveTo(x1, float64(height), x2, center, x2, float64(height))
+						context.CurveTo(x1, graphRowHeight, x2, graphRowHeight, x2, graphRowHeight+center)
 					}
 					context.Stroke()
 				}
@@ -155,6 +150,7 @@ func renderGraph(row historyRow, width int) (*gdk.Pixbuf, error) {
 		lane := row.graph.lanes[row.graph.position]
 		color := graphColors[lane.color%len(graphColors)]
 		context.Arc(float64(row.graph.position*graphLaneWidth+graphLaneWidth/2), center, 5, 0, 2*math.Pi)
+		context.SetLineWidth(1)
 		context.SetSourceRGB(0.12, 0.12, 0.12)
 		context.StrokePreserve()
 		context.SetSourceRGB(color[0], color[1], color[2])
@@ -165,5 +161,5 @@ func renderGraph(row historyRow, width int) (*gdk.Pixbuf, error) {
 		context.Fill()
 	}
 	surface.Flush()
-	return gdk.PixbufGetFromSurface(surface, 0, 0, width, height)
+	return gdk.PixbufGetFromSurface(surface, 0, 0, width, graphRowHeight)
 }

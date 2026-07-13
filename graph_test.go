@@ -62,6 +62,33 @@ func TestGraphLayoutOctopusAndIndependentRoots(t *testing.T) {
 	}
 }
 
+func TestRenderedGraphJoinsShiftedLanesAtBoundary(t *testing.T) {
+	rows := []historyRow{
+		{kind: "commit", revision: "merge", parents: []string{"left", "right"}},
+		{kind: "commit", revision: "left", parents: []string{"root"}},
+		{kind: "commit", revision: "right", parents: []string{"root"}},
+		{kind: "commit", revision: "root"},
+	}
+	layoutGraph(rows)
+	upper, err := renderGraph(rows[0], 48)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lower, err := renderGraph(rows[1], 48)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sample := range []struct {
+		pixbuf      []byte
+		row, stride int
+	}{{upper.GetPixels(), graphRowHeight - 1, upper.GetRowstride()}, {lower.GetPixels(), 0, lower.GetRowstride()}} {
+		alpha := sample.pixbuf[sample.row*sample.stride+graphLaneWidth*upper.GetNChannels()+3]
+		if alpha == 0 {
+			t.Fatal("shifted lane is transparent where neighboring curves meet")
+		}
+	}
+}
+
 func BenchmarkGraphLayout(b *testing.B) {
 	fixture := make([]historyRow, 500)
 	for index := range fixture {

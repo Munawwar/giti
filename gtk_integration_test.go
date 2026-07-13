@@ -59,8 +59,8 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 			rendered, err = value.GoValue()
 			pixbuf, pixbufOK = rendered.(*gdk.Pixbuf)
 		}
-		if err != nil || !pixbufOK || pixbuf.GetHeight() != graphRefHeight {
-			t.Fatalf("ref row graph does not fill its taller cell: value=%T err=%v", rendered, err)
+		if err != nil || !pixbufOK || pixbuf.GetHeight() != graphRowHeight {
+			t.Fatalf("ref row graph is not the uniform row height: value=%T err=%v", rendered, err)
 		}
 		break
 	}
