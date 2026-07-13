@@ -12,8 +12,44 @@ import (
 	"time"
 
 	"github.com/gotk3/gotk3/gdk"
+	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
 )
+
+func TestGTKApplicationMenu(t *testing.T) {
+	if os.Getenv("GITI_GTK_TEST") == "" {
+		t.Skip("set GITI_GTK_TEST=1 to run the display integration test")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	path := testRepository(t)
+	repo, err := newRepository(path, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gtk.Init(nil)
+	application, err := gtk.ApplicationNew(applicationID+".menu-test", glib.APPLICATION_NON_UNIQUE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var app *giti
+	var appErr error
+	application.Connect("activate", func() {
+		app, appErr = newGiti(repo, false, application)
+		addMainSource(0, func() bool {
+			application.Quit()
+			return false
+		})
+	})
+	application.Run([]string{"giti-menu-test"})
+	if appErr != nil {
+		t.Fatal(appErr)
+	}
+	defer app.window.Destroy()
+	if application.GetAppMenu() == nil || application.GetMenubar() == nil || application.GetMenubar().GetNItems() != 1 {
+		t.Fatal("refresh menu was not installed")
+	}
+}
 
 func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	if os.Getenv("GITI_GTK_TEST") == "" {

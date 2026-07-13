@@ -30,12 +30,28 @@ func main() {
 	glib.SetPrgname(applicationID)
 	glib.SetApplicationName("Giti")
 	gtk.Init(nil)
-	app, err := newGiti(repo, resident)
+	application, err := gtk.ApplicationNew(applicationID, glib.APPLICATION_NON_UNIQUE)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "giti:", err)
 		os.Exit(1)
 	}
-	gtk.Main()
+	var app *giti
+	var appErr error
+	application.Connect("activate", func() {
+		app, appErr = newGiti(repo, resident, application)
+		if appErr != nil {
+			application.Quit()
+			return
+		}
+		if resident {
+			application.Hold()
+		}
+	})
+	application.Run([]string{os.Args[0]})
+	if appErr != nil {
+		fmt.Fprintln(os.Stderr, "giti:", appErr)
+		os.Exit(1)
+	}
 	if app.server != nil {
 		app.server.stop()
 	}

@@ -65,6 +65,8 @@ The initial history contains unstaged and staged entries when present, followed 
 
 For performance only a few commits are shown in graph initially. Use **Load more** when the initial ten-commit history is not enough.
 
+Use **View → Refresh** or press **F5** to reread the graph and working-tree changes while keeping the current view when possible.
+
 Enable **Show full file** to expand the selected diff with the unchanged surrounding lines. The option resets when the selection changes and is disabled for files larger than 2 MiB to avoid accidentally rendering an enormous document.
 
 Rendered patches are capped at 8 MiB. Giti terminates larger diff output and shows a truncation notice instead of retaining an unbounded patch in memory. Hiding the resident window also releases its history, file list, and diff contents.

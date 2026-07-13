@@ -69,6 +69,7 @@ type giti struct {
 	whitespaceToggle           *gtk.CheckButton
 	fullFileToggle             *gtk.CheckButton
 	fullFileHandler            glib.SignalHandle
+	application                *gtk.Application
 }
 
 type scrollPosition struct{ horizontal, vertical float64 }
@@ -84,7 +85,7 @@ func must[T any](value T, err error) T {
 	return value
 }
 
-func newGiti(repo *repository, resident bool) (*giti, error) {
+func newGiti(repo *repository, resident bool, applications ...*gtk.Application) (*giti, error) {
 	settings, err := gtk.SettingsGetDefault()
 	if err != nil {
 		return nil, err
@@ -99,7 +100,11 @@ func newGiti(repo *repository, resident bool) (*giti, error) {
 			}
 		}
 	}
-	app := &giti{repository: repo, resident: resident, busy: true, historyLimit: 10, diffScroll: make(map[string]scrollPosition)}
+	var application *gtk.Application
+	if len(applications) > 0 {
+		application = applications[0]
+	}
+	app := &giti{repository: repo, resident: resident, application: application, busy: true, historyLimit: 10, diffScroll: make(map[string]scrollPosition)}
 	if resident {
 		app.server = newResidentServer(app)
 		if err := app.server.start(); err != nil {
@@ -108,15 +113,21 @@ func newGiti(repo *repository, resident bool) (*giti, error) {
 	}
 	app.historyStore = must(gtk.ListStoreNew(gdk.PixbufGetType(), glib.TYPE_STRING, glib.TYPE_STRING))
 	app.fileStore = must(gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING))
-	app.buildWindow()
+	app.buildWindow(application)
 	if resident {
 		addMainSource(60, app.expireIfIdle)
 	}
 	return app, nil
 }
 
-func (app *giti) buildWindow() {
-	app.window = must(gtk.WindowNew(gtk.WINDOW_TOPLEVEL))
+func (app *giti) buildWindow(application *gtk.Application) {
+	if application == nil {
+		app.window = must(gtk.WindowNew(gtk.WINDOW_TOPLEVEL))
+	} else {
+		window := must(gtk.ApplicationWindowNew(application))
+		window.SetShowMenubar(true)
+		app.window = &window.Window
+	}
 	iconLoader := must(gdk.PixbufLoaderNewWithType("png"))
 	app.window.SetIcon(must(iconLoader.WriteAndReturnPixbuf(appIconPNG)))
 	app.window.SetTitle("Giti — " + filepath.Base(app.repository.path))
@@ -124,7 +135,7 @@ func (app *giti) buildWindow() {
 	app.window.Maximize()
 	app.window.Connect("delete-event", func() bool {
 		if !app.resident {
-			gtk.MainQuit()
+			app.quit()
 			return false
 		}
 		app.hideResident()
@@ -217,6 +228,20 @@ func (app *giti) buildWindow() {
 	toolbar := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
 	toolbar.PackEnd(app.whitespaceToggle, false, false, 8)
 	toolbar.PackEnd(app.fullFileToggle, false, false, 0)
+	if application != nil {
+		refresh := glib.SimpleActionNew("refresh", nil)
+		refresh.Connect("activate", func() { app.loadHistory() })
+		application.AddAction(refresh)
+		application.SetAccelsForAction("app.refresh", []string{"F5"})
+		appMenu := glib.MenuNew()
+		appMenu.Append("Refresh", "app.refresh")
+		application.SetAppMenu(&appMenu.MenuModel)
+		viewMenu := glib.MenuNew()
+		viewMenu.Append("Refresh", "app.refresh")
+		menubar := glib.MenuNew()
+		menubar.AppendSubmenu("View", &viewMenu.MenuModel)
+		application.SetMenubar(&menubar.MenuModel)
+	}
 	app.commitHeader = must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 2))
 	app.commitHeader.SetMarginStart(12)
 	app.commitHeader.SetMarginEnd(12)
@@ -820,10 +845,18 @@ func (app *giti) expireIfIdle() bool {
 	app.stateMu.Unlock()
 	if expired {
 		app.server.stop()
-		gtk.MainQuit()
+		app.quit()
 		return false
 	}
 	return true
+}
+
+func (app *giti) quit() {
+	if app.application != nil {
+		app.application.Quit()
+		return
+	}
+	gtk.MainQuit()
 }
 
 func (app *giti) showError(err error) {
