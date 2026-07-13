@@ -6,6 +6,7 @@ APP_ID=io.github.Munawwar.Giti
 PREFIX=${HOME}/.local
 USER_INSTALL=true
 SKIP_DEPS=false
+BUILD_FRESH=ask
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -23,15 +24,19 @@ while [ "$#" -gt 0 ]; do
             PREFIX=$1
             USER_INSTALL=false
             ;;
+        --build) BUILD_FRESH=true ;;
+        --prebuilt) BUILD_FRESH=false ;;
         --skip-deps) SKIP_DEPS=true ;;
         -h|--help)
             cat <<'EOF'
-Usage: ./install.sh [--user] [--system] [--prefix PATH] [--skip-deps]
+Usage: ./install.sh [--user] [--system] [--prefix PATH] [--build|--prebuilt] [--skip-deps]
 
 Builds and installs Giti, its desktop entry, and its hicolor icon.
   --user       install in ~/.local (the default)
   --system     install under /usr/local
   --prefix     install under PATH and PATH/share
+  --build      build fresh from source
+  --prebuilt   install the included Linux x86_64 release binaries
   --skip-deps  do not install missing Ubuntu build dependencies
 EOF
             exit 0
@@ -47,7 +52,27 @@ else
     DATA_HOME=$PREFIX/share
 fi
 
-if [ "$SKIP_DEPS" = false ] && { ! command -v gcc >/dev/null || ! command -v git >/dev/null || ! command -v pkg-config >/dev/null || ! pkg-config --exists gtk+-3.0; }; then
+if [ "$BUILD_FRESH" = ask ]; then
+    if [ -t 0 ]; then
+        printf 'Build fresh from source? [y/N] '
+        read -r answer || answer=
+        case "$answer" in [Yy]|[Yy][Ee][Ss]) BUILD_FRESH=true ;; *) BUILD_FRESH=false ;; esac
+    else
+        BUILD_FRESH=false
+    fi
+fi
+
+if [ "$BUILD_FRESH" = true ]; then
+    APP_BIN=$ROOT/bin/giti-app
+    LAUNCHER_BIN=$ROOT/bin/giti-launcher
+else
+    test "$(uname -s)" = Linux && test "$(uname -m)" = x86_64 || { echo "The included binaries are Linux x86_64; rerun with --build on this platform." >&2; exit 1; }
+    APP_BIN=$ROOT/bin/giti-app
+    LAUNCHER_BIN=$ROOT/bin/giti-launcher
+    test -x "$APP_BIN" && test -x "$LAUNCHER_BIN" || { echo "Included binaries are missing; rerun with --build." >&2; exit 1; }
+fi
+
+if [ "$SKIP_DEPS" = false ] && [ "$BUILD_FRESH" = true ] && { ! command -v gcc >/dev/null || ! command -v git >/dev/null || ! command -v pkg-config >/dev/null || ! pkg-config --exists gtk+-3.0; }; then
     command -v apt-get >/dev/null || { echo "Install gcc, git, pkg-config, and GTK 3 development files, then rerun." >&2; exit 1; }
     SUDO=
     if [ "$(id -u)" -ne 0 ]; then
@@ -58,13 +83,25 @@ if [ "$SKIP_DEPS" = false ] && { ! command -v gcc >/dev/null || ! command -v git
     $SUDO apt-get install -y build-essential pkg-config libgtk-3-dev git
 fi
 
-command -v go >/dev/null || { echo "Go 1.24 or newer is required; see https://go.dev/doc/install" >&2; exit 1; }
-go version | awk '{sub(/^go/, "", $3); split($3, version, "."); exit !(version[1] > 1 || version[1] == 1 && version[2] >= 24)}' || {
-    echo "Go 1.24 or newer is required; see https://go.dev/doc/install" >&2
-    exit 1
-}
+if [ "$SKIP_DEPS" = false ] && [ "$BUILD_FRESH" = false ] && { ! command -v git >/dev/null || ! ldd "$APP_BIN" 2>/dev/null | grep -q 'libgtk-3.so.0 => /'; }; then
+    command -v apt-get >/dev/null || { echo "Install Git and GTK 3 runtime libraries, then rerun." >&2; exit 1; }
+    SUDO=
+    if [ "$(id -u)" -ne 0 ]; then
+        command -v sudo >/dev/null || { echo "sudo is needed to install missing runtime dependencies." >&2; exit 1; }
+        SUDO=sudo
+    fi
+    $SUDO apt-get update
+    $SUDO apt-get install -y libgtk-3-0 git
+fi
 
-"$ROOT/build.sh"
+if [ "$BUILD_FRESH" = true ]; then
+    command -v go >/dev/null || { echo "Go 1.24 or newer is required; see https://go.dev/doc/install" >&2; exit 1; }
+    go version | awk '{sub(/^go/, "", $3); split($3, version, "."); exit !(version[1] > 1 || version[1] == 1 && version[2] >= 24)}' || {
+        echo "Go 1.24 or newer is required; see https://go.dev/doc/install" >&2
+        exit 1
+    }
+    "$ROOT/build.sh"
+fi
 
 SUDO=
 if [ "$USER_INSTALL" = false ] && [ ! -w "$PREFIX" ]; then
@@ -79,8 +116,8 @@ fi
 if [ -L "$PREFIX/bin/giti-app" ]; then
     $SUDO rm "$PREFIX/bin/giti-app"
 fi
-$SUDO install -m755 "$ROOT/bin/giti-launcher" "$PREFIX/bin/giti"
-$SUDO install -m755 "$ROOT/bin/giti-app" "$PREFIX/bin/giti-app"
+$SUDO install -m755 "$LAUNCHER_BIN" "$PREFIX/bin/giti"
+$SUDO install -m755 "$APP_BIN" "$PREFIX/bin/giti-app"
 $SUDO install -m644 "$ROOT/logo/giti-logo.svg" "$DATA_HOME/icons/hicolor/scalable/apps/$APP_ID.svg"
 $SUDO install -m644 "$ROOT/logo/giti-logo.png" "$DATA_HOME/icons/hicolor/256x256/apps/$APP_ID.png"
 sed "s|^Exec=.*|Exec=$PREFIX/bin/giti|" "$ROOT/data/$APP_ID.desktop" | $SUDO tee "$DATA_HOME/applications/$APP_ID.desktop" >/dev/null

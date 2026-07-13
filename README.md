@@ -26,18 +26,23 @@ means world/universe and life in Persian.
 
 ## Installation
 
-Giti needs Go 1.24 or newer. Install it using the official [Go installation
-instructions](https://go.dev/doc/install), then run:
+Linux x86_64 release binaries are included in `bin/`, so most users can install
+without Go or a compiler:
 
 ```sh
 ./install.sh
 ```
 
-On Ubuntu, the installer automatically installs missing native build
-dependencies (`build-essential`, `pkg-config`, GTK 3 development files, and
-Git), builds Giti, and installs the binary to `~/.local/bin` and the desktop
-entry and hicolor icon to `~/.local/share`. This makes the Giti icon work in
-GNOME Wayland as well as X11.
+The installer asks whether to build fresh; choose **No** to install the bundled
+non-debug Linux x86_64 binaries. On Ubuntu it installs missing GTK 3 runtime
+libraries and Git, then installs Giti to `~/.local/bin` and its desktop entry
+and hicolor icon to `~/.local/share`. This makes the Giti icon work in GNOME
+Wayland as well as X11.
+
+Choose **Yes** at the prompt, or use `./install.sh --build`, to compile from
+source. That path requires Go 1.24 or newer; install it using the official
+[Go installation instructions](https://go.dev/doc/install). It automatically
+installs missing Ubuntu build dependencies too.
 
 For a system-wide `/usr/local` installation, use:
 
