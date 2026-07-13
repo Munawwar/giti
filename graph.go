@@ -4,7 +4,7 @@
  * Copyright (C) 2012 Jesse van den Kieboom
  * Copyright (C) 2026 Munawwar
  *
- * Adapted from libgitg/gitg-lanes.vala at gitg commit
+ * Adapted from libgitg/gitg-lanes.vala and libgitg/gitg-color.vala at gitg commit
  * 28c4314f9a82850b4a84c1535e0e9dccbc2771b1:
  * https://gitlab.gnome.org/GNOME/gitg
  *
@@ -109,19 +109,21 @@ func layoutGraph(rows []historyRow) {
 }
 
 var graphColors = [][3]float64{
-	{196.0 / 255, 160.0 / 255, 0},
+	// Gitg's lightest colors are darkened to at least APCA Lc 45 against
+	// white and Giti's #ffe2d2 selected-row background (apca-w3 0.1.9).
+	{166.0 / 255, 124.0 / 255, 0},
 	{78.0 / 255, 154.0 / 255, 6.0 / 255},
 	{206.0 / 255, 92.0 / 255, 0},
 	{32.0 / 255, 74.0 / 255, 135.0 / 255},
 	{108.0 / 255, 53.0 / 255, 102.0 / 255},
 	{164.0 / 255, 0, 0},
-	{138.0 / 255, 226.0 / 255, 52.0 / 255},
-	{252.0 / 255, 175.0 / 255, 62.0 / 255},
-	{114.0 / 255, 159.0 / 255, 207.0 / 255},
-	{252.0 / 255, 233.0 / 255, 79.0 / 255},
+	{58.0 / 255, 135.0 / 255, 53.0 / 255},
+	{212.0 / 255, 119.0 / 255, 0},
+	{82.0 / 255, 125.0 / 255, 171.0 / 255},
+	{168.0 / 255, 139.0 / 255, 0},
 	{136.0 / 255, 138.0 / 255, 133.0 / 255},
 	{173.0 / 255, 127.0 / 255, 168.0 / 255},
-	{233.0 / 255, 185.0 / 255, 110.0 / 255},
+	{189.0 / 255, 127.0 / 255, 36.0 / 255},
 	{239.0 / 255, 41.0 / 255, 41.0 / 255},
 }
 
@@ -131,6 +133,7 @@ var graphColors = [][3]float64{
 func renderGraph(row historyRow, width int) (*gdk.Pixbuf, error) {
 	surface := cairo.CreateImageSurface(cairo.FORMAT_ARGB32, width, graphRowHeight)
 	context := cairo.Create(surface)
+	defer context.Close()
 	context.SetLineWidth(2)
 	context.SetLineCap(cairo.LINE_CAP_ROUND)
 	center := float64(graphRowHeight) / 2

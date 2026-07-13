@@ -284,21 +284,13 @@ func (app *giti) loadHistory() bool {
 	}
 	target := -1
 	for index, row := range rows {
-		label := "<b>" + html.EscapeString(row.subject) + "</b>"
-		if row.kind == "commit" {
-			refs := ""
-			if row.refs != "" {
-				refs = "  <span foreground=\"#355070\">" + html.EscapeString(strings.ReplaceAll(row.refs, "tag: ", "🏷 ")) + "</span>"
-			}
-			label = fmt.Sprintf("<b>%s</b>%s\n<span foreground=\"#374151\"><tt>%s</tt>  ·  %s</span>", html.EscapeString(row.subject), refs, html.EscapeString(row.revision[:7]), html.EscapeString(row.author))
-		}
 		graph, graphErr := renderGraph(row, graphWidth)
 		if graphErr != nil {
 			app.showError(graphErr)
 			return false
 		}
 		iter := app.historyStore.Append()
-		app.historyStore.Set(iter, []int{0, 1, 2}, []any{graph, label, row.kind})
+		app.historyStore.Set(iter, []int{0, 1, 2}, []any{graph, historyLabel(row), row.kind})
 		if target < 0 {
 			target = index
 		}
@@ -318,6 +310,20 @@ func (app *giti) loadHistory() bool {
 	}
 	app.updateGraphSearch()
 	return false
+}
+
+func historyLabel(row historyRow) string {
+	if row.kind != "commit" {
+		return "<b>" + html.EscapeString(row.subject) + "</b>"
+	}
+	refs, topology := "", ""
+	if row.refs != "" {
+		refs = "  <span foreground=\"#355070\">" + html.EscapeString(strings.ReplaceAll(row.refs, "tag: ", "🏷 ")) + "</span>"
+	}
+	if len(row.parents) > 1 {
+		topology = fmt.Sprintf("  ·  merge  ·  %d parents", len(row.parents))
+	}
+	return fmt.Sprintf("<b>%s</b>%s\n<span foreground=\"#374151\"><tt>%s</tt>  ·  %s%s</span>", html.EscapeString(row.subject), refs, html.EscapeString(row.revision[:7]), html.EscapeString(row.author), topology)
 }
 
 type searchMatch struct {

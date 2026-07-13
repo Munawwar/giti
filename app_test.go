@@ -54,3 +54,12 @@ func TestSearchHistoryRanksExactPhrasesAboveSeparateWords(t *testing.T) {
 		t.Fatalf("scores did not distinguish phrase and word matches: %#v", matches)
 	}
 }
+
+func TestHistoryLabelDescribesMergeAndEscapesContent(t *testing.T) {
+	label := historyLabel(historyRow{kind: "commit", revision: "123456789", subject: "merge <side>", refs: "HEAD -> main, tag: v1", author: "A & B", parents: []string{"one", "two"}})
+	for _, want := range []string{"merge &lt;side&gt;", "HEAD -&gt; main", "🏷 v1", "A &amp; B", "merge  ·  2 parents"} {
+		if !strings.Contains(label, want) {
+			t.Fatalf("history label %q does not contain %q", label, want)
+		}
+	}
+}
