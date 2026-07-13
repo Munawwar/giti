@@ -5,8 +5,11 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
 )
+
+const applicationID = "io.github.Munawwar.Giti"
 
 func main() {
 	runtime.LockOSThread()
@@ -20,6 +23,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "giti:", err)
 		os.Exit(1)
 	}
+	glib.SetPrgname(applicationID)
+	glib.SetApplicationName("Giti")
 	gtk.Init(nil)
 	app, err := newGiti(repo, resident)
 	if err != nil {

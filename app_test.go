@@ -1,9 +1,22 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
+
+func TestDesktopEntryMatchesApplicationID(t *testing.T) {
+	entry, err := os.ReadFile("data/" + applicationID + ".desktop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Icon=" + applicationID, "StartupWMClass=" + applicationID} {
+		if !strings.Contains(string(entry), want) {
+			t.Fatalf("desktop entry missing %q", want)
+		}
+	}
+}
 
 func TestDisplayLinesHideRedundantHeaders(t *testing.T) {
 	patch := "diff --git a/old.go b/new.go\nindex 123..456 100644\n--- a/old.go\n+++ b/new.go\n@@ -1 +1 @@\n-old\n+new\n"

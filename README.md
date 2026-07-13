@@ -24,30 +24,28 @@ means world/universe and life in Persian.
 ./giti -1
 ```
 
-## Ubuntu installation
+## Installation
 
-Install the native build dependencies:
-
-```sh
-sudo apt update
-sudo apt install build-essential pkg-config libgtk-3-dev git
-```
-
-Giti also needs Go 1.24 or newer to build. Check with `go version`; if the
-installed version is older, install a current release using the official
-[Go installation instructions](https://go.dev/doc/install).
-
-Build, test, and install both binaries together:
+Giti needs Go 1.24 or newer. Install it using the official [Go installation
+instructions](https://go.dev/doc/install), then run:
 
 ```sh
-./build.sh
-./test.sh
-sudo install -m755 bin/giti-app /usr/local/bin/giti-app
-sudo install -m755 bin/giti-launcher /usr/local/bin/giti
+./install.sh
 ```
 
-The test command includes a live GTK smoke test and therefore needs a graphical
-display. You can then run `giti`, `giti main`, `giti v1.0.0`, or
+On Ubuntu, the installer automatically installs missing native build
+dependencies (`build-essential`, `pkg-config`, GTK 3 development files, and
+Git), builds Giti, and installs the binary to `~/.local/bin` and the desktop
+entry and hicolor icon to `~/.local/share`. This makes the Giti icon work in
+GNOME Wayland as well as X11.
+
+For a system-wide `/usr/local` installation, use:
+
+```sh
+./install.sh --system
+```
+
+You can then run `giti`, `giti main`, `giti v1.0.0`, or
 `giti <sha>` from any repository.
 
 If GTK 3 is installed at runtime but its development package is unavailable and
