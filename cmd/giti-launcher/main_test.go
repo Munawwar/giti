@@ -4,7 +4,11 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -52,6 +56,67 @@ func TestGitiAppPathRecognizesRebuiltResident(t *testing.T) {
 	} {
 		if actual := isGitiAppPath(path); actual != expected {
 			t.Errorf("isGitiAppPath(%q) = %v, want %v", path, actual, expected)
+		}
+	}
+}
+
+func TestStopResidentAfterExecutableReplacement(t *testing.T) {
+	runtimeDir := t.TempDir()
+	app := filepath.Join(runtimeDir, "giti-app")
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.ReadFile(sleep)
+	if err == nil {
+		err = os.WriteFile(app, binary, 0o755)
+	}
+	if err != nil {
+		t.Fatalf("copy helper executable: %v", err)
+	}
+	process := exec.Command(app, "30")
+	if err = process.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer process.Process.Kill()
+	if err = os.WriteFile(filepath.Join(runtimeDir, "giti.pid"), []byte(strconv.Itoa(process.Process.Pid)+"\n"), 0o600); err == nil {
+		err = os.Remove(app)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = stopResident(runtimeDir); err != nil {
+		t.Fatal(err)
+	}
+	_ = process.Wait()
+	if _, err = os.Stat(filepath.Join(runtimeDir, "giti.pid")); !os.IsNotExist(err) {
+		t.Fatalf("PID file survived restart: %v", err)
+	}
+}
+
+func TestStopResidentPreservesCoordinationFilesWhileLocked(t *testing.T) {
+	runtimeDir := t.TempDir()
+	lock, err := os.OpenFile(filepath.Join(runtimeDir, "giti.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	pidPath, socketPath := filepath.Join(runtimeDir, "giti.pid"), filepath.Join(runtimeDir, "giti.sock")
+	if err = os.WriteFile(pidPath, []byte("invalid\n"), 0o600); err == nil {
+		err = os.WriteFile(socketPath, nil, 0o600)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = stopResident(runtimeDir); err == nil || !strings.Contains(err.Error(), "still owns") {
+		t.Fatalf("locked resident returned %v", err)
+	}
+	for _, path := range []string{pidPath, socketPath} {
+		if _, err = os.Stat(path); err != nil {
+			t.Fatalf("coordination file %s was removed: %v", path, err)
 		}
 	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -35,37 +36,10 @@ func main() {
 	}
 	runtimeDir := runtimeDirectory()
 	if force {
-		if data, readErr := os.ReadFile(filepath.Join(runtimeDir, "giti.pid")); readErr == nil {
-			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
-			if parseErr == nil && pid != os.Getpid() {
-				executablePath := filepath.Join("/proc", strconv.Itoa(pid), "exe")
-				target, linkErr := os.Readlink(executablePath)
-				if linkErr == nil && isGitiAppPath(target) {
-					_ = syscall.Kill(pid, syscall.SIGTERM)
-					deadline := time.Now().Add(2 * time.Second)
-					_, linkErr = os.Readlink(executablePath)
-					for linkErr == nil && time.Now().Before(deadline) {
-						time.Sleep(10 * time.Millisecond)
-						_, linkErr = os.Readlink(executablePath)
-					}
-					if linkErr == nil {
-						_ = syscall.Kill(pid, syscall.SIGKILL)
-						deadline = time.Now().Add(time.Second)
-						_, linkErr = os.Readlink(executablePath)
-						for linkErr == nil && time.Now().Before(deadline) {
-							time.Sleep(10 * time.Millisecond)
-							_, linkErr = os.Readlink(executablePath)
-						}
-						if linkErr == nil {
-							fmt.Fprintf(os.Stderr, "could not stop Giti resident %d\n", pid)
-							os.Exit(1)
-						}
-					}
-				}
-			}
+		if err = stopResident(runtimeDir); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
 		}
-		_ = os.Remove(filepath.Join(runtimeDir, "giti.pid"))
-		_ = os.Remove(filepath.Join(runtimeDir, "giti.sock"))
 	}
 	response := ""
 	if !force {
@@ -122,6 +96,55 @@ func main() {
 func isGitiAppPath(target string) bool {
 	name := filepath.Base(strings.TrimSuffix(target, " (deleted)"))
 	return name == "giti-app" || name == "giti-app-debug"
+}
+
+func stopResident(runtimeDir string) error {
+	pidPath, socketPath := filepath.Join(runtimeDir, "giti.pid"), filepath.Join(runtimeDir, "giti.sock")
+	data, readErr := os.ReadFile(pidPath)
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+	if readErr == nil && parseErr == nil && pid != os.Getpid() {
+		executablePath := filepath.Join("/proc", strconv.Itoa(pid), "exe")
+		target, linkErr := os.Readlink(executablePath)
+		if linkErr == nil && isGitiAppPath(target) {
+			if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+				return fmt.Errorf("stop Giti resident %d: %w", pid, err)
+			}
+			if !waitForExit(executablePath, 2*time.Second) {
+				if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+					return fmt.Errorf("kill Giti resident %d: %w", pid, err)
+				}
+				if !waitForExit(executablePath, time.Second) {
+					return fmt.Errorf("could not stop Giti resident %d", pid)
+				}
+			}
+		}
+	}
+	lock, err := os.OpenFile(filepath.Join(runtimeDir, "giti.lock"), os.O_RDWR, 0)
+	if err == nil {
+		defer lock.Close()
+		if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return errors.New("a Giti resident still owns the process lock; coordination files were preserved")
+		}
+		if err != nil {
+			return fmt.Errorf("check Giti resident lock: %w", err)
+		}
+		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("open Giti resident lock: %w", err)
+	}
+	_ = os.Remove(pidPath)
+	_ = os.Remove(socketPath)
+	return nil
+}
+
+func waitForExit(executablePath string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	_, err := os.Readlink(executablePath)
+	for err == nil && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		_, err = os.Readlink(executablePath)
+	}
+	return err != nil
 }
 
 func contactResident(request openRequest) string {
