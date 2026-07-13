@@ -12,6 +12,29 @@ import (
 	"testing"
 )
 
+func TestLauncherArguments(t *testing.T) {
+	tests := []struct {
+		args                         []string
+		revision                     string
+		foreground, force, wantError bool
+	}{
+		{args: []string{"giti"}, revision: "HEAD"},
+		{args: []string{"giti", "main"}, revision: "main"},
+		{args: []string{"giti", "-f"}, revision: "HEAD", foreground: true},
+		{args: []string{"giti", "--foreground", "v1"}, revision: "v1", foreground: true},
+		{args: []string{"giti", "-1"}, revision: "HEAD", force: true},
+		{args: []string{"giti", "-f", "-1"}, revision: "HEAD", wantError: true},
+		{args: []string{"giti", "--unknown"}, revision: "HEAD", wantError: true},
+		{args: []string{"giti", "one", "two"}, revision: "HEAD", wantError: true},
+	}
+	for _, test := range tests {
+		revision, foreground, force, err := launcherArguments(test.args)
+		if revision != test.revision || foreground != test.foreground || force != test.force || (err != nil) != test.wantError {
+			t.Errorf("launcherArguments(%q) = %q, %v, %v, %v", test.args, revision, foreground, force, err)
+		}
+	}
+}
+
 func TestContactResident(t *testing.T) {
 	runtimeDir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)

@@ -13,6 +13,8 @@ means world/universe and life in Persian.
 ./giti main
 ./giti v1.0.0
 ./giti abc123
+./giti -f
+./giti --foreground main
 ./giti -1
 ```
 
@@ -69,20 +71,25 @@ the single-resident rule even when launch commands race. Resident output is
 written to `$XDG_RUNTIME_DIR/giti.log` (or `/tmp/giti-$UID/giti.log` when that
 variable is unset).
 
+Use `giti -f` or `giti --foreground` for a one-shot app attached to the
+terminal. It bypasses the resident, can run alongside it, forwards terminal
+signals, and exits when its window closes. An optional revision may follow the
+flag.
+
 ## Debugging a crash
 
 The debug build retains symbols and disables compiler optimization:
 
 ```sh
 ./build-debug.sh
-GOTRACEBACK=crash bin/giti-launcher-debug HEAD 2>&1 | tee /tmp/giti-crash.log
+GOTRACEBACK=crash bin/giti-launcher-debug -f HEAD 2>&1 | tee /tmp/giti-crash.log
 ```
 
 Reproduce the crash, then keep `/tmp/giti-crash.log`. If Ubuntu reports a
 core dump, `coredumpctl info giti-app-debug` shows its metadata and
 `coredumpctl debug giti-app-debug` opens it in GDB. The release and debug
-launchers use separate app binaries, but they intentionally share the resident
-socket; close any running Giti process before starting a debug session.
+launchers use separate app binaries. Foreground mode is ephemeral, so the debug
+app can run alongside the resident without using its socket.
 
 ## License
 

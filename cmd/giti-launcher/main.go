@@ -21,18 +21,15 @@ type openRequest struct {
 }
 
 func main() {
-	if len(os.Args) > 2 {
-		fmt.Fprintf(os.Stderr, "usage: %s [HEAD|branch|tag|sha|-1]\n", os.Args[0])
+	revision, foreground, force, err := launcherArguments(os.Args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
 	path, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
-	}
-	revision, force := "HEAD", len(os.Args) == 2 && os.Args[1] == "-1"
-	if len(os.Args) == 2 && !force {
-		revision = os.Args[1]
 	}
 	runtimeDir := runtimeDirectory()
 	if force {
@@ -42,7 +39,7 @@ func main() {
 		}
 	}
 	response := ""
-	if !force {
+	if !force && !foreground {
 		response = contactResident(openRequest{Path: path, Revision: revision})
 	}
 	if response == "OK" || response == "BUSY" {
@@ -59,7 +56,7 @@ func main() {
 		appName += "-debug"
 	}
 	app := filepath.Join(filepath.Dir(executable), appName)
-	if response == "" && !debug {
+	if response == "" && !debug && !foreground {
 		if err = os.MkdirAll(runtimeDir, 0o700); err == nil {
 			var input, log *os.File
 			input, err = os.Open(os.DevNull)
@@ -87,10 +84,45 @@ func main() {
 		}
 		return
 	}
-	if err = syscall.Exec(app, []string{app, "--resident", path, revision}, os.Environ()); err != nil {
+	mode := "--resident"
+	if foreground {
+		mode = "--ephemeral"
+	}
+	if err = syscall.Exec(app, []string{app, mode, path, revision}, os.Environ()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func launcherArguments(args []string) (revision string, foreground, force bool, err error) {
+	revision = "HEAD"
+	usage := fmt.Errorf("usage: %s [-f|--foreground] [HEAD|branch|tag|sha] | -1", args[0])
+	switch len(args) {
+	case 1:
+		return
+	case 2:
+		switch args[1] {
+		case "-f", "--foreground":
+			foreground = true
+		case "-1":
+			force = true
+		default:
+			if strings.HasPrefix(args[1], "-") {
+				err = usage
+			} else {
+				revision = args[1]
+			}
+		}
+	case 3:
+		if args[1] != "-f" && args[1] != "--foreground" || strings.HasPrefix(args[2], "-") {
+			err = usage
+		} else {
+			foreground, revision = true, args[2]
+		}
+	default:
+		err = usage
+	}
+	return
 }
 
 func isGitiAppPath(target string) bool {
