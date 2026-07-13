@@ -1,12 +1,11 @@
 # Giti
 
-A tiny git history and single-file diff viewer for linux meant to be invoked quickly with window maximized from a terminal, for the hybrid TUI-GUI workflow loving devs.
+A `gitk` alternative. A tiny git history diff viewer for linux meant to be invoked quickly from a terminal (with window maximized), for the hybrid TUI-GUI workflow loving devs.
 
-It starts up in around 200ms as startup time is important for repeat invokes from terminal.
+Keeping bloat low and starting up quickly were important design choices for repeat invokes from terminal. giti cold starts in ~200ms and warm starts in <100ms.
 
-The name was chosen for a short command in the spirit of `gitk`. Its Persian
-meaning of world/universe and life, was a happy coincidence discovered after the
-name was chosen.
+`giti` coincidentally 
+means world/universe and life in Persian.
 
 ```sh
 ./giti
@@ -16,23 +15,6 @@ name was chosen.
 ./giti abc123
 ./giti -1
 ```
-
-The initial history contains unstaged and staged entries when present, followed by ten commits. Select a history entry, then a changed file, to view only that file's stacked diff. Whitespace changes are ignored by default; enable **Show whitespace changes** to use Git's regular diff.
-
-The application opens maximized by default. Use **Load more** when the initial ten-commit history is not enough.
-
-Enable **Show full file** to expand the selected diff with the unchanged surrounding lines. The option resets when the selection changes and is disabled for files larger than 2 MiB to avoid accidentally rendering an enormous document.
-
-Rendered patches are capped at 8 MiB. Giti terminates larger diff output and shows a truncation notice instead of retaining an unbounded patch in memory. Hiding the resident window also releases its history, file list, and diff contents.
-
-The first normal invocation starts the sole resident as a detached background
-process, so its terminal returns immediately. Closing its window hides the
-resident for up to 12 hours, and a later invocation reuses it. Invoking Giti
-while its window is already visible does not create another process. `giti -1`
-terminates the recorded resident and starts a fresh one. A process lock enforces
-the single-resident rule even when launch commands race. Resident output is
-written to `$XDG_RUNTIME_DIR/giti.log` (or `/tmp/giti-$UID/giti.log` when that
-variable is unset).
 
 ## Ubuntu installation
 
@@ -65,6 +47,27 @@ you cannot use `sudo`, `./bootstrap-dev-deps.sh` downloads the needed Ubuntu
 development packages into the ignored `.deps` directory. The build scripts use
 that private copy automatically. It can be deleted after installing
 `libgtk-3-dev` system-wide.
+
+## Features / Deets
+
+The initial history contains unstaged and staged entries when present, followed by ten commits. Select a history entry, then a changed file, to view only that file's stacked diff. Whitespace changes are ignored by default; enable **Show whitespace changes** to use Git's regular diff.
+
+For performance only a few commits are shown in graph initially. Use **Load more** when the initial ten-commit history is not enough.
+
+Enable **Show full file** to expand the selected diff with the unchanged surrounding lines. The option resets when the selection changes and is disabled for files larger than 2 MiB to avoid accidentally rendering an enormous document.
+
+Rendered patches are capped at 8 MiB. Giti terminates larger diff output and shows a truncation notice instead of retaining an unbounded patch in memory. Hiding the resident window also releases its history, file list, and diff contents.
+
+### Cold start improvement with a background process
+
+The first normal invocation starts the sole resident as a detached background
+process, so its terminal returns immediately. Closing its window hides the
+resident for up to 12 hours, and a later invocation reuses it. Invoking Giti
+while its window is already visible does not create another process. `giti -1`
+terminates the recorded resident and starts a fresh one. A process lock enforces
+the single-resident rule even when launch commands race. Resident output is
+written to `$XDG_RUNTIME_DIR/giti.log` (or `/tmp/giti-$UID/giti.log` when that
+variable is unset).
 
 ## Debugging a crash
 
