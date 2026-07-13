@@ -34,37 +34,37 @@ treeview.giti-list.view:selected:backdrop {
 }`
 
 type giti struct {
-	repository              *repository
-	resident, busy          bool
-	idleDeadline            time.Time
-	stateMu                 sync.Mutex
-	server                  *residentServer
-	historyLimit            int
-	graphWidth              int
-	selectionGeneration     uint64
-	diffGeneration          uint64
-	selectionCancel         context.CancelFunc
-	diffCancel              context.CancelFunc
-	styleProvider           *gtk.CssProvider
-	diffScroll              map[string]scrollPosition
-	historyRows             []historyRow
-	searchMatches           []historyRow
-	files                   []changedFile
-	currentRow              *historyRow
-	currentFile             *changedFile
-	window                  *gtk.Window
-	historyStore, fileStore *gtk.ListStore
-	historyView, fileView   *gtk.TreeView
-	historySearch           *gtk.SearchEntry
-	historyStack            *gtk.Stack
-	searchResults           *gtk.ListBox
-	commitHeader            *gtk.Box
-	diffBuffer              *gtk.TextBuffer
-	diffView                *gtk.TextView
-	diffScroller            *gtk.ScrolledWindow
-	whitespaceToggle        *gtk.CheckButton
-	fullFileToggle          *gtk.CheckButton
-	fullFileHandler         glib.SignalHandle
+	repository                 *repository
+	resident, busy, diffLoaded bool
+	idleDeadline               time.Time
+	stateMu                    sync.Mutex
+	server                     *residentServer
+	historyLimit               int
+	graphWidth                 int
+	selectionGeneration        uint64
+	diffGeneration             uint64
+	selectionCancel            context.CancelFunc
+	diffCancel                 context.CancelFunc
+	styleProvider              *gtk.CssProvider
+	diffScroll                 map[string]scrollPosition
+	historyRows                []historyRow
+	searchMatches              []historyRow
+	files                      []changedFile
+	currentRow                 *historyRow
+	currentFile                *changedFile
+	window                     *gtk.Window
+	historyStore, fileStore    *gtk.ListStore
+	historyView, fileView      *gtk.TreeView
+	historySearch              *gtk.SearchEntry
+	historyStack               *gtk.Stack
+	searchResults              *gtk.ListBox
+	commitHeader               *gtk.Box
+	diffBuffer                 *gtk.TextBuffer
+	diffView                   *gtk.TextView
+	diffScroller               *gtk.ScrolledWindow
+	whitespaceToggle           *gtk.CheckButton
+	fullFileToggle             *gtk.CheckButton
+	fullFileHandler            glib.SignalHandle
 }
 
 type scrollPosition struct{ horizontal, vertical float64 }
@@ -106,7 +106,7 @@ func newGiti(repo *repository, resident bool) (*giti, error) {
 	app.fileStore = must(gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING))
 	app.buildWindow()
 	if resident {
-		glib.TimeoutSecondsAdd(60, app.expireIfIdle)
+		addMainSource(60, app.expireIfIdle)
 	}
 	return app, nil
 }
@@ -253,7 +253,7 @@ func copySHAButton(sha string) *gtk.Button {
 }
 
 func (app *giti) rememberDiffScroll() {
-	if app.currentRow != nil && app.currentFile != nil {
+	if app.diffLoaded && app.currentRow != nil && app.currentFile != nil {
 		app.diffScroll[diffKey(*app.currentRow, *app.currentFile)] = scrollPosition{app.diffScroller.GetHAdjustment().GetValue(), app.diffScroller.GetVAdjustment().GetValue()}
 	}
 }
@@ -300,14 +300,14 @@ func (app *giti) loadHistory() bool {
 			target, preferredKind = index, ""
 		}
 	}
-	glib.IdleAdd(func() bool {
+	addMainSource(0, func() bool {
 		if generation == app.selectionGeneration {
 			app.fitGraphRows()
 		}
 		return false
 	})
 	if target >= 0 {
-		glib.IdleAdd(func() bool {
+		addMainSource(0, func() bool {
 			if generation == app.selectionGeneration && target < len(app.historyRows) {
 				path := must(gtk.TreePathNewFromIndicesv([]int{target}))
 				selection, _ := app.historyView.GetSelection()
@@ -548,8 +548,7 @@ func (app *giti) onHistorySelected() {
 	if app.currentFile != nil {
 		previousPath = app.currentFile.path
 	}
-	app.currentRow = &app.historyRows[index]
-	app.currentFile, app.files = nil, nil
+	app.currentRow, app.currentFile, app.files, app.diffLoaded = &app.historyRows[index], nil, nil, false
 	app.fileStore.Clear()
 	ctx, cancel := context.WithCancel(context.Background())
 	app.selectionCancel = cancel
@@ -561,7 +560,7 @@ func (app *giti) onHistorySelected() {
 			details, detailsErr = repo.commitDetailsContext(ctx, row.revision)
 		}
 		files, loadErr := repo.changedFilesContext(ctx, row, ignoreWhitespace)
-		glib.IdleAdd(func() bool {
+		addMainSource(0, func() bool {
 			if ctx.Err() != nil || generation != app.selectionGeneration || repo != app.repository {
 				return false
 			}
@@ -624,6 +623,7 @@ func (app *giti) onFileSelected() {
 		app.resetFullFile()
 	}
 	app.currentFile = file
+	app.diffLoaded = false
 	app.fullFileToggle.SetSensitive(false)
 	app.diffBuffer.SetText("")
 	app.diffScroller.GetHAdjustment().SetValue(0)
@@ -636,7 +636,7 @@ func (app *giti) onFileSelected() {
 	go func() {
 		size := repo.fileSizeContext(ctx, row, selectedFile)
 		patch, loadErr := repo.diffContext(ctx, row, selectedFile, ignoreWhitespace, fullFile)
-		glib.IdleAdd(func() bool {
+		addMainSource(0, func() bool {
 			if ctx.Err() != nil || generation != app.diffGeneration || selectionGeneration != app.selectionGeneration || repo != app.repository {
 				return false
 			}
@@ -656,7 +656,8 @@ func (app *giti) onFileSelected() {
 			}
 			app.fullFileToggle.HandlerUnblock(app.fullFileHandler)
 			app.setDiff(patch)
-			glib.IdleAdd(func() bool {
+			app.diffLoaded = true
+			addMainSource(0, func() bool {
 				if generation == app.diffGeneration && selectionGeneration == app.selectionGeneration {
 					horizontal, vertical := app.diffScroller.GetHAdjustment(), app.diffScroller.GetVAdjustment()
 					horizontal.SetValue(min(position.horizontal, max(0, horizontal.GetUpper()-horizontal.GetPageSize())))
@@ -744,7 +745,7 @@ func (app *giti) clearRepositoryView() {
 	}
 	app.historyRows, app.files, app.searchMatches = nil, nil, nil
 	app.diffScroll = make(map[string]scrollPosition)
-	app.currentRow, app.currentFile = nil, nil
+	app.currentRow, app.currentFile, app.diffLoaded = nil, nil, false
 	app.historySearch.SetText("")
 	app.historyStore.Clear()
 	app.fileStore.Clear()

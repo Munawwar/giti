@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
-
-	"github.com/gotk3/gotk3/glib"
 )
 
 type openRequest struct {
@@ -97,7 +95,7 @@ func (server *residentServer) handle(connection net.Conn) {
 	server.application.busy = true
 	server.application.stateMu.Unlock()
 	connection.Write([]byte("OK\n"))
-	glib.IdleAdd(func() bool { return server.application.openRepository(request.Path, request.Revision) })
+	addMainSource(0, func() bool { return server.application.openRepository(request.Path, request.Revision) })
 }
 
 func (server *residentServer) stop() {

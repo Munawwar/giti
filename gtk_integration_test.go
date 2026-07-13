@@ -22,13 +22,32 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	path := testRepository(t)
-	os.WriteFile(filepath.Join(path, "first.txt"), []byte("one\n"+strings.Repeat("more\n", 200)), 0o644)
+	os.WriteFile(filepath.Join(path, "first.txt"), []byte("one"+strings.Repeat("x", 400)+"\n"+strings.Repeat("more\n", 200)), 0o644)
 	os.WriteFile(filepath.Join(path, "second.txt"), []byte("second\n"), 0o644)
 	repo, err := newRepository(path, "HEAD")
 	if err != nil {
 		t.Fatal(err)
 	}
 	gtk.Init(nil)
+	nestedRuns := 0
+	var nestedSource func() bool
+	nestedSource = func() bool {
+		nestedRuns++
+		if nestedRuns < 1000 {
+			addMainSource(0, nestedSource)
+		}
+		return false
+	}
+	addMainSource(0, nestedSource)
+	deadline := time.Now().Add(2 * time.Second)
+	for nestedRuns < 1000 && time.Now().Before(deadline) {
+		for gtk.EventsPending() {
+			gtk.MainIteration()
+		}
+	}
+	if nestedRuns != 1000 {
+		t.Fatalf("nested main-context scheduling stopped after %d runs", nestedRuns)
+	}
 	app, err := newGiti(repo, false)
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +95,7 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	if themeErr != nil || !isThemeName || strings.HasSuffix(themeName, "-dark") {
 		t.Fatalf("Giti did not force a light GTK theme: theme=%q err=%v", theme, themeErr)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(2 * time.Second)
 	for (!app.window.IsMaximized() || app.currentFile == nil || app.diffBuffer.GetCharCount() == 0) && time.Now().Before(deadline) {
 		for gtk.EventsPending() {
 			gtk.MainIteration()
@@ -127,23 +146,30 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	scroll := app.diffScroller.GetVAdjustment()
-	scroll.SetValue(180)
-	wanted := scroll.GetValue()
-	if wanted == 0 {
-		t.Fatal("fixture did not create a scrollable diff")
+	vertical, horizontal := app.diffScroller.GetVAdjustment(), app.diffScroller.GetHAdjustment()
+	vertical.SetValue(180)
+	horizontal.SetValue(120)
+	wanted := scrollPosition{horizontal.GetValue(), vertical.GetValue()}
+	if wanted.horizontal == 0 || wanted.vertical == 0 {
+		t.Fatalf("fixture did not create a two-axis scrollable diff: %#v", wanted)
 	}
-	app.fileView.SetCursor(must(gtk.TreePathNewFromIndicesv([]int{1})), nil, false)
-	app.fileView.SetCursor(must(gtk.TreePathNewFromIndicesv([]int{0})), nil, false)
+	switchStarted := time.Now()
+	for _, index := range []int{1, 0, 1, 0, 1, 0} {
+		app.fileView.SetCursor(must(gtk.TreePathNewFromIndicesv([]int{index})), nil, false)
+	}
+	if elapsed := time.Since(switchStarted); elapsed > 100*time.Millisecond {
+		t.Fatalf("file selection blocked GTK for %v", elapsed)
+	}
 	deadline = time.Now().Add(2 * time.Second)
-	for (app.currentFile == nil || app.currentFile.path != "first.txt" || scroll.GetValue() < wanted-1) && time.Now().Before(deadline) {
+	for (app.currentFile == nil || app.currentFile.path != "first.txt" || horizontal.GetValue() < wanted.horizontal-1 || vertical.GetValue() < wanted.vertical-1) && time.Now().Before(deadline) {
 		for gtk.EventsPending() {
 			gtk.MainIteration()
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if restored := scroll.GetValue(); app.currentFile == nil || app.currentFile.path != "first.txt" || restored < wanted-1 || restored > wanted+1 {
-		t.Fatalf("file scroll was not restored: got=%v want=%v", restored, wanted)
+	restored := scrollPosition{horizontal.GetValue(), vertical.GetValue()}
+	if app.currentFile == nil || app.currentFile.path != "first.txt" || restored.horizontal < wanted.horizontal-1 || restored.horizontal > wanted.horizontal+1 || restored.vertical < wanted.vertical-1 || restored.vertical > wanted.vertical+1 {
+		t.Fatalf("file scroll was not restored: got=%#v want=%#v", restored, wanted)
 	}
 	realGit, err := exec.LookPath("git")
 	if err != nil {
