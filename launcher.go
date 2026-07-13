@@ -15,13 +15,8 @@ import (
 	"time"
 )
 
-type openRequest struct {
-	Path     string `json:"path"`
-	Revision string `json:"revision"`
-}
-
-func main() {
-	revision, foreground, force, err := launcherArguments(os.Args)
+func launch(args []string) {
+	revision, foreground, force, err := launcherArguments(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -32,8 +27,13 @@ func main() {
 		os.Exit(1)
 	}
 	runtimeDir := runtimeDirectory()
+	executable, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	if force {
-		if err = stopResident(runtimeDir); err != nil {
+		if err = stopResident(runtimeDir, executable); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -45,17 +45,7 @@ func main() {
 	if response == "OK" || response == "BUSY" {
 		return
 	}
-	executable, err := os.Executable()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	appName := "giti-app"
 	debug := strings.HasSuffix(filepath.Base(executable), "-debug")
-	if debug {
-		appName += "-debug"
-	}
-	app := filepath.Join(filepath.Dir(executable), appName)
 	if response == "" && !debug && !foreground {
 		if err = os.MkdirAll(runtimeDir, 0o700); err == nil {
 			var input, log *os.File
@@ -70,7 +60,7 @@ func main() {
 				defer log.Close()
 			}
 			if err == nil {
-				command := exec.Command(app, "--resident", path, revision)
+				command := exec.Command(executable, "--resident", path, revision)
 				command.Stdin, command.Stdout, command.Stderr = input, log, log
 				command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 				if err = command.Start(); err == nil {
@@ -88,7 +78,7 @@ func main() {
 	if foreground {
 		mode = "--ephemeral"
 	}
-	if err = syscall.Exec(app, []string{app, mode, path, revision}, os.Environ()); err != nil {
+	if err = syscall.Exec(executable, []string{executable, mode, path, revision}, os.Environ()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -125,19 +115,17 @@ func launcherArguments(args []string) (revision string, foreground, force bool, 
 	return
 }
 
-func isGitiAppPath(target string) bool {
-	name := filepath.Base(strings.TrimSuffix(target, " (deleted)"))
-	return name == "giti-app" || name == "giti-app-debug"
-}
-
-func stopResident(runtimeDir string) error {
+func stopResident(runtimeDir, executable string) error {
 	pidPath, socketPath := filepath.Join(runtimeDir, "giti.pid"), filepath.Join(runtimeDir, "giti.sock")
 	data, readErr := os.ReadFile(pidPath)
 	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
 	if readErr == nil && parseErr == nil && pid != os.Getpid() {
 		executablePath := filepath.Join("/proc", strconv.Itoa(pid), "exe")
 		target, linkErr := os.Readlink(executablePath)
-		if linkErr == nil && isGitiAppPath(target) {
+		target = strings.TrimSuffix(target, " (deleted)")
+		name := filepath.Base(target)
+		legacy := filepath.Dir(target) == filepath.Dir(executable) && (name == "giti-app" || name == "giti-app-debug")
+		if linkErr == nil && (target == executable || legacy) {
 			if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 				return fmt.Errorf("stop Giti resident %d: %w", pid, err)
 			}
@@ -191,11 +179,4 @@ func contactResident(request openRequest) string {
 	}
 	response, _ := bufio.NewReader(connection).ReadString('\n')
 	return strings.TrimSpace(response)
-}
-
-func runtimeDirectory() string {
-	if path := os.Getenv("XDG_RUNTIME_DIR"); path != "" {
-		return path
-	}
-	return filepath.Join(os.TempDir(), "giti-"+strconv.Itoa(os.Getuid()))
 }

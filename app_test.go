@@ -41,17 +41,6 @@ func TestDisplayLinesRetainRenameMetadata(t *testing.T) {
 	}
 }
 
-func TestArguments(t *testing.T) {
-	resident, path, revision, err := arguments([]string{"giti", "--resident", "/repo", "main"})
-	if err != nil || !resident || path != "/repo" || revision != "main" {
-		t.Fatalf("unexpected internal arguments: %v %q %q %v", resident, path, revision, err)
-	}
-	resident, path, revision, err = arguments([]string{"giti", "v1"})
-	if err != nil || resident || path != "." || revision != "v1" {
-		t.Fatalf("unexpected public arguments: %v %q %q %v", resident, path, revision, err)
-	}
-}
-
 func TestSearchHistoryRanksExactPhrasesAboveSeparateWords(t *testing.T) {
 	rows := []historyRow{
 		{kind: "commit", revision: "1111111", subject: "Fix parser crash"},

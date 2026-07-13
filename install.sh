@@ -36,7 +36,7 @@ Builds and installs Giti, its desktop entry, and its hicolor icon.
   --system     install under /usr/local
   --prefix     install under PATH and PATH/share
   --build      build fresh from source
-  --prebuilt   install the included Linux x86_64 release binaries
+  --prebuilt   install the included Linux x86_64 release binary
   --skip-deps  do not install missing Ubuntu build dependencies
 EOF
             exit 0
@@ -62,14 +62,10 @@ if [ "$BUILD_FRESH" = ask ]; then
     fi
 fi
 
-if [ "$BUILD_FRESH" = true ]; then
-    APP_BIN=$ROOT/bin/giti-app
-    LAUNCHER_BIN=$ROOT/bin/giti-launcher
-else
-    test "$(uname -s)" = Linux && test "$(uname -m)" = x86_64 || { echo "The included binaries are Linux x86_64; rerun with --build on this platform." >&2; exit 1; }
-    APP_BIN=$ROOT/bin/giti-app
-    LAUNCHER_BIN=$ROOT/bin/giti-launcher
-    test -x "$APP_BIN" && test -x "$LAUNCHER_BIN" || { echo "Included binaries are missing; rerun with --build." >&2; exit 1; }
+GITI_BIN=$ROOT/bin/giti
+if [ "$BUILD_FRESH" = false ]; then
+    test "$(uname -s)" = Linux && test "$(uname -m)" = x86_64 || { echo "The included binary is Linux x86_64; rerun with --build on this platform." >&2; exit 1; }
+    test -x "$GITI_BIN" || { echo "Included binary is missing; rerun with --build." >&2; exit 1; }
 fi
 
 if [ "$SKIP_DEPS" = false ] && [ "$BUILD_FRESH" = true ] && { ! command -v gcc >/dev/null || ! command -v git >/dev/null || ! command -v pkg-config >/dev/null || ! pkg-config --exists gtk+-3.0; }; then
@@ -83,7 +79,7 @@ if [ "$SKIP_DEPS" = false ] && [ "$BUILD_FRESH" = true ] && { ! command -v gcc >
     $SUDO apt-get install -y build-essential pkg-config libgtk-3-dev git
 fi
 
-if [ "$SKIP_DEPS" = false ] && [ "$BUILD_FRESH" = false ] && { ! command -v git >/dev/null || ! ldd "$APP_BIN" 2>/dev/null | grep -q 'libgtk-3.so.0 => /'; }; then
+if [ "$SKIP_DEPS" = false ] && [ "$BUILD_FRESH" = false ] && { ! command -v git >/dev/null || ! ldd "$GITI_BIN" 2>/dev/null | grep -q 'libgtk-3.so.0 => /'; }; then
     command -v apt-get >/dev/null || { echo "Install Git and GTK 3 runtime libraries, then rerun." >&2; exit 1; }
     SUDO=
     if [ "$(id -u)" -ne 0 ]; then
@@ -113,11 +109,8 @@ $SUDO install -d "$PREFIX/bin" "$DATA_HOME/applications" "$DATA_HOME/icons/hicol
 if [ -L "$PREFIX/bin/giti" ]; then
     $SUDO rm "$PREFIX/bin/giti"
 fi
-if [ -L "$PREFIX/bin/giti-app" ]; then
-    $SUDO rm "$PREFIX/bin/giti-app"
-fi
-$SUDO install -m755 "$LAUNCHER_BIN" "$PREFIX/bin/giti"
-$SUDO install -m755 "$APP_BIN" "$PREFIX/bin/giti-app"
+$SUDO rm -f "$PREFIX/bin/giti-app"
+$SUDO install -m755 "$GITI_BIN" "$PREFIX/bin/giti"
 $SUDO install -m644 "$ROOT/logo/giti-logo.svg" "$DATA_HOME/icons/hicolor/scalable/apps/$APP_ID.svg"
 $SUDO install -m644 "$ROOT/logo/giti-logo.png" "$DATA_HOME/icons/hicolor/256x256/apps/$APP_ID.png"
 sed "s|^Exec=.*|Exec=$PREFIX/bin/giti|" "$ROOT/data/$APP_ID.desktop" | $SUDO tee "$DATA_HOME/applications/$APP_ID.desktop" >/dev/null

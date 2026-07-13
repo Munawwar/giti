@@ -8,5 +8,5 @@ if [ -d "$PRIVATE_PC" ]; then
 fi
 
 mkdir -p "$ROOT/bin"
-go build -trimpath -ldflags='-s -w' -o "$ROOT/bin/giti-app" "$ROOT"
-go build -trimpath -ldflags='-s -w' -o "$ROOT/bin/giti-launcher" "$ROOT/cmd/giti-launcher"
+go build -trimpath -ldflags='-s -w' -o "$ROOT/bin/giti" "$ROOT"
+rm -f "$ROOT/bin/giti-app" "$ROOT/bin/giti-launcher"

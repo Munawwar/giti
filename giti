@@ -1,4 +1,4 @@
 #!/bin/sh
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
-[ -x "$SCRIPT_DIR/bin/giti-launcher" ] || "$SCRIPT_DIR/build.sh"
-exec "$SCRIPT_DIR/bin/giti-launcher" "$@"
+[ -x "$SCRIPT_DIR/bin/giti" ] || "$SCRIPT_DIR/build.sh"
+exec "$SCRIPT_DIR/bin/giti" "$@"

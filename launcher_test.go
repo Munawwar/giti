@@ -69,21 +69,7 @@ func TestContactResidentMissing(t *testing.T) {
 	}
 }
 
-func TestGitiAppPathRecognizesRebuiltResident(t *testing.T) {
-	for path, expected := range map[string]bool{
-		"/repo/bin/giti-app":                 true,
-		"/repo/bin/giti-app-debug":           true,
-		"/repo/bin/giti-app (deleted)":       true,
-		"/repo/bin/giti-app-debug (deleted)": true,
-		"/usr/bin/unrelated (deleted)":       false,
-	} {
-		if actual := isGitiAppPath(path); actual != expected {
-			t.Errorf("isGitiAppPath(%q) = %v, want %v", path, actual, expected)
-		}
-	}
-}
-
-func TestStopResidentAfterExecutableReplacement(t *testing.T) {
+func TestStopLegacyResidentAfterExecutableReplacement(t *testing.T) {
 	runtimeDir := t.TempDir()
 	app := filepath.Join(runtimeDir, "giti-app")
 	sleep, err := exec.LookPath("sleep")
@@ -108,7 +94,7 @@ func TestStopResidentAfterExecutableReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = stopResident(runtimeDir); err != nil {
+	if err = stopResident(runtimeDir, filepath.Join(runtimeDir, "giti")); err != nil {
 		t.Fatal(err)
 	}
 	_ = process.Wait()
@@ -134,7 +120,7 @@ func TestStopResidentPreservesCoordinationFilesWhileLocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = stopResident(runtimeDir); err == nil || !strings.Contains(err.Error(), "still owns") {
+	if err = stopResident(runtimeDir, filepath.Join(runtimeDir, "giti")); err == nil || !strings.Contains(err.Error(), "still owns") {
 		t.Fatalf("locked resident returned %v", err)
 	}
 	for _, path := range []string{pidPath, socketPath} {

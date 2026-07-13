@@ -26,7 +26,7 @@ means world/universe and life in Persian.
 
 ## Installation
 
-Linux x86_64 release binaries are included in `bin/`, so most users can install
+The Linux x86_64 release binary is included in `bin/`, so most users can install
 without Go or a compiler:
 
 ```sh
@@ -34,7 +34,7 @@ without Go or a compiler:
 ```
 
 The installer asks whether to build fresh; choose **No** to install the bundled
-non-debug Linux x86_64 binaries. On Ubuntu it installs missing GTK 3 runtime
+non-debug Linux x86_64 binary. On Ubuntu it installs missing GTK 3 runtime
 libraries and Git, then installs Giti to `~/.local/bin` and its desktop entry
 and hicolor icon to `~/.local/share`. This makes the Giti icon work in GNOME
 Wayland as well as X11.
@@ -91,14 +91,13 @@ The debug build retains symbols and disables compiler optimization:
 
 ```sh
 ./build-debug.sh
-GOTRACEBACK=crash bin/giti-launcher-debug -f HEAD 2>&1 | tee /tmp/giti-crash.log
+GOTRACEBACK=crash bin/giti-debug -f HEAD 2>&1 | tee /tmp/giti-crash.log
 ```
 
 Reproduce the crash, then keep `/tmp/giti-crash.log`. If Ubuntu reports a
-core dump, `coredumpctl info giti-app-debug` shows its metadata and
-`coredumpctl debug giti-app-debug` opens it in GDB. The release and debug
-launchers use separate app binaries. Foreground mode is ephemeral, so the debug
-app can run alongside the resident without using its socket.
+core dump, `coredumpctl info giti-debug` shows its metadata and
+`coredumpctl debug giti-debug` opens it in GDB. Foreground mode is ephemeral,
+so the debug app can run alongside the resident without using its socket.
 
 ## License
 
