@@ -22,6 +22,7 @@ func TestGTKApplicationMenu(t *testing.T) {
 	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	path := testRepository(t)
 	repo, err := newRepository(path, "HEAD")
 	if err != nil {
@@ -45,9 +46,59 @@ func TestGTKApplicationMenu(t *testing.T) {
 	if appErr != nil {
 		t.Fatal(appErr)
 	}
-	defer app.window.Destroy()
+	defer func() {
+		app.clearRepositoryView()
+		app.window.Destroy()
+	}()
 	if application.GetAppMenu() == nil || application.GetMenubar() == nil || application.GetMenubar().GetNItems() != 1 {
 		t.Fatal("refresh menu was not installed")
+	}
+}
+
+func TestGTKParentNavigationLoadsAndRevealsOlderCommit(t *testing.T) {
+	if os.Getenv("GITI_GTK_TEST") == "" {
+		t.Skip("set GITI_GTK_TEST=1 to run the display integration test")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := saveUIState(uiStatePath(), uiState{MainPanePosition: 410, RepositoryPanePosition: 300}); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := newRepository(testRepository(t), "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gtk.Init(nil)
+	app, err := newGiti(repo, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		app.clearRepositoryView()
+		app.window.Destroy()
+	}()
+	app.historyLimit = 1
+	if err = app.loadHistory(); err != nil {
+		t.Fatal(err)
+	}
+	target, err := repo.run("rev-parse", "HEAD~11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target = strings.TrimSpace(target)
+	found, err := app.revealHistoryRevision(target)
+	deadline := time.Now().Add(3 * time.Second)
+	for (app.currentRow == nil || app.currentRow.revision != target || app.historyScroller.GetVAdjustment().GetValue() == 0) && time.Now().Before(deadline) {
+		for gtk.EventsPending() {
+			gtk.MainIteration()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	missing, missingErr := app.revealHistoryRevision(strings.Repeat("f", 40))
+	mainPosition, repositoryPosition := app.mainPane.GetPosition(), app.repositoryPane.GetPosition()
+	if err != nil || !found || app.historyLimit != 101 || app.currentRow == nil || app.currentRow.revision != target || app.historyScroller.GetVAdjustment().GetValue() == 0 || missing || missingErr != nil || mainPosition != 410 || repositoryPosition != 300 {
+		t.Fatalf("older commit was not loaded and revealed: found=%v err=%v limit=%d row=%#v scroll=%v missing=%v/%v panes=%d/%d", found, err, app.historyLimit, app.currentRow, app.historyScroller.GetVAdjustment().GetValue(), missing, missingErr, mainPosition, repositoryPosition)
 	}
 }
 
@@ -57,9 +108,13 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	path := testRepository(t)
 	os.WriteFile(filepath.Join(path, "first.txt"), []byte("one"+strings.Repeat("x", 400)+"\n"+strings.Repeat("more\n", 200)), 0o644)
 	os.WriteFile(filepath.Join(path, "second.txt"), []byte("second\n"), 0o644)
+	if output, tagErr := exec.Command("git", "-C", path, "tag", strings.Repeat("long-release-name-", 12)).CombinedOutput(); tagErr != nil {
+		t.Fatalf("create long tag: %v: %s", tagErr, output)
+	}
 	repo, err := newRepository(path, "HEAD")
 	if err != nil {
 		t.Fatal(err)
@@ -92,6 +147,37 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	if iconErr != nil || icon == nil || icon.GetWidth() != 256 || icon.GetHeight() != 256 {
 		t.Fatalf("window icon is not the embedded 256px logo: icon=%v err=%v", icon, iconErr)
 	}
+	splitDeadline := time.Now().Add(2 * time.Second)
+	for app.repositoryPane.GetAllocatedHeight() <= 1 && time.Now().Before(splitDeadline) {
+		for gtk.EventsPending() {
+			gtk.MainIteration()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	splitHeight, splitPosition := app.repositoryPane.GetAllocatedHeight(), app.repositoryPane.GetPosition()
+	if app.historyLimit != initialHistoryLimit || !app.mainPane.GetWideHandle() || !app.repositoryPane.GetWideHandle() || app.loadButton.GetVisible() || app.fileView.GetTooltipColumn() != 0 || splitHeight <= 1 || splitPosition*2 < splitHeight-2 || splitPosition*2 > splitHeight+2 {
+		t.Fatalf("bad initial graph layout: limit=%d dividers=%v/%v load-more=%v tooltip=%d split=%d/%d", app.historyLimit, app.mainPane.GetWideHandle(), app.repositoryPane.GetWideHandle(), app.loadButton.GetVisible(), app.fileView.GetTooltipColumn(), splitPosition, splitHeight)
+	}
+	app.mainPane.SetPosition(app.mainPane.GetAllocatedWidth() / 3)
+	app.repositoryPane.SetPosition(splitHeight * 2 / 3)
+	app.persistPaneState()
+	savedState := loadUIState(app.statePath)
+	if savedState.MainPanePosition != app.mainPane.GetPosition() || savedState.RepositoryPanePosition != app.repositoryPane.GetPosition() {
+		t.Fatalf("pane positions were not persisted: %#v", savedState)
+	}
+	details := commitDetails{sha: strings.Repeat("a", 40), subject: "subject"}
+	app.setCommitHeader(details)
+	children := app.commitHeader.GetChildren()
+	compactHeader := children.Length()
+	children.Free()
+	details.body = "A longer description\n\nwith multiple lines."
+	app.setCommitHeader(details)
+	children = app.commitHeader.GetChildren()
+	expandedHeader := children.Length()
+	children.Free()
+	if expandedHeader != compactHeader+1 {
+		t.Fatalf("commit description expander missing: compact=%d body=%d", compactHeader, expandedHeader)
+	}
 	defer func() {
 		app.clearRepositoryView()
 		app.window.Destroy()
@@ -116,6 +202,27 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	if err != nil || !pixbufOK || pixbuf.GetWidth() < 48 || pixbuf.GetHeight() != graphRowHeight {
 		t.Fatalf("history graph is not a rendered pixbuf: value=%T err=%v", rendered, err)
 	}
+	graphScroll := app.historyScroller.GetHAdjustment()
+	scrollDeadline := time.Now().Add(2 * time.Second)
+	for graphScroll.GetUpper() <= graphScroll.GetPageSize() && time.Now().Before(scrollDeadline) {
+		for gtk.EventsPending() {
+			gtk.MainIteration()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	graphScroll.SetValue(graphScroll.GetUpper() - graphScroll.GetPageSize())
+	if app.graphColumn.GetFixedWidth() != app.graphWidth || graphScroll.GetUpper() <= graphScroll.GetPageSize() || graphScroll.GetValue() == 0 {
+		t.Fatalf("graph is not horizontally scrollable: column=%d/%d range=%v/%v value=%v", app.graphColumn.GetFixedWidth(), app.graphWidth, graphScroll.GetUpper(), graphScroll.GetPageSize(), graphScroll.GetValue())
+	}
+	graphScroll.SetValue(0)
+	app.showReferences([]string{"main", "origin/main", "feature"}, []string{"v1", "v2", "v3"})
+	if app.diffStack.GetVisibleChildName() != "references" || app.referencesPage.GetChildren() == nil {
+		t.Fatalf("references page did not replace diff view")
+	}
+	app.showDiffPage()
+	if app.diffStack.GetVisibleChildName() != "diff" {
+		t.Fatalf("diff page did not restore after references page")
+	}
 	for index, row := range app.historyRows {
 		if row.refs == "" {
 			continue
@@ -128,8 +235,13 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 			rendered, err = value.GoValue()
 			pixbuf, pixbufOK = rendered.(*gdk.Pixbuf)
 		}
-		if err != nil || !pixbufOK || pixbuf.GetHeight() != graphRowHeight {
-			t.Fatalf("ref row graph is not the uniform row height: value=%T err=%v", rendered, err)
+		cellHeight := app.historyView.GetCellArea(must(gtk.TreePathNewFromIndicesv([]int{index})), app.graphColumn).GetHeight()
+		if err != nil || !pixbufOK || pixbuf.GetHeight() != cellHeight {
+			height := 0
+			if pixbufOK {
+				height = pixbuf.GetHeight()
+			}
+			t.Fatalf("ref row graph does not fill its row: value=%T height=%d cell=%d err=%v", rendered, height, cellHeight, err)
 		}
 		break
 	}
@@ -305,6 +417,7 @@ func TestGTKGraphTextScaling(t *testing.T) {
 	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	gtk.Init(nil)
 	repo, err := newRepository(testRepository(t), "HEAD")
 	if err != nil {

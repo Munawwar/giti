@@ -58,13 +58,25 @@ func TestSearchHistoryRanksExactPhrasesAboveSeparateWords(t *testing.T) {
 }
 
 func TestHistoryLabelDescribesMergeAndEscapesContent(t *testing.T) {
-	label := historyLabel(historyRow{kind: "commit", revision: "123456789", subject: "merge <side>", refs: "HEAD -> main, tag: v1<&>, tag: v2, tag: v3, tag: v4, tag: v5, origin/main", author: "A & B", parents: []string{"one", "two"}})
-	for _, want := range []string{"merge &lt;side&gt;", `background="#d8f0dd"`, "HEAD → main", "origin/main", `background="#f8e7a3"`, "v1&lt;&amp;&gt;", "v2", "v3", "+ more", "A &amp; B", "merge  ·  2 parents"} {
+	row := historyRow{kind: "commit", revision: "123456789", subject: "merge <side>", refs: "HEAD -> main, origin/main, tag: v1<&>, tag: v2, tag: v3, tag: v4, tag: v5", author: "A & B", parents: []string{"one", "two"}}
+	label := historyLabel(row)
+	for _, want := range []string{"merge &lt;side&gt;", "A &amp; B", "merge  ·  2 parents"} {
 		if !strings.Contains(label, want) {
 			t.Fatalf("history label %q does not contain %q", label, want)
 		}
 	}
-	if strings.Contains(label, "v4") || strings.Contains(label, "v5") || strings.Count(label, `background="#f8e7a3"`) != 4 || !(strings.Index(label, "v1") < strings.Index(label, "+ more") && strings.Index(label, "+ more") < strings.Index(label, "HEAD")) {
-		t.Fatalf("history tags were not capped ahead of branches: %q", label)
+	refs := label
+	for _, want := range []string{`background="#d8f0dd"`, "HEAD → main", "origin/main", `background="#f8e7a3"`, "v1&lt;&amp;&gt;", "v2", "+ more tags"} {
+		if !strings.Contains(refs, want) {
+			t.Fatalf("history references %q does not contain %q", refs, want)
+		}
+	}
+	if strings.Contains(refs, "v3") || strings.Contains(refs, "v4") || strings.Contains(refs, "v5") || strings.Index(refs, "HEAD") > strings.Index(refs, "v1") {
+		t.Fatalf("history references were not ordered and capped: %q", refs)
+	}
+	row.refs = "main, origin/main, feature, release, tag: v1, tag: v2, tag: v3"
+	refs = historyLabel(row)
+	if !strings.Contains(refs, "+ more branches") || !strings.Contains(refs, "+ more tags") || !(strings.Index(refs, "feature") < strings.Index(refs, "main") && strings.Index(refs, "+ more branches") < strings.Index(refs, "v1")) {
+		t.Fatalf("overflow decorations were not ordered: %q", refs)
 	}
 }

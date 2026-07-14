@@ -42,11 +42,12 @@ func launch(args []string) {
 	if !force && !foreground {
 		response = contactResident(openRequest{Path: path, Revision: revision})
 	}
-	if response == "OK" || response == "BUSY" {
+	if response == "OK" {
 		return
 	}
 	debug := strings.HasSuffix(filepath.Base(executable), "-debug")
-	if response == "" && !debug && !foreground {
+	mode := launchMode(response, foreground)
+	if (response == "" || response == "BUSY") && !debug && !foreground {
 		if err = os.MkdirAll(runtimeDir, 0o700); err == nil {
 			var input, log *os.File
 			input, err = os.Open(os.DevNull)
@@ -60,7 +61,7 @@ func launch(args []string) {
 				defer log.Close()
 			}
 			if err == nil {
-				command := exec.Command(executable, "--resident", path, revision)
+				command := exec.Command(executable, mode, path, revision)
 				command.Stdin, command.Stdout, command.Stderr = input, log, log
 				command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 				if err = command.Start(); err == nil {
@@ -74,14 +75,17 @@ func launch(args []string) {
 		}
 		return
 	}
-	mode := "--resident"
-	if foreground {
-		mode = "--ephemeral"
-	}
 	if err = syscall.Exec(executable, []string{executable, mode, path, revision}, os.Environ()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func launchMode(response string, foreground bool) string {
+	if foreground || response == "BUSY" {
+		return "--ephemeral"
+	}
+	return "--resident"
 }
 
 func launcherArguments(args []string) (revision string, foreground, force bool, err error) {

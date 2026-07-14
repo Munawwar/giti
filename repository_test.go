@@ -36,6 +36,14 @@ func testRepository(t *testing.T) string {
 	return path
 }
 
+func TestSortedReferencesDoesNotMutateSource(t *testing.T) {
+	branches, tags := []string{"zeta", "origin/HEAD", "HEAD -> main", "alpha"}, []string{"v2", "v1"}
+	sortedBranches, sortedTags := sortedReferences(branches, tags)
+	if strings.Join(sortedBranches, ",") != "HEAD -> main,alpha,origin/HEAD,zeta" || strings.Join(sortedTags, ",") != "v1,v2" || branches[0] != "zeta" || tags[0] != "v2" {
+		t.Fatalf("references not independently sorted: %v %v from %v %v", sortedBranches, sortedTags, branches, tags)
+	}
+}
+
 func TestRevisionFormsAndHistoryLimit(t *testing.T) {
 	path := testRepository(t)
 	sha, _ := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output()
@@ -44,7 +52,7 @@ func TestRevisionFormsAndHistoryLimit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		rows, err := repo.history(10, true)
+		rows, hasMore, err := repo.history(10, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -57,7 +65,7 @@ func TestRevisionFormsAndHistoryLimit(t *testing.T) {
 				}
 			}
 		}
-		if commits != 10 {
+		if commits != 10 || !hasMore {
 			t.Fatalf("got %d commits", commits)
 		}
 		last := rows[len(rows)-1]
@@ -66,9 +74,13 @@ func TestRevisionFormsAndHistoryLimit(t *testing.T) {
 		}
 	}
 	older, _ := newRepository(path, "older")
-	rows, _ := older.history(1, true)
+	rows, _, _ := older.history(1, true)
 	if rows[0].subject != "commit 6" {
 		t.Fatalf("unexpected older top commit %q", rows[0].subject)
+	}
+	rows, hasMore, err := older.history(7, true)
+	if err != nil || len(rows) != 7 || hasMore {
+		t.Fatalf("exhausted history was not detected: rows=%d more=%v err=%v", len(rows), hasMore, err)
 	}
 }
 
@@ -88,7 +100,7 @@ func TestCommitDetailsIncludesRefsAndMergeParents(t *testing.T) {
 	os.WriteFile(filepath.Join(path, "main.txt"), []byte("main\n"), 0o644)
 	run("add", "main.txt")
 	run("commit", "-m", "main")
-	run("merge", "--no-ff", "side", "-m", "merge side")
+	run("merge", "--no-ff", "side", "-m", "merge side", "-m", "Explain the merge.\n\n1. Keep both changes\n2. Preserve history")
 	for _, tag := range []string{"one", "two", "three", "four"} {
 		run("tag", tag)
 	}
@@ -100,10 +112,10 @@ func TestCommitDetailsIncludesRefsAndMergeParents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if details.sha != repo.revision || details.author != "Test User" || len(details.parents) != 2 || len(details.tags) != 4 || !strings.Contains(strings.Join(details.branches, " "), "main") {
+	if details.sha != repo.revision || details.author != "Test User" || !strings.Contains(details.body, "1. Keep both changes") || len(details.parents) != 2 || strings.Join(details.tags, ",") != "four,one,three,two" || !strings.Contains(strings.Join(details.branches, " "), "main") {
 		t.Fatalf("unexpected commit details: %#v", details)
 	}
-	rows, err := repo.history(5, true)
+	rows, _, err := repo.history(5, true)
 	if err != nil || len(rows) != 5 || len(rows[0].parents) != 2 || rows[0].graph.position != 0 {
 		t.Fatalf("merge topology was not loaded: rows=%#v err=%v", rows, err)
 	}
@@ -126,7 +138,7 @@ func TestStagedUnstagedAndSingleFileDiffs(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo, _ := newRepository(path, "HEAD")
-	rows, err := repo.history(10, true)
+	rows, _, err := repo.history(10, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,11 +163,11 @@ func TestWhitespaceFullFileAndLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo, _ := newRepository(path, "HEAD")
-	rows, _ := repo.history(10, true)
+	rows, _, _ := repo.history(10, true)
 	if rows[0].kind != "commit" {
 		t.Fatalf("whitespace-only change was not hidden: %v", rows[0])
 	}
-	rows, _ = repo.history(10, false)
+	rows, _, _ = repo.history(10, false)
 	if rows[0].kind != "unstaged" {
 		t.Fatalf("whitespace change missing in regular mode")
 	}
@@ -176,7 +188,7 @@ func TestWhitespaceFullFileAndLimits(t *testing.T) {
 	context[0] = "changed"
 	os.WriteFile(filepath.Join(path, "context.txt"), []byte(strings.Join(context, "\n")+"\n"), 0o644)
 	repo, _ = newRepository(path, "HEAD")
-	rows, _ = repo.history(1, true)
+	rows, _, _ = repo.history(1, true)
 	files, _ := repo.changedFiles(rows[0], true)
 	compact, _ := repo.diff(rows[0], files[0], true, false)
 	full, _ := repo.diff(rows[0], files[0], true, true)
@@ -194,7 +206,7 @@ func TestRenameAndCopyDetection(t *testing.T) {
 		t.Fatalf("git mv: %v: %s", err, output)
 	}
 	repo, _ := newRepository(path, "HEAD")
-	rows, _ := repo.history(1, true)
+	rows, _, _ := repo.history(1, true)
 	files, err := repo.changedFiles(rows[0], true)
 	if err != nil || len(files) != 1 || !strings.HasPrefix(files[0].status, "R") || files[0].oldPath != "history.txt" || files[0].path != "renamed.txt" {
 		t.Fatalf("rename not detected: %#v: %v", files, err)
@@ -205,7 +217,7 @@ func TestRenameAndCopyDetection(t *testing.T) {
 	os.WriteFile(filepath.Join(path, "copied.txt"), original, 0o644)
 	os.WriteFile(filepath.Join(path, "history.txt"), append(original, []byte("modified\n")...), 0o644)
 	exec.Command("git", "-C", path, "add", "history.txt", "copied.txt").Run()
-	rows, _ = repo.history(1, true)
+	rows, _, _ = repo.history(1, true)
 	files, err = repo.changedFiles(rows[0], true)
 	foundCopy := false
 	for _, file := range files {

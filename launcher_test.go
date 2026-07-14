@@ -35,6 +35,12 @@ func TestLauncherArguments(t *testing.T) {
 	}
 }
 
+func TestLaunchModeUsesAnotherWindowWhenResidentIsBusy(t *testing.T) {
+	if launchMode("", false) != "--resident" || launchMode("OK", false) != "--resident" || launchMode("BUSY", false) != "--ephemeral" || launchMode("", true) != "--ephemeral" {
+		t.Fatal("launcher did not isolate a second repository in an ephemeral window")
+	}
+}
+
 func TestContactResident(t *testing.T) {
 	runtimeDir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)

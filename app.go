@@ -18,7 +18,10 @@ import (
 	"github.com/gotk3/gotk3/pango"
 )
 
-const idleDuration = 12 * time.Hour
+const (
+	idleDuration        = 12 * time.Hour
+	initialHistoryLimit = 50
+)
 
 //go:embed logo/giti-logo.png
 var appIconPNG []byte
@@ -47,8 +50,12 @@ type giti struct {
 	graphWidth                 int
 	selectionGeneration        uint64
 	diffGeneration             uint64
+	notificationGeneration     uint64
 	selectionCancel            context.CancelFunc
 	diffCancel                 context.CancelFunc
+	statePath                  string
+	panesReady                 bool
+	stateSavePending           bool
 	styleProvider              *gtk.CssProvider
 	diffScroll                 map[string]scrollPosition
 	historyRows                []historyRow
@@ -59,6 +66,9 @@ type giti struct {
 	window                     *gtk.Window
 	historyStore, fileStore    *gtk.ListStore
 	historyView, fileView      *gtk.TreeView
+	historyScroller            *gtk.ScrolledWindow
+	graphColumn                *gtk.TreeViewColumn
+	mainPane, repositoryPane   *gtk.Paned
 	historySearch              *gtk.SearchEntry
 	historyStack               *gtk.Stack
 	searchResults              *gtk.ListBox
@@ -66,8 +76,13 @@ type giti struct {
 	diffBuffer                 *gtk.TextBuffer
 	diffView                   *gtk.TextView
 	diffScroller               *gtk.ScrolledWindow
+	diffStack                  *gtk.Stack
+	referencesPage             *gtk.Box
 	whitespaceToggle           *gtk.CheckButton
 	fullFileToggle             *gtk.CheckButton
+	loadButton                 *gtk.Button
+	notification               *gtk.InfoBar
+	notificationLabel          *gtk.Label
 	fullFileHandler            glib.SignalHandle
 	application                *gtk.Application
 }
@@ -104,7 +119,7 @@ func newGiti(repo *repository, resident bool, applications ...*gtk.Application) 
 	if len(applications) > 0 {
 		application = applications[0]
 	}
-	app := &giti{repository: repo, resident: resident, application: application, busy: true, historyLimit: 10, diffScroll: make(map[string]scrollPosition)}
+	app := &giti{repository: repo, resident: resident, application: application, busy: true, historyLimit: initialHistoryLimit, diffScroll: make(map[string]scrollPosition), statePath: uiStatePath()}
 	if resident {
 		app.server = newResidentServer(app)
 		if err := app.server.start(); err != nil {
@@ -141,6 +156,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		app.hideResident()
 		return true
 	})
+	app.window.Connect("destroy", func() { app.panesReady = false })
 
 	app.historyView = must(gtk.TreeViewNewWithModel(app.historyStore))
 	app.historyView.SetHeadersVisible(false)
@@ -148,12 +164,13 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	historyContext.AddClass("giti-list")
 	graphRenderer := must(gtk.CellRendererPixbufNew())
 	historyRenderer := must(gtk.CellRendererTextNew())
-	historyRenderer.SetProperty("ellipsize", pango.ELLIPSIZE_END)
 	historyColumn := must(gtk.TreeViewColumnNewWithAttribute("Graph", graphRenderer, "pixbuf", 0))
 	historyColumn.SetMinWidth(48)
+	historyColumn.SetSizing(gtk.TREE_VIEW_COLUMN_FIXED)
+	app.graphColumn = historyColumn
 	app.historyView.AppendColumn(historyColumn)
 	historyColumn = must(gtk.TreeViewColumnNewWithAttribute("History", historyRenderer, "markup", 1))
-	historyColumn.SetExpand(true)
+	historyColumn.SetSizing(gtk.TREE_VIEW_COLUMN_AUTOSIZE)
 	app.historyView.AppendColumn(historyColumn)
 	historySelection, _ := app.historyView.GetSelection()
 	historySelection.SetSelectFunction(func(_ *gtk.TreeSelection, model *gtk.TreeModel, path *gtk.TreePath, _ bool) bool {
@@ -169,6 +186,48 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		return kind != ""
 	})
 	historySelection.Connect("changed", app.onHistorySelected)
+	app.historyView.Connect("button-release-event", func(_ *gtk.TreeView, event *gdk.Event) bool {
+		button := gdk.EventButtonNewFromEvent(event)
+		if button.Button() != gdk.BUTTON_PRIMARY {
+			return false
+		}
+		path, column, cellX, cellY, ok := app.historyView.GetPathAtPos(int(button.X()), int(button.Y()))
+		if !ok || column == nil || column.GetTitle() != "History" || path == nil {
+			return false
+		}
+		indices := path.GetIndices()
+		if len(indices) == 1 && indices[0] < len(app.historyRows) {
+			row := app.historyRows[indices[0]]
+			branches, tags := referenceLists(row.refs)
+			if row.kind != "commit" || len(branches) <= 2 && len(tags) <= 2 {
+				return false
+			}
+			prefix := "<b>" + html.EscapeString(row.subject) + "</b>"
+			measure := func(markup string) (int, int) {
+				label := must(gtk.LabelNew(""))
+				label.SetMarkup(markup)
+				_, width := label.GetPreferredWidth()
+				_, height := label.GetPreferredHeight()
+				label.Destroy()
+				return width, height
+			}
+			for _, part := range historyReferenceParts(row) {
+				prefix += "  "
+				if !part.overflow {
+					prefix += part.markup
+					continue
+				}
+				start, height := measure(prefix)
+				prefix += part.markup
+				end, _ := measure(prefix)
+				if cellY <= height && cellX >= start-3 && cellX <= end+3 {
+					app.showReferences(branches, tags)
+					return true
+				}
+			}
+		}
+		return false
+	})
 	app.historySearch = must(gtk.SearchEntryNew())
 	app.historySearch.SetPlaceholderText("Search loaded commits")
 	app.historySearch.SetTooltipText("Case-insensitive: exact phrases rank above separate word matches")
@@ -180,11 +239,13 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		app.openSearchResult(result.GetIndex())
 	})
 	app.historyStack = must(gtk.StackNew())
-	app.historyStack.AddNamed(scroller(app.historyView), "graph")
+	app.historyScroller = scroller(app.historyView)
+	app.historyStack.AddNamed(app.historyScroller, "graph")
 	app.historyStack.AddNamed(scroller(app.searchResults), "search")
 
 	app.fileView = must(gtk.TreeViewNewWithModel(app.fileStore))
 	app.fileView.SetHeadersVisible(false)
+	app.fileView.SetTooltipColumn(0)
 	fileContext, _ := app.fileView.GetStyleContext()
 	fileContext.AddClass("giti-list")
 	fileRenderer := must(gtk.CellRendererTextNew())
@@ -210,8 +271,8 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.whitespaceToggle.Connect("toggled", app.onWhitespaceToggled)
 	app.fullFileToggle = must(gtk.CheckButtonNewWithLabel("Show full file"))
 	app.fullFileHandler = app.fullFileToggle.Connect("toggled", app.onFullFileToggled)
-	loadButton := must(gtk.ButtonNewWithLabel("Load more"))
-	loadButton.Connect("clicked", func() {
+	app.loadButton = must(gtk.ButtonNewWithLabel("Load more"))
+	app.loadButton.Connect("clicked", func() {
 		app.historyLimit += 100
 		app.loadHistory()
 	})
@@ -219,11 +280,11 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	graphBox := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 4))
 	graphBox.PackStart(app.historySearch, false, false, 0)
 	graphBox.PackStart(app.historyStack, true, true, 0)
-	graphBox.PackStart(loadButton, false, false, 0)
-	left := must(gtk.PanedNew(gtk.ORIENTATION_VERTICAL))
-	left.Pack1(graphBox, true, false)
-	left.Pack2(scroller(app.fileView), true, false)
-	left.SetPosition(250)
+	graphBox.PackStart(app.loadButton, false, false, 0)
+	app.repositoryPane = must(gtk.PanedNew(gtk.ORIENTATION_VERTICAL))
+	app.repositoryPane.SetWideHandle(true)
+	app.repositoryPane.Pack1(graphBox, false, true)
+	app.repositoryPane.Pack2(scroller(app.fileView), true, true)
 
 	toolbar := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
 	toolbar.PackEnd(app.whitespaceToggle, false, false, 8)
@@ -251,13 +312,73 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	diffBox.PackStart(toolbar, false, false, 4)
 	diffBox.PackStart(app.commitHeader, false, false, 0)
 	app.diffScroller = scroller(app.diffView)
-	diffBox.PackStart(app.diffScroller, true, true, 0)
-	main := must(gtk.PanedNew(gtk.ORIENTATION_HORIZONTAL))
-	main.Pack1(left, false, false)
-	main.Pack2(diffBox, true, false)
-	main.SetPosition(440)
-	app.window.Add(main)
+	app.referencesPage = must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 8))
+	app.referencesPage.SetMarginStart(16)
+	app.referencesPage.SetMarginEnd(16)
+	app.referencesPage.SetMarginTop(16)
+	app.referencesPage.SetMarginBottom(16)
+	app.diffStack = must(gtk.StackNew())
+	app.diffStack.AddNamed(app.diffScroller, "diff")
+	app.diffStack.AddNamed(scroller(app.referencesPage), "references")
+	diffBox.PackStart(app.diffStack, true, true, 0)
+	app.mainPane = must(gtk.PanedNew(gtk.ORIENTATION_HORIZONTAL))
+	app.mainPane.SetWideHandle(true)
+	app.mainPane.Pack1(app.repositoryPane, false, true)
+	app.mainPane.Pack2(diffBox, true, true)
+	initialized := 0
+	initializePane := func(pane *gtk.Paned, vertical bool, position, fallback int) {
+		var handler glib.SignalHandle
+		handler = pane.Connect("size-allocate", func() {
+			size := pane.GetAllocatedWidth()
+			if vertical {
+				size = pane.GetAllocatedHeight()
+			}
+			if size <= 1 {
+				return
+			}
+			if position <= 0 {
+				position = fallback
+				if position < 0 {
+					position = size / 2
+				}
+			}
+			margin := min(80, size/4)
+			pane.SetPosition(max(margin, min(position, size-margin)))
+			pane.HandlerDisconnect(handler)
+			initialized++
+			app.panesReady = initialized == 2
+		})
+		pane.Connect("notify::position", func() {
+			if !app.panesReady || app.stateSavePending {
+				return
+			}
+			app.stateSavePending = true
+			addMainSource(1, func() bool {
+				app.stateSavePending = false
+				app.persistPaneState()
+				return false
+			})
+		})
+	}
+	paneState := loadUIState(app.statePath)
+	initializePane(app.mainPane, false, paneState.MainPanePosition, 440)
+	initializePane(app.repositoryPane, true, paneState.RepositoryPanePosition, -1)
+	app.notification = must(gtk.InfoBarNew())
+	app.notification.SetMessageType(gtk.MESSAGE_INFO)
+	app.notification.SetShowCloseButton(true)
+	app.notificationLabel = must(gtk.LabelNew(""))
+	app.notificationLabel.SetXAlign(0)
+	must(app.notification.GetContentArea()).PackStart(app.notificationLabel, true, true, 0)
+	app.notification.Connect("response", func() {
+		app.notificationGeneration++
+		app.notification.Hide()
+	})
+	root := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0))
+	root.PackStart(app.notification, false, false, 0)
+	root.PackStart(app.mainPane, true, true, 0)
+	app.window.Add(root)
 	app.window.ShowAll()
+	app.notification.Hide()
 	app.styleProvider = must(gtk.CssProviderNew())
 	if err := app.styleProvider.LoadFromData(appCSS); err != nil {
 		panic(err)
@@ -289,7 +410,7 @@ func (app *giti) rememberDiffScroll() {
 	}
 }
 
-func (app *giti) loadHistory() bool {
+func (app *giti) loadHistory() error {
 	app.selectionGeneration++
 	app.diffGeneration++
 	if app.selectionCancel != nil {
@@ -303,11 +424,12 @@ func (app *giti) loadHistory() bool {
 	if app.currentRow != nil {
 		preferredKind, preferredRevision = app.currentRow.kind, app.currentRow.revision
 	}
-	rows, err := app.repository.history(app.historyLimit, !app.whitespaceToggle.GetActive())
+	rows, hasMore, err := app.repository.history(app.historyLimit, !app.whitespaceToggle.GetActive())
 	if err != nil {
 		app.showError(err)
-		return false
+		return err
 	}
+	app.loadButton.SetVisible(hasMore)
 	app.historyRows = rows
 	app.historyStore.Clear()
 	graphWidth := 48
@@ -315,12 +437,13 @@ func (app *giti) loadHistory() bool {
 		graphWidth = max(graphWidth, max(len(row.graph.lanes), len(row.graph.next))*graphLaneWidth)
 	}
 	app.graphWidth = graphWidth
+	app.graphColumn.SetFixedWidth(graphWidth)
 	target := -1
 	for index, row := range rows {
 		graph, graphErr := renderGraph(row, graphWidth, graphRowHeight)
 		if graphErr != nil {
 			app.showError(graphErr)
-			return false
+			return graphErr
 		}
 		iter := app.historyStore.Append()
 		app.historyStore.Set(iter, []int{0, 1, 2}, []any{graph, historyLabel(row), row.kind})
@@ -348,7 +471,7 @@ func (app *giti) loadHistory() bool {
 		})
 	}
 	app.updateGraphSearch()
-	return false
+	return nil
 }
 
 func (app *giti) fitGraphRows() {
@@ -381,12 +504,8 @@ func (app *giti) fitGraphRows() {
 	}
 }
 
-func historyLabel(row historyRow) string {
-	if row.kind != "commit" {
-		return "<b>" + html.EscapeString(row.subject) + "</b>"
-	}
-	tags, branches := make([]string, 0, 3), make([]string, 0, 2)
-	for _, decoration := range strings.Split(row.refs, ", ") {
+func referenceLists(refs string) (branches, tags []string) {
+	for _, decoration := range strings.Split(refs, ", ") {
 		decoration = strings.TrimSpace(decoration)
 		if strings.HasPrefix(decoration, "tag: ") {
 			tags = append(tags, strings.TrimPrefix(decoration, "tag: "))
@@ -394,25 +513,53 @@ func historyLabel(row historyRow) string {
 			branches = append(branches, decoration)
 		}
 	}
-	if len(tags) > 3 {
-		tags = append(tags[:3], "+ more")
+	return sortedReferences(branches, tags)
+}
+
+func referenceBadge(value, kind string) string {
+	background, foreground := "#d8f0dd", "#1f5131"
+	if kind == "tag" {
+		background, foreground = "#f8e7a3", "#594600"
+	} else if value == "HEAD" {
+		background, foreground = "#e5e7eb", "#374151"
+	}
+	if kind == "branch" {
+		value = strings.Replace(value, "HEAD -> ", "HEAD → ", 1)
+	}
+	return fmt.Sprintf(`<span background="%s" foreground="%s" weight="bold"> %s </span>`, background, foreground, html.EscapeString(value))
+}
+
+type referencePart struct {
+	markup   string
+	overflow bool
+}
+
+func historyReferenceParts(row historyRow) []referencePart {
+	branches, tags := referenceLists(row.refs)
+	parts := make([]referencePart, 0, 6)
+	for _, branch := range branches[:min(2, len(branches))] {
+		parts = append(parts, referencePart{markup: referenceBadge(branch, "branch")})
+	}
+	if len(branches) > 2 {
+		parts = append(parts, referencePart{markup: referenceBadge("+ more branches", "branch"), overflow: true})
+	}
+	for _, tag := range tags[:min(2, len(tags))] {
+		parts = append(parts, referencePart{markup: referenceBadge(tag, "tag")})
+	}
+	if len(tags) > 2 {
+		parts = append(parts, referencePart{markup: referenceBadge("+ more tags", "tag"), overflow: true})
+	}
+	return parts
+}
+
+func historyLabel(row historyRow) string {
+	if row.kind != "commit" {
+		return "<b>" + html.EscapeString(row.subject) + "</b>"
 	}
 	var refs strings.Builder
-	for _, tag := range tags {
+	for _, part := range historyReferenceParts(row) {
 		refs.WriteString("  ")
-		refs.WriteString(`<span background="#f8e7a3" foreground="#594600" weight="bold"> `)
-		refs.WriteString(html.EscapeString(tag))
-		refs.WriteString(` </span>`)
-	}
-	for _, branch := range branches {
-		refs.WriteString("  ")
-		if branch == "HEAD" {
-			refs.WriteString(`<span background="#e5e7eb" foreground="#374151" weight="bold"> HEAD </span>`)
-		} else {
-			refs.WriteString(`<span background="#d8f0dd" foreground="#1f5131" weight="bold"> `)
-			refs.WriteString(html.EscapeString(strings.Replace(branch, "HEAD -> ", "HEAD → ", 1)))
-			refs.WriteString(` </span>`)
-		}
+		refs.WriteString(part.markup)
 	}
 	topology := ""
 	if len(row.parents) > 1 {
@@ -486,13 +633,41 @@ func (app *giti) updateGraphSearch() {
 func (app *giti) selectHistoryRevision(revision string) bool {
 	for index, row := range app.historyRows {
 		if row.revision == revision {
+			path := must(gtk.TreePathNewFromIndicesv([]int{index}))
 			selection, _ := app.historyView.GetSelection()
-			selection.SelectPath(must(gtk.TreePathNewFromIndicesv([]int{index})))
+			selection.SelectPath(path)
+			app.historyView.ScrollToCell(path, nil, true, 0, .5)
 			app.historyView.GrabFocus()
 			return true
 		}
 	}
 	return false
+}
+
+func (app *giti) revealHistoryRevision(revision string) (bool, error) {
+	if app.selectHistoryRevision(revision) {
+		return true, nil
+	}
+	for app.loadButton.GetVisible() {
+		previousLimit := app.historyLimit
+		app.historyLimit += max(100, app.historyLimit)
+		if err := app.loadHistory(); err != nil {
+			app.historyLimit = previousLimit
+			return false, err
+		}
+		if app.selectHistoryRevision(revision) {
+			repo := app.repository
+			addMainSource(0, func() bool {
+				if app.repository == repo {
+					app.fitGraphRows()
+					app.selectHistoryRevision(revision)
+				}
+				return false
+			})
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (app *giti) openSearchResult(index int) {
@@ -528,23 +703,38 @@ func (app *giti) setCommitHeader(details commitDetails) {
 	meta.SetLineWrap(true)
 	meta.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Author</b> %s &lt;%s&gt;  ·  %s\n<b>Committer</b> %s &lt;%s&gt;  ·  %s</span>", html.EscapeString(details.author), html.EscapeString(details.authorEmail), html.EscapeString(details.authored), html.EscapeString(details.committer), html.EscapeString(details.committerEmail), html.EscapeString(details.committed)))
 	app.commitHeader.PackStart(meta, false, false, 0)
-	refs := make([]string, 0, len(details.branches)+4)
-	for _, branch := range details.branches {
-		refs = append(refs, "⎇ "+html.EscapeString(branch))
-	}
-	for index, tag := range details.tags {
-		if index == 3 {
-			refs = append(refs, fmt.Sprintf("and %d more tags", len(details.tags)-index))
-			break
+	if len(details.branches) > 0 || len(details.tags) > 0 {
+		refs := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 6))
+		addBadge := func(value, kind string) {
+			label := must(gtk.LabelNew(""))
+			label.SetXAlign(0)
+			label.SetEllipsize(pango.ELLIPSIZE_END)
+			label.SetMaxWidthChars(28)
+			label.SetTooltipText(value)
+			label.SetMarkup(referenceBadge(value, kind))
+			refs.PackStart(label, false, false, 0)
 		}
-		refs = append(refs, "🏷 "+html.EscapeString(tag))
-	}
-	if len(refs) > 0 {
-		refLabel := must(gtk.LabelNew(""))
-		refLabel.SetXAlign(0)
-		refLabel.SetLineWrap(true)
-		refLabel.SetMarkup("<span foreground=\"#355070\">" + strings.Join(refs, "  ·  ") + "</span>")
-		app.commitHeader.PackStart(refLabel, false, false, 0)
+		for _, branch := range details.branches[:min(2, len(details.branches))] {
+			addBadge(branch, "branch")
+		}
+		if len(details.branches) > 2 {
+			more := must(gtk.ButtonNewWithLabel("+ more branches"))
+			more.SetRelief(gtk.RELIEF_NONE)
+			more.SetTooltipText("Show all branches for this commit")
+			more.Connect("clicked", func() { app.showReferences(details.branches, details.tags) })
+			refs.PackStart(more, false, false, 0)
+		}
+		for _, tag := range details.tags[:min(2, len(details.tags))] {
+			addBadge(tag, "tag")
+		}
+		if len(details.tags) > 2 {
+			more := must(gtk.ButtonNewWithLabel("+ more tags"))
+			more.SetRelief(gtk.RELIEF_NONE)
+			more.SetTooltipText("Show all tags for this commit")
+			more.Connect("clicked", func() { app.showReferences(details.branches, details.tags) })
+			refs.PackStart(more, false, false, 0)
+		}
+		app.commitHeader.PackStart(refs, false, false, 0)
 	}
 	if len(details.parents) > 0 {
 		parents := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 4))
@@ -555,26 +745,98 @@ func (app *giti) setCommitHeader(details commitDetails) {
 			button.SetRelief(gtk.RELIEF_NONE)
 			button.SetTooltipText("Open parent " + parent)
 			button.Connect("clicked", func() {
-				if app.selectHistoryRevision(parent) {
+				app.historySearch.SetText("")
+				found, err := app.revealHistoryRevision(parent)
+				if err != nil || found {
 					return
 				}
-				repo, err := newRepository(app.repository.path, parent)
-				if err != nil {
-					app.showError(err)
-					return
-				}
-				app.repository, app.historyLimit = repo, 10
-				app.clearRepositoryView()
-				app.loadHistory()
+				app.notificationGeneration++
+				generation := app.notificationGeneration
+				app.notificationLabel.SetText("Parent " + parent[:7] + " is not present in this repository history.")
+				app.notification.Show()
+				addMainSource(5, func() bool {
+					if generation == app.notificationGeneration {
+						app.notification.Hide()
+					}
+					return false
+				})
 			})
 			parents.PackStart(button, false, false, 0)
 		}
 		app.commitHeader.PackStart(parents, false, false, 0)
 	}
+	if details.body != "" {
+		expander := must(gtk.ExpanderNew("Commit description"))
+		body := must(gtk.LabelNew(details.body))
+		body.SetXAlign(0)
+		body.SetYAlign(0)
+		body.SetSelectable(true)
+		body.SetLineWrap(true)
+		body.SetLineWrapMode(pango.WRAP_WORD_CHAR)
+		body.SetMarginStart(20)
+		body.SetMarginEnd(8)
+		message := scroller(body)
+		message.SetPolicy(gtk.POLICY_NEVER, gtk.POLICY_AUTOMATIC)
+		message.SetMinContentHeight(min(180, max(48, (strings.Count(details.body, "\n")+1)*20+12)))
+		message.SetMaxContentHeight(180)
+		message.SetPropagateNaturalHeight(true)
+		expander.Add(message)
+		app.commitHeader.PackStart(expander, false, false, 4)
+	}
 	app.commitHeader.ShowAll()
 }
 
+func (app *giti) showDiffPage() {
+	if app.diffStack != nil {
+		app.diffStack.SetVisibleChildName("diff")
+	}
+}
+
+func (app *giti) showReferences(branches, tags []string) {
+	if app.diffStack == nil || app.referencesPage == nil {
+		return
+	}
+	branches, tags = sortedReferences(branches, tags)
+	if children := app.referencesPage.GetChildren(); children != nil {
+		children.Foreach(func(child any) { app.referencesPage.Remove(child.(gtk.IWidget)) })
+		children.Free()
+	}
+	back := must(gtk.ButtonNewWithLabel("← Back to diff"))
+	back.SetRelief(gtk.RELIEF_NONE)
+	back.SetHAlign(gtk.ALIGN_START)
+	back.Connect("clicked", app.showDiffPage)
+	app.referencesPage.PackStart(back, false, false, 0)
+	title := must(gtk.LabelNew(""))
+	title.SetXAlign(0)
+	title.SetMarkup("<span size=\"large\" weight=\"bold\">Branches and tags</span>")
+	app.referencesPage.PackStart(title, false, false, 0)
+	addSection := func(name string, values []string, kind string) {
+		if len(values) == 0 {
+			return
+		}
+		section := must(gtk.LabelNew(""))
+		section.SetXAlign(0)
+		section.SetMarkup("<b>" + name + "</b>")
+		app.referencesPage.PackStart(section, false, false, 8)
+		for _, value := range values {
+			label := must(gtk.LabelNew(""))
+			label.SetXAlign(0)
+			label.SetLineWrap(true)
+			label.SetMarkup(referenceBadge(value, kind))
+			app.referencesPage.PackStart(label, false, false, 0)
+		}
+	}
+	addSection("Branches", branches, "branch")
+	addSection("Tags", tags, "tag")
+	if len(branches) == 0 && len(tags) == 0 {
+		app.referencesPage.PackStart(must(gtk.LabelNew("No branches or tags.")), false, false, 8)
+	}
+	app.referencesPage.ShowAll()
+	app.diffStack.SetVisibleChildName("references")
+}
+
 func (app *giti) onHistorySelected() {
+	app.showDiffPage()
 	selection, _ := app.historyView.GetSelection()
 	_, iter, ok := selection.GetSelected()
 	if !ok {
@@ -656,6 +918,7 @@ func (app *giti) onHistorySelected() {
 }
 
 func (app *giti) onFileSelected() {
+	app.showDiffPage()
 	selection, _ := app.fileView.GetSelection()
 	_, iter, ok := selection.GetSelected()
 	if !ok || app.currentRow == nil {
@@ -791,7 +1054,20 @@ func (app *giti) resetFullFile() {
 	app.fullFileToggle.HandlerUnblock(app.fullFileHandler)
 }
 
+func (app *giti) persistPaneState() {
+	if !app.panesReady || app.mainPane == nil || app.repositoryPane == nil {
+		return
+	}
+	width, height := app.mainPane.GetAllocatedWidth(), app.repositoryPane.GetAllocatedHeight()
+	if width <= 1 || height <= 1 {
+		return
+	}
+	state := uiState{MainPanePosition: app.mainPane.GetPosition(), RepositoryPanePosition: app.repositoryPane.GetPosition()}
+	_ = saveUIState(app.statePath, state)
+}
+
 func (app *giti) clearRepositoryView() {
+	app.showDiffPage()
 	app.selectionGeneration++
 	app.diffGeneration++
 	if app.selectionCancel != nil {
@@ -812,6 +1088,7 @@ func (app *giti) clearRepositoryView() {
 }
 
 func (app *giti) hideResident() {
+	app.persistPaneState()
 	app.clearRepositoryView()
 	app.window.Hide()
 	app.stateMu.Lock()
@@ -828,11 +1105,13 @@ func (app *giti) openRepository(path, revision string) bool {
 		app.stateMu.Unlock()
 		return false
 	}
-	app.repository, app.historyLimit = repo, 10
+	app.repository, app.historyLimit = repo, initialHistoryLimit
 	app.clearRepositoryView()
 	app.whitespaceToggle.SetActive(false)
 	app.window.SetTitle("Giti — " + filepath.Base(repo.path))
 	app.window.ShowAll()
+	app.notificationGeneration++
+	app.notification.Hide()
 	app.window.Maximize()
 	app.window.Present()
 	app.loadHistory()
@@ -852,6 +1131,7 @@ func (app *giti) expireIfIdle() bool {
 }
 
 func (app *giti) quit() {
+	app.persistPaneState()
 	if app.application != nil {
 		app.application.Quit()
 		return

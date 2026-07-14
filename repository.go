@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -28,12 +29,26 @@ type historyRow struct {
 }
 
 type commitDetails struct {
-	sha, subject, author, authorEmail, authored, committer, committerEmail, committed string
-	parents, branches, tags                                                           []string
+	sha, subject, body, author, authorEmail, authored, committer, committerEmail, committed string
+	parents, branches, tags                                                                 []string
 }
 
 type changedFile struct {
 	status, path, oldPath string
+}
+
+func sortedReferences(branches, tags []string) ([]string, []string) {
+	branches, tags = append([]string(nil), branches...), append([]string(nil), tags...)
+	sort.Slice(branches, func(left, right int) bool {
+		leftHead := branches[left] == "HEAD" || strings.HasPrefix(branches[left], "HEAD -> ")
+		rightHead := branches[right] == "HEAD" || strings.HasPrefix(branches[right], "HEAD -> ")
+		if leftHead != rightHead {
+			return leftHead
+		}
+		return branches[left] < branches[right]
+	})
+	sort.Strings(tags)
+	return branches, tags
 }
 
 func (file changedFile) label() string {
@@ -137,17 +152,17 @@ func (repo *repository) runLimitedContext(ctx context.Context, limit int, check 
 	return string(data), truncated, nil
 }
 
-func (repo *repository) history(count int, ignoreWhitespace bool) ([]historyRow, error) {
+func (repo *repository) history(count int, ignoreWhitespace bool) ([]historyRow, bool, error) {
 	format := recordMarker + strings.Join([]string{"%H", "%P", "%an", "%as", "%D", "%s"}, fieldMarker)
 	output, err := repo.run("log", "--topo-order", fmt.Sprintf("-n%d", count+1), "--format="+format, repo.revisionArg)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	rows := make([]historyRow, 0, count+2)
 	for _, synthetic := range []historyRow{{kind: "unstaged", subject: "Unstaged changes"}, {kind: "staged", subject: "Staged changes"}} {
 		files, fileErr := repo.changedFiles(synthetic, ignoreWhitespace)
 		if fileErr != nil {
-			return nil, fileErr
+			return nil, false, fileErr
 		}
 		if len(files) > 0 {
 			rows = append(rows, synthetic)
@@ -163,23 +178,24 @@ func (repo *repository) history(count int, ignoreWhitespace bool) ([]historyRow,
 		commits = append(commits, historyRow{kind: "commit", revision: parts[0], parents: strings.Fields(parts[1]), author: parts[2], date: parts[3], refs: strings.TrimSpace(parts[4]), subject: parts[5]})
 	}
 	layoutGraph(commits)
-	if len(commits) > count {
+	hasMore := len(commits) > count
+	if hasMore {
 		commits = commits[:count]
 	}
-	return append(rows, commits...), nil
+	return append(rows, commits...), hasMore, nil
 }
 
 func (repo *repository) commitDetailsContext(ctx context.Context, revision string) (commitDetails, error) {
-	format := strings.Join([]string{"%H", "%s", "%an", "%ae", "%aI", "%cn", "%ce", "%cI", "%P"}, fieldMarker)
+	format := strings.Join([]string{"%H", "%s", "%an", "%ae", "%aI", "%cn", "%ce", "%cI", "%P", "%b"}, fieldMarker)
 	output, err := repo.runContext(ctx, "show", "-s", "--format="+format, revision)
 	if err != nil {
 		return commitDetails{}, err
 	}
-	parts := strings.Split(strings.TrimSuffix(output, "\n"), fieldMarker)
-	for len(parts) < 9 {
+	parts := strings.SplitN(strings.TrimSuffix(output, "\n"), fieldMarker, 10)
+	for len(parts) < 10 {
 		parts = append(parts, "")
 	}
-	details := commitDetails{sha: parts[0], subject: parts[1], author: parts[2], authorEmail: parts[3], authored: parts[4], committer: parts[5], committerEmail: parts[6], committed: parts[7], parents: strings.Fields(parts[8])}
+	details := commitDetails{sha: parts[0], subject: parts[1], author: parts[2], authorEmail: parts[3], authored: parts[4], committer: parts[5], committerEmail: parts[6], committed: parts[7], parents: strings.Fields(parts[8]), body: strings.TrimSpace(parts[9])}
 	refs, err := repo.runContext(ctx, "for-each-ref", "--format=%(refname)", "--points-at="+revision)
 	if err != nil {
 		return commitDetails{}, err
@@ -194,6 +210,7 @@ func (repo *repository) commitDetailsContext(ctx context.Context, revision strin
 			details.branches = append(details.branches, strings.TrimPrefix(ref, "refs/remotes/"))
 		}
 	}
+	details.branches, details.tags = sortedReferences(details.branches, details.tags)
 	return details, nil
 }
 
