@@ -70,6 +70,9 @@ type giti struct {
 	graphColumn                *gtk.TreeViewColumn
 	mainPane, repositoryPane   *gtk.Paned
 	historySearch              *gtk.SearchEntry
+	searchSettings             *gtk.MenuButton
+	searchMessages             *gtk.CheckButton
+	searchReferences           *gtk.CheckButton
 	historyStack               *gtk.Stack
 	searchResults              *gtk.ListBox
 	commitHeader               *gtk.Box
@@ -136,6 +139,7 @@ func newGiti(repo *repository, resident bool, applications ...*gtk.Application) 
 }
 
 func (app *giti) buildWindow(application *gtk.Application) {
+	state := loadUIState(app.statePath)
 	if application == nil {
 		app.window = must(gtk.WindowNew(gtk.WINDOW_TOPLEVEL))
 	} else {
@@ -211,7 +215,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 				label.Destroy()
 				return width, height
 			}
-			for _, part := range historyReferenceParts(row) {
+			for _, part := range referenceParts(referenceLists(row.refs)) {
 				prefix += "  "
 				if !part.overflow {
 					prefix += part.markup
@@ -232,6 +236,37 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.historySearch.SetPlaceholderText("Search loaded commits")
 	app.historySearch.SetTooltipText("Case-insensitive: exact phrases rank above separate word matches")
 	app.historySearch.Connect("changed", app.updateGraphSearch)
+	app.searchMessages = must(gtk.CheckButtonNewWithLabel("Also match commit description"))
+	app.searchMessages.SetActive(state.SearchCommitMessages)
+	app.searchReferences = must(gtk.CheckButtonNewWithLabel("Also match branches and tags"))
+	app.searchReferences.SetActive(state.SearchReferences)
+	searchOptions := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 6))
+	searchOptions.SetMarginStart(10)
+	searchOptions.SetMarginEnd(10)
+	searchOptions.SetMarginTop(10)
+	searchOptions.SetMarginBottom(10)
+	searchOptions.PackStart(app.searchMessages, false, false, 0)
+	searchOptions.PackStart(app.searchReferences, false, false, 0)
+	app.searchSettings = must(gtk.MenuButtonNew())
+	app.searchSettings.SetImage(must(gtk.ImageNewFromIconName("preferences-system-symbolic", gtk.ICON_SIZE_BUTTON)))
+	app.searchSettings.SetTooltipText("Search options")
+	app.searchSettings.SetRelief(gtk.RELIEF_NONE)
+	searchPopover := must(gtk.PopoverNew(app.searchSettings))
+	searchPopover.Add(searchOptions)
+	searchOptions.ShowAll()
+	app.searchSettings.SetPopover(searchPopover)
+	app.searchMessages.Connect("toggled", func() {
+		app.persistUIState()
+		if app.searchMessages.GetActive() {
+			app.loadHistory()
+		} else {
+			app.updateGraphSearch()
+		}
+	})
+	app.searchReferences.Connect("toggled", func() {
+		app.persistUIState()
+		app.updateGraphSearch()
+	})
 	app.searchResults = must(gtk.ListBoxNew())
 	app.searchResults.SetActivateOnSingleClick(true)
 	app.searchResults.SetPlaceholder(must(gtk.LabelNew("No loaded commits match this search.")))
@@ -278,7 +313,10 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	})
 
 	graphBox := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 4))
-	graphBox.PackStart(app.historySearch, false, false, 0)
+	searchBox := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
+	searchBox.PackStart(app.historySearch, true, true, 0)
+	searchBox.PackStart(app.searchSettings, false, false, 0)
+	graphBox.PackStart(searchBox, false, false, 0)
 	graphBox.PackStart(app.historyStack, true, true, 0)
 	graphBox.PackStart(app.loadButton, false, false, 0)
 	app.repositoryPane = must(gtk.PanedNew(gtk.ORIENTATION_VERTICAL))
@@ -355,14 +393,13 @@ func (app *giti) buildWindow(application *gtk.Application) {
 			app.stateSavePending = true
 			addMainSource(1, func() bool {
 				app.stateSavePending = false
-				app.persistPaneState()
+				app.persistUIState()
 				return false
 			})
 		})
 	}
-	paneState := loadUIState(app.statePath)
-	initializePane(app.mainPane, false, paneState.MainPanePosition, 440)
-	initializePane(app.repositoryPane, true, paneState.RepositoryPanePosition, -1)
+	initializePane(app.mainPane, false, state.MainPanePosition, 440)
+	initializePane(app.repositoryPane, true, state.RepositoryPanePosition, -1)
 	app.notification = must(gtk.InfoBarNew())
 	app.notification.SetMessageType(gtk.MESSAGE_INFO)
 	app.notification.SetShowCloseButton(true)
@@ -424,7 +461,7 @@ func (app *giti) loadHistory() error {
 	if app.currentRow != nil {
 		preferredKind, preferredRevision = app.currentRow.kind, app.currentRow.revision
 	}
-	rows, hasMore, err := app.repository.history(app.historyLimit, !app.whitespaceToggle.GetActive())
+	rows, hasMore, err := app.repository.history(app.historyLimit, !app.whitespaceToggle.GetActive(), app.searchMessages.GetActive())
 	if err != nil {
 		app.showError(err)
 		return err
@@ -507,9 +544,18 @@ func (app *giti) fitGraphRows() {
 func referenceLists(refs string) (branches, tags []string) {
 	for _, decoration := range strings.Split(refs, ", ") {
 		decoration = strings.TrimSpace(decoration)
-		if strings.HasPrefix(decoration, "tag: ") {
-			tags = append(tags, strings.TrimPrefix(decoration, "tag: "))
-		} else if decoration != "" {
+		switch {
+		case strings.HasPrefix(decoration, "tag: "):
+			tags = append(tags, strings.TrimPrefix(strings.TrimPrefix(decoration, "tag: "), "refs/tags/"))
+		case strings.HasPrefix(decoration, "HEAD -> "):
+			branch := strings.TrimPrefix(decoration, "HEAD -> ")
+			branch = strings.TrimPrefix(strings.TrimPrefix(branch, "refs/heads/"), remoteRefPrefix)
+			branches = append(branches, branch+headRefSuffix)
+		case strings.HasPrefix(decoration, "refs/heads/"):
+			branches = append(branches, strings.TrimPrefix(decoration, "refs/heads/"))
+		case strings.HasPrefix(decoration, remoteRefPrefix):
+			branches = append(branches, decoration)
+		case decoration != "":
 			branches = append(branches, decoration)
 		}
 	}
@@ -520,11 +566,14 @@ func referenceBadge(value, kind string) string {
 	background, foreground := "#d8f0dd", "#1f5131"
 	if kind == "tag" {
 		background, foreground = "#f8e7a3", "#594600"
+	} else if strings.HasPrefix(value, remoteRefPrefix) {
+		background, foreground = "#dce8f8", "#244e7a"
+		value = strings.TrimPrefix(value, remoteRefPrefix)
 	} else if value == "HEAD" {
 		background, foreground = "#e5e7eb", "#374151"
 	}
 	if kind == "branch" {
-		value = strings.Replace(value, "HEAD -> ", "HEAD → ", 1)
+		value = strings.Replace(value, headRefSuffix, " ← HEAD", 1)
 	}
 	return fmt.Sprintf(`<span background="%s" foreground="%s" weight="bold"> %s </span>`, background, foreground, html.EscapeString(value))
 }
@@ -534,8 +583,7 @@ type referencePart struct {
 	overflow bool
 }
 
-func historyReferenceParts(row historyRow) []referencePart {
-	branches, tags := referenceLists(row.refs)
+func referenceParts(branches, tags []string) []referencePart {
 	parts := make([]referencePart, 0, 6)
 	for _, branch := range branches[:min(2, len(branches))] {
 		parts = append(parts, referencePart{markup: referenceBadge(branch, "branch")})
@@ -557,7 +605,7 @@ func historyLabel(row historyRow) string {
 		return "<b>" + html.EscapeString(row.subject) + "</b>"
 	}
 	var refs strings.Builder
-	for _, part := range historyReferenceParts(row) {
+	for _, part := range referenceParts(referenceLists(row.refs)) {
 		refs.WriteString("  ")
 		refs.WriteString(part.markup)
 	}
@@ -569,31 +617,91 @@ func historyLabel(row historyRow) string {
 }
 
 type searchMatch struct {
-	row          historyRow
-	score, index int
+	row                historyRow
+	branches, tags     []string
+	score, index       int
+	matchesDescription bool
 }
 
-func searchHistory(rows []historyRow, query string) []searchMatch {
+type searchOptions struct {
+	messages, references bool
+}
+
+func searchHistory(rows []historyRow, query string, options searchOptions) []searchMatch {
 	phrase := strings.ToLower(strings.TrimSpace(query))
+	if phrase == "" {
+		return nil
+	}
 	words := strings.Fields(phrase)
 	matches := make([]searchMatch, 0, len(rows))
+	type field struct {
+		text               string
+		phraseScore, score int
+	}
 	for index, row := range rows {
 		if row.kind != "commit" {
 			continue
 		}
-		subject, score := strings.ToLower(row.subject), 0
-		if strings.Contains(subject, phrase) {
-			score = 1000
+		fields := []field{{row.subject, 1000, 100}}
+		if options.references {
+			fields = append(fields, field{row.refs, 750, 50})
 		}
-		for _, word := range words {
-			score += strings.Count(subject, word) * 100
+		if options.messages {
+			fields = append(fields, field{row.body, 500, 25})
+		}
+		score, descriptionScore := 0, 0
+		for fieldIndex, field := range fields {
+			text := strings.ToLower(field.text)
+			fieldScore := 0
+			if strings.Contains(text, phrase) {
+				fieldScore += field.phraseScore
+			}
+			for _, word := range words {
+				fieldScore += strings.Count(text, word) * field.score
+			}
+			score += fieldScore
+			if options.messages && fieldIndex == len(fields)-1 {
+				descriptionScore = fieldScore
+			}
 		}
 		if score > 0 {
-			matches = append(matches, searchMatch{row: row, score: score, index: index})
+			match := searchMatch{row: row, score: score, index: index, matchesDescription: descriptionScore > 0}
+			if options.references {
+				branches, tags := referenceLists(row.refs)
+				matchesQuery := func(value string) bool {
+					value = strings.ToLower(value)
+					if strings.Contains(value, phrase) {
+						return true
+					}
+					for _, word := range words {
+						if strings.Contains(value, word) {
+							return true
+						}
+					}
+					return false
+				}
+				for _, branch := range branches {
+					if matchesQuery(branch) {
+						match.branches = append(match.branches, branch)
+					}
+				}
+				for _, tag := range tags {
+					if matchesQuery(tag) {
+						match.tags = append(match.tags, tag)
+					}
+				}
+			}
+			matches = append(matches, match)
 		}
 	}
 	sort.SliceStable(matches, func(left, right int) bool {
-		return matches[left].score > matches[right].score || matches[left].score == matches[right].score && matches[left].index < matches[right].index
+		if matches[left].score != matches[right].score {
+			return matches[left].score > matches[right].score
+		}
+		if matches[left].row.timestamp != matches[right].row.timestamp {
+			return matches[left].row.timestamp > matches[right].row.timestamp
+		}
+		return matches[left].index < matches[right].index
 	})
 	return matches
 }
@@ -609,7 +717,7 @@ func (app *giti) updateGraphSearch() {
 		children.Foreach(func(child any) { app.searchResults.Remove(child.(gtk.IWidget)) })
 		children.Free()
 	}
-	matches := searchHistory(app.historyRows, query)
+	matches := searchHistory(app.historyRows, query, searchOptions{app.searchMessages.GetActive(), app.searchReferences.GetActive()})
 	app.searchMatches = make([]historyRow, len(matches))
 	for index, match := range matches {
 		app.searchMatches[index] = match.row
@@ -621,13 +729,26 @@ func (app *giti) updateGraphSearch() {
 		label := must(gtk.LabelNew(""))
 		label.SetXAlign(0)
 		label.SetLineWrap(true)
-		label.SetMarkup(fmt.Sprintf("<b>%s</b>\n<span foreground=\"#374151\">%s  ·  %s  ·  <tt>%s</tt></span>", html.EscapeString(match.row.subject), html.EscapeString(match.row.date), html.EscapeString(match.row.author), html.EscapeString(match.row.revision[:7])))
+		label.SetMarkup(searchResultMarkup(match))
 		result.PackStart(label, true, true, 0)
 		result.PackEnd(copySHAButton(match.row.revision), false, false, 0)
 		app.searchResults.Insert(result, -1)
 	}
 	app.historyStack.SetVisibleChildName("search")
 	app.searchResults.ShowAll()
+}
+
+func searchResultMarkup(match searchMatch) string {
+	var badges strings.Builder
+	for _, part := range referenceParts(match.branches, match.tags) {
+		badges.WriteString("  ")
+		badges.WriteString(part.markup)
+	}
+	hint := ""
+	if match.matchesDescription {
+		hint = "\n<span size=\"small\" foreground=\"#4b5563\">matches commit description</span>"
+	}
+	return fmt.Sprintf("<b>%s</b>%s\n<span foreground=\"#374151\">%s  ·  %s  ·  <tt>%s</tt></span>%s", html.EscapeString(match.row.subject), badges.String(), html.EscapeString(match.row.date), html.EscapeString(match.row.author), html.EscapeString(match.row.revision[:7]), hint)
 }
 
 func (app *giti) selectHistoryRevision(revision string) bool {
@@ -1054,15 +1175,14 @@ func (app *giti) resetFullFile() {
 	app.fullFileToggle.HandlerUnblock(app.fullFileHandler)
 }
 
-func (app *giti) persistPaneState() {
-	if !app.panesReady || app.mainPane == nil || app.repositoryPane == nil {
-		return
+func (app *giti) persistUIState() {
+	state := loadUIState(app.statePath)
+	if app.panesReady && app.mainPane != nil && app.repositoryPane != nil && app.mainPane.GetAllocatedWidth() > 1 && app.repositoryPane.GetAllocatedHeight() > 1 {
+		state.MainPanePosition, state.RepositoryPanePosition = app.mainPane.GetPosition(), app.repositoryPane.GetPosition()
 	}
-	width, height := app.mainPane.GetAllocatedWidth(), app.repositoryPane.GetAllocatedHeight()
-	if width <= 1 || height <= 1 {
-		return
+	if app.searchMessages != nil {
+		state.SearchCommitMessages, state.SearchReferences = app.searchMessages.GetActive(), app.searchReferences.GetActive()
 	}
-	state := uiState{MainPanePosition: app.mainPane.GetPosition(), RepositoryPanePosition: app.repositoryPane.GetPosition()}
 	_ = saveUIState(app.statePath, state)
 }
 
@@ -1088,7 +1208,7 @@ func (app *giti) clearRepositoryView() {
 }
 
 func (app *giti) hideResident() {
-	app.persistPaneState()
+	app.persistUIState()
 	app.clearRepositoryView()
 	app.window.Hide()
 	app.stateMu.Lock()
@@ -1131,7 +1251,7 @@ func (app *giti) expireIfIdle() bool {
 }
 
 func (app *giti) quit() {
-	app.persistPaneState()
+	app.persistUIState()
 	if app.application != nil {
 		app.application.Quit()
 		return

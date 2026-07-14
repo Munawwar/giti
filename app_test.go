@@ -48,7 +48,7 @@ func TestSearchHistoryRanksExactPhrasesAboveSeparateWords(t *testing.T) {
 		{kind: "commit", revision: "3333333", subject: "Parser cleanup"},
 		{kind: "connector", subject: "ignored"},
 	}
-	matches := searchHistory(rows, "FIX PARSER")
+	matches := searchHistory(rows, "FIX PARSER", searchOptions{})
 	if len(matches) != 3 || matches[0].row.revision != "1111111" || matches[1].row.revision != "2222222" || matches[2].row.revision != "3333333" {
 		t.Fatalf("unexpected search ranking: %#v", matches)
 	}
@@ -57,8 +57,43 @@ func TestSearchHistoryRanksExactPhrasesAboveSeparateWords(t *testing.T) {
 	}
 }
 
+func TestSearchHistoryOptionsIncludeMessagesAndReferences(t *testing.T) {
+	rows := []historyRow{
+		{kind: "commit", revision: "1111111", subject: "Refactor internals", body: "Document the orbital cache architecture."},
+		{kind: "commit", revision: "2222222", subject: "Release", refs: "main, tag: nebula-v2"},
+	}
+	if matches := searchHistory(rows, "orbital cache", searchOptions{}); len(matches) != 0 {
+		t.Fatalf("default search unexpectedly included the long message: %#v", matches)
+	}
+	if matches := searchHistory(rows, "orbital cache", searchOptions{messages: true}); len(matches) != 1 || matches[0].row.revision != "1111111" {
+		t.Fatalf("long message search missed its commit: %#v", matches)
+	} else if markup := searchResultMarkup(matches[0]); !strings.Contains(markup, "matches commit description") {
+		t.Fatalf("description match lacks its hint: %q", markup)
+	}
+	if matches := searchHistory(rows, "nebula-v2", searchOptions{}); len(matches) != 0 {
+		t.Fatalf("default search unexpectedly included references: %#v", matches)
+	}
+	if matches := searchHistory(rows, "nebula-v2", searchOptions{references: true}); len(matches) != 1 || matches[0].row.revision != "2222222" || len(matches[0].tags) != 1 {
+		t.Fatalf("reference search missed its commit: %#v", matches)
+	} else if markup := searchResultMarkup(matches[0]); !strings.Contains(markup, `background="#f8e7a3"`) || !strings.Contains(markup, "nebula-v2") {
+		t.Fatalf("reference match lacks its tag badge: %q", markup)
+	}
+}
+
+func TestSearchHistoryUsesNewestDateToBreakScoreTies(t *testing.T) {
+	rows := []historyRow{
+		{kind: "commit", revision: "1111111", subject: "Same exact text", timestamp: 100},
+		{kind: "commit", revision: "2222222", subject: "Same exact text", timestamp: 300},
+		{kind: "commit", revision: "3333333", subject: "Same exact text", timestamp: 200},
+	}
+	matches := searchHistory(rows, "same exact text", searchOptions{})
+	if len(matches) != 3 || matches[0].row.revision != "2222222" || matches[1].row.revision != "3333333" || matches[2].row.revision != "1111111" {
+		t.Fatalf("equal search scores were not ordered newest first: %#v", matches)
+	}
+}
+
 func TestHistoryLabelDescribesMergeAndEscapesContent(t *testing.T) {
-	row := historyRow{kind: "commit", revision: "123456789", subject: "merge <side>", refs: "HEAD -> main, origin/main, tag: v1<&>, tag: v2, tag: v3, tag: v4, tag: v5", author: "A & B", parents: []string{"one", "two"}}
+	row := historyRow{kind: "commit", revision: "123456789", subject: "merge <side>", refs: "HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1<&>, tag: refs/tags/v2, tag: refs/tags/v3, tag: refs/tags/v4, tag: refs/tags/v5", author: "A & B", parents: []string{"one", "two"}}
 	label := historyLabel(row)
 	for _, want := range []string{"merge &lt;side&gt;", "A &amp; B", "merge  ·  2 parents"} {
 		if !strings.Contains(label, want) {
@@ -66,7 +101,7 @@ func TestHistoryLabelDescribesMergeAndEscapesContent(t *testing.T) {
 		}
 	}
 	refs := label
-	for _, want := range []string{`background="#d8f0dd"`, "HEAD → main", "origin/main", `background="#f8e7a3"`, "v1&lt;&amp;&gt;", "v2", "+ more tags"} {
+	for _, want := range []string{`background="#d8f0dd"`, "main ← HEAD", `background="#dce8f8"`, "origin/main", `background="#f8e7a3"`, "v1&lt;&amp;&gt;", "v2", "+ more tags"} {
 		if !strings.Contains(refs, want) {
 			t.Fatalf("history references %q does not contain %q", refs, want)
 		}
@@ -74,7 +109,7 @@ func TestHistoryLabelDescribesMergeAndEscapesContent(t *testing.T) {
 	if strings.Contains(refs, "v3") || strings.Contains(refs, "v4") || strings.Contains(refs, "v5") || strings.Index(refs, "HEAD") > strings.Index(refs, "v1") {
 		t.Fatalf("history references were not ordered and capped: %q", refs)
 	}
-	row.refs = "main, origin/main, feature, release, tag: v1, tag: v2, tag: v3"
+	row.refs = "main, refs/remotes/origin/main, feature, release, tag: v1, tag: v2, tag: v3"
 	refs = historyLabel(row)
 	if !strings.Contains(refs, "+ more branches") || !strings.Contains(refs, "+ more tags") || !(strings.Index(refs, "feature") < strings.Index(refs, "main") && strings.Index(refs, "+ more branches") < strings.Index(refs, "v1")) {
 		t.Fatalf("overflow decorations were not ordered: %q", refs)

@@ -62,7 +62,7 @@ func TestGTKParentNavigationLoadsAndRevealsOlderCommit(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	if err := saveUIState(uiStatePath(), uiState{MainPanePosition: 410, RepositoryPanePosition: 300}); err != nil {
+	if err := saveUIState(uiStatePath(), uiState{MainPanePosition: 410, RepositoryPanePosition: 300, SearchCommitMessages: true, SearchReferences: true}); err != nil {
 		t.Fatal(err)
 	}
 	repo, err := newRepository(testRepository(t), "HEAD")
@@ -97,7 +97,7 @@ func TestGTKParentNavigationLoadsAndRevealsOlderCommit(t *testing.T) {
 	}
 	missing, missingErr := app.revealHistoryRevision(strings.Repeat("f", 40))
 	mainPosition, repositoryPosition := app.mainPane.GetPosition(), app.repositoryPane.GetPosition()
-	if err != nil || !found || app.historyLimit != 101 || app.currentRow == nil || app.currentRow.revision != target || app.historyScroller.GetVAdjustment().GetValue() == 0 || missing || missingErr != nil || mainPosition != 410 || repositoryPosition != 300 {
+	if err != nil || !found || app.historyLimit != 101 || app.currentRow == nil || app.currentRow.revision != target || app.historyScroller.GetVAdjustment().GetValue() == 0 || missing || missingErr != nil || mainPosition != 410 || repositoryPosition != 300 || !app.searchMessages.GetActive() || !app.searchReferences.GetActive() {
 		t.Fatalf("older commit was not loaded and revealed: found=%v err=%v limit=%d row=%#v scroll=%v missing=%v/%v panes=%d/%d", found, err, app.historyLimit, app.currentRow, app.historyScroller.GetVAdjustment().GetValue(), missing, missingErr, mainPosition, repositoryPosition)
 	}
 }
@@ -112,6 +112,9 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	path := testRepository(t)
 	os.WriteFile(filepath.Join(path, "first.txt"), []byte("one"+strings.Repeat("x", 400)+"\n"+strings.Repeat("more\n", 200)), 0o644)
 	os.WriteFile(filepath.Join(path, "second.txt"), []byte("second\n"), 0o644)
+	if output, amendErr := exec.Command("git", "-C", path, "commit", "--amend", "-m", "commit 11", "-m", "Explain the orbital cache architecture.").CombinedOutput(); amendErr != nil {
+		t.Fatalf("amend commit message: %v: %s", amendErr, output)
+	}
 	if output, tagErr := exec.Command("git", "-C", path, "tag", strings.Repeat("long-release-name-", 12)).CombinedOutput(); tagErr != nil {
 		t.Fatalf("create long tag: %v: %s", tagErr, output)
 	}
@@ -155,12 +158,17 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	splitHeight, splitPosition := app.repositoryPane.GetAllocatedHeight(), app.repositoryPane.GetPosition()
-	if app.historyLimit != initialHistoryLimit || !app.mainPane.GetWideHandle() || !app.repositoryPane.GetWideHandle() || app.loadButton.GetVisible() || app.fileView.GetTooltipColumn() != 0 || splitHeight <= 1 || splitPosition*2 < splitHeight-2 || splitPosition*2 > splitHeight+2 {
+	messageOption, _ := app.searchMessages.GetLabel()
+	referenceOption, _ := app.searchReferences.GetLabel()
+	if app.historyLimit != initialHistoryLimit || !app.mainPane.GetWideHandle() || !app.repositoryPane.GetWideHandle() || app.loadButton.GetVisible() || app.fileView.GetTooltipColumn() != 0 || splitHeight <= 1 || splitPosition*2 < splitHeight-2 || splitPosition*2 > splitHeight+2 || app.searchSettings.GetPopover() == nil || !app.searchMessages.GetVisible() || !app.searchReferences.GetVisible() || app.searchMessages.GetActive() || app.searchReferences.GetActive() {
 		t.Fatalf("bad initial graph layout: limit=%d dividers=%v/%v load-more=%v tooltip=%d split=%d/%d", app.historyLimit, app.mainPane.GetWideHandle(), app.repositoryPane.GetWideHandle(), app.loadButton.GetVisible(), app.fileView.GetTooltipColumn(), splitPosition, splitHeight)
+	}
+	if messageOption != "Also match commit description" || referenceOption != "Also match branches and tags" {
+		t.Fatalf("unexpected search options %q / %q", messageOption, referenceOption)
 	}
 	app.mainPane.SetPosition(app.mainPane.GetAllocatedWidth() / 3)
 	app.repositoryPane.SetPosition(splitHeight * 2 / 3)
-	app.persistPaneState()
+	app.persistUIState()
 	savedState := loadUIState(app.statePath)
 	if savedState.MainPanePosition != app.mainPane.GetPosition() || savedState.RepositoryPanePosition != app.repositoryPane.GetPosition() {
 		t.Fatalf("pane positions were not persisted: %#v", savedState)
@@ -353,6 +361,33 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	}
 	if !app.historyView.IsFocus() || app.currentRow == nil || app.currentRow.subject != "commit 9" || app.currentFile == nil {
 		t.Fatalf("rapid graph selection applied stale state: row=%#v file=%#v", app.currentRow, app.currentFile)
+	}
+	app.historySearch.SetText("orbital cache")
+	if len(app.searchMatches) != 0 {
+		t.Fatalf("default search included a long commit message: %#v", app.searchMatches)
+	}
+	app.searchMessages.SetActive(true)
+	if len(app.searchMatches) != 1 || app.searchMatches[0].subject != "commit 11" {
+		t.Fatalf("enabled long-message search missed its commit: %#v", app.searchMatches)
+	}
+	app.historySearch.SetText("long-release-name")
+	if len(app.searchMatches) != 0 {
+		t.Fatalf("default reference search included a tag: %#v", app.searchMatches)
+	}
+	app.searchReferences.SetActive(true)
+	if len(app.searchMatches) != 1 || app.searchMatches[0].subject != "commit 11" {
+		t.Fatalf("enabled reference search missed its tag: %#v", app.searchMatches)
+	}
+	app.searchSettings.SetActive(true)
+	for gtk.EventsPending() {
+		gtk.MainIteration()
+	}
+	if !app.searchMessages.GetMapped() || !app.searchReferences.GetMapped() {
+		t.Fatal("search options were not mapped when their popover opened")
+	}
+	app.searchSettings.SetActive(false)
+	if state := loadUIState(app.statePath); !state.SearchCommitMessages || !state.SearchReferences {
+		t.Fatalf("search settings were not persisted: %#v", state)
 	}
 	app.historySearch.SetText("CoMmIt 8")
 	if app.historyStack.GetVisibleChildName() != "search" || len(app.searchMatches) == 0 || app.searchMatches[0].subject != "commit 8" {

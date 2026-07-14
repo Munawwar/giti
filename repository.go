@@ -20,12 +20,15 @@ const (
 	emptyTree       = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 	fullFileLimit   = 2 * 1024 * 1024
 	diffOutputLimit = 8 * 1024 * 1024
+	remoteRefPrefix = "refs/remotes/"
+	headRefSuffix   = " <- HEAD"
 )
 
 type historyRow struct {
-	kind, revision, subject, refs, author, date string
-	parents                                     []string
-	graph                                       graphLayout
+	kind, revision, subject, body, refs, author, date string
+	timestamp                                         int64
+	parents                                           []string
+	graph                                             graphLayout
 }
 
 type commitDetails struct {
@@ -40,10 +43,15 @@ type changedFile struct {
 func sortedReferences(branches, tags []string) ([]string, []string) {
 	branches, tags = append([]string(nil), branches...), append([]string(nil), tags...)
 	sort.Slice(branches, func(left, right int) bool {
-		leftHead := branches[left] == "HEAD" || strings.HasPrefix(branches[left], "HEAD -> ")
-		rightHead := branches[right] == "HEAD" || strings.HasPrefix(branches[right], "HEAD -> ")
+		leftHead := branches[left] == "HEAD" || strings.HasSuffix(branches[left], headRefSuffix)
+		rightHead := branches[right] == "HEAD" || strings.HasSuffix(branches[right], headRefSuffix)
 		if leftHead != rightHead {
 			return leftHead
+		}
+		leftName := strings.TrimPrefix(strings.TrimSuffix(branches[left], headRefSuffix), remoteRefPrefix)
+		rightName := strings.TrimPrefix(strings.TrimSuffix(branches[right], headRefSuffix), remoteRefPrefix)
+		if leftName != rightName {
+			return leftName < rightName
 		}
 		return branches[left] < branches[right]
 	})
@@ -152,11 +160,23 @@ func (repo *repository) runLimitedContext(ctx context.Context, limit int, check 
 	return string(data), truncated, nil
 }
 
-func (repo *repository) history(count int, ignoreWhitespace bool) ([]historyRow, bool, error) {
-	format := recordMarker + strings.Join([]string{"%H", "%P", "%an", "%as", "%D", "%s"}, fieldMarker)
-	output, err := repo.run("log", "--topo-order", fmt.Sprintf("-n%d", count+1), "--format="+format, repo.revisionArg)
+func (repo *repository) history(count int, ignoreWhitespace, includeMessages bool) ([]historyRow, bool, error) {
+	format := recordMarker + strings.Join([]string{"%H", "%P", "%an", "%as", "%at", "%D", "%s"}, fieldMarker)
+	output, err := repo.run("log", "--topo-order", "--decorate=full", fmt.Sprintf("-n%d", count+1), "--format="+format, repo.revisionArg)
 	if err != nil {
 		return nil, false, err
+	}
+	var bodies map[string]string
+	if includeMessages {
+		bodies = make(map[string]string)
+		messages, messageErr := repo.run("log", "--topo-order", fmt.Sprintf("-n%d", count+1), "--format=%x00%H%x00%b", repo.revisionArg)
+		if messageErr != nil {
+			return nil, false, messageErr
+		}
+		fields := strings.Split(messages, "\x00")
+		for index := 1; index+1 < len(fields); index += 2 {
+			bodies[fields[index]] = strings.TrimSpace(fields[index+1])
+		}
 	}
 	rows := make([]historyRow, 0, count+2)
 	for _, synthetic := range []historyRow{{kind: "unstaged", subject: "Unstaged changes"}, {kind: "staged", subject: "Staged changes"}} {
@@ -171,11 +191,12 @@ func (repo *repository) history(count int, ignoreWhitespace bool) ([]historyRow,
 	commits := make([]historyRow, 0, count+1)
 	for _, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
 		fields := strings.TrimPrefix(line, recordMarker)
-		parts := strings.SplitN(fields, fieldMarker, 6)
-		for len(parts) < 6 {
+		parts := strings.SplitN(fields, fieldMarker, 7)
+		for len(parts) < 7 {
 			parts = append(parts, "")
 		}
-		commits = append(commits, historyRow{kind: "commit", revision: parts[0], parents: strings.Fields(parts[1]), author: parts[2], date: parts[3], refs: strings.TrimSpace(parts[4]), subject: parts[5]})
+		timestamp, _ := strconv.ParseInt(parts[4], 10, 64)
+		commits = append(commits, historyRow{kind: "commit", revision: parts[0], parents: strings.Fields(parts[1]), author: parts[2], date: parts[3], timestamp: timestamp, refs: strings.TrimSpace(parts[5]), subject: parts[6], body: bodies[parts[0]]})
 	}
 	layoutGraph(commits)
 	hasMore := len(commits) > count
@@ -207,7 +228,7 @@ func (repo *repository) commitDetailsContext(ctx context.Context, revision strin
 		case strings.HasPrefix(ref, "refs/heads/"):
 			details.branches = append(details.branches, strings.TrimPrefix(ref, "refs/heads/"))
 		case strings.HasPrefix(ref, "refs/remotes/"):
-			details.branches = append(details.branches, strings.TrimPrefix(ref, "refs/remotes/"))
+			details.branches = append(details.branches, ref)
 		}
 	}
 	details.branches, details.tags = sortedReferences(details.branches, details.tags)
