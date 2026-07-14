@@ -11,7 +11,7 @@ Keeping bloat low and starting up quickly were important design choices for repe
 `giti` coincidentally 
 means world/universe and life in Persian.
 
-![Giti showing a commit graph and file diff](docs/giti-screenshot.png)
+![Giti showing a commit graph, search controls, and file diff](docs/giti-screenshot.png)
 
 ```sh
 ./giti
