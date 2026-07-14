@@ -61,9 +61,9 @@ that private copy automatically. It can be deleted after installing
 
 ## Features / Deets
 
-The initial history contains unstaged and staged entries when present, followed by ten commits. Select a history entry, then a changed file, to view only that file's stacked diff. Whitespace changes are ignored by default; enable **Show whitespace changes** to use Git's regular diff.
+The initial history contains unstaged and staged entries when present, followed by 50 commits. Select a history entry, then a changed file, to view only that file's stacked diff. Whitespace changes are ignored by default; enable **Show whitespace changes** to use Git's regular diff.
 
-For performance only a few commits are shown in graph initially. Use **Load more** when the initial ten-commit history is not enough.
+For performance the graph initially shows 50 commits. Use **Load more** when that is not enough. Opening a parent that has not been loaded yet automatically reads older history, up to a safety limit of 5,000 commits.
 
 Use **View → Refresh** or press **F5** to reread the graph and working-tree changes while keeping the current view when possible.
 
@@ -75,8 +75,9 @@ Rendered patches are capped at 8 MiB. Giti terminates larger diff output and sho
 
 The first normal invocation starts the sole resident as a detached background
 process, so its terminal returns immediately. Closing its window hides the
-resident for up to 12 hours, and a later invocation reuses it. Invoking Giti
-while its window is already visible does not create another process. `giti -1`
+resident for up to 12 hours, and a later invocation reuses it. A second
+invocation while the resident window is busy opens an independent one-shot
+window instead. `giti -1`
 terminates the recorded resident and starts a fresh one. A process lock enforces
 the single-resident rule even when launch commands race. Resident output is
 written to `$XDG_RUNTIME_DIR/giti.log` (or `/tmp/giti-$UID/giti.log` when that

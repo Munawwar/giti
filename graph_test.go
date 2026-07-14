@@ -123,6 +123,23 @@ func TestGraphLayoutSixLanesWithoutOctopusMerge(t *testing.T) {
 	}
 }
 
+func TestRenderedGraphsReuseIdenticalLaneImages(t *testing.T) {
+	rows := []historyRow{
+		{kind: "commit", revision: "four", parents: []string{"three"}},
+		{kind: "commit", revision: "three", parents: []string{"two"}},
+		{kind: "commit", revision: "two", parents: []string{"one"}},
+		{kind: "commit", revision: "one"},
+	}
+	layoutGraph(rows)
+	graphs, err := renderGraphs(rows, 48, graphRowHeight, func() bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if graphs[1] != graphs[2] {
+		t.Fatal("identical linear lane rows retained separate pixbufs")
+	}
+}
+
 func BenchmarkGraphLayout(b *testing.B) {
 	fixture := make([]historyRow, 500)
 	for index := range fixture {

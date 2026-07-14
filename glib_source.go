@@ -1,23 +1,38 @@
 package main
 
 /*
-#cgo pkg-config: glib-2.0
+#cgo pkg-config: gtk+-3.0
 #include <glib.h>
 #include <stdint.h>
+#include <stdlib.h>
 
-guint giti_add_source(guint seconds, uintptr_t handle);
+guint giti_add_source(guint milliseconds, uintptr_t handle);
+void giti_set_accessibility(uintptr_t widget, const char *name, const char *description);
 */
 import "C"
 
-import "runtime/cgo"
+import (
+	"runtime/cgo"
+	"time"
+	"unsafe"
+
+	"github.com/gotk3/gotk3/gtk"
+)
 
 // addMainSource schedules work on GTK's main context without presenting an
 // integer callback handle to Go's garbage collector as a pointer.
-func addMainSource(seconds uint, callback func() bool) {
+func addMainSource(delay time.Duration, callback func() bool) {
 	handle := cgo.NewHandle(callback)
-	if C.giti_add_source(C.guint(seconds), C.uintptr_t(handle)) == 0 {
+	if C.giti_add_source(C.guint(max(0, delay.Milliseconds())), C.uintptr_t(handle)) == 0 {
 		handle.Delete()
 	}
+}
+
+func setAccessibility(widget *gtk.Widget, name, description string) {
+	cName, cDescription := C.CString(name), C.CString(description)
+	defer C.free(unsafe.Pointer(cName))
+	defer C.free(unsafe.Pointer(cDescription))
+	C.giti_set_accessibility(C.uintptr_t(widget.Native()), cName, cDescription)
 }
 
 //export gitiSourceFunc

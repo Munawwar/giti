@@ -1,14 +1,15 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 )
 
 type openRequest struct {
@@ -76,14 +77,15 @@ func (server *residentServer) serve() {
 			}
 			continue
 		}
-		server.handle(connection)
+		go server.handle(connection)
 	}
 }
 
 func (server *residentServer) handle(connection net.Conn) {
 	defer connection.Close()
+	_ = connection.SetDeadline(time.Now().Add(time.Second))
 	var request openRequest
-	if err := json.NewDecoder(bufio.NewReader(connection)).Decode(&request); err != nil {
+	if err := json.NewDecoder(io.LimitReader(connection, 64*1024)).Decode(&request); err != nil {
 		return
 	}
 	server.application.stateMu.Lock()

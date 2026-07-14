@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -15,17 +16,17 @@ import (
 )
 
 const (
-	fieldMarker     = "__GITI_FIELD__"
-	recordMarker    = "__GITI_COMMIT__"
-	emptyTree       = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-	fullFileLimit   = 2 * 1024 * 1024
-	diffOutputLimit = 8 * 1024 * 1024
-	remoteRefPrefix = "refs/remotes/"
-	headRefSuffix   = " <- HEAD"
+	emptyTree          = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+	fullFileLimit      = 2 * 1024 * 1024
+	diffOutputLimit    = 8 * 1024 * 1024
+	historyOutputLimit = 32 * 1024 * 1024
+	remoteRefPrefix    = "refs/remotes/"
+	headRefSuffix      = " <- HEAD"
 )
 
 type historyRow struct {
 	kind, revision, subject, body, refs, author, date string
+	searchSubject, searchBody, searchRefs             string
 	timestamp                                         int64
 	parents                                           []string
 	graph                                             graphLayout
@@ -161,26 +162,66 @@ func (repo *repository) runLimitedContext(ctx context.Context, limit int, check 
 }
 
 func (repo *repository) history(count int, ignoreWhitespace, includeMessages bool) ([]historyRow, bool, error) {
-	format := recordMarker + strings.Join([]string{"%H", "%P", "%an", "%as", "%at", "%D", "%s"}, fieldMarker)
-	output, err := repo.run("log", "--topo-order", "--decorate=full", fmt.Sprintf("-n%d", count+1), "--format="+format, repo.revisionArg)
+	return repo.historyContext(context.Background(), count, ignoreWhitespace, includeMessages)
+}
+
+func (repo *repository) historyIndexContext(ctx context.Context, revision string, limit int) (int, bool, error) {
+	command := exec.CommandContext(ctx, "git", "-C", repo.path, "rev-list", "--topo-order", repo.revisionArg)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return -1, false, err
+	}
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if err = command.Start(); err != nil {
+		return -1, false, err
+	}
+	scanner := bufio.NewScanner(stdout)
+	for index := 0; scanner.Scan(); index++ {
+		if scanner.Text() == revision {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			return index, false, nil
+		}
+		if index+1 >= limit {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			return -1, true, nil
+		}
+	}
+	waitErr := command.Wait()
+	if ctx.Err() != nil {
+		return -1, false, ctx.Err()
+	}
+	if err = scanner.Err(); err != nil {
+		return -1, false, err
+	}
+	if waitErr != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = waitErr.Error()
+		}
+		return -1, false, errors.New(message)
+	}
+	return -1, false, nil
+}
+
+func (repo *repository) historyContext(ctx context.Context, count int, ignoreWhitespace, includeMessages bool) ([]historyRow, bool, error) {
+	fields := []string{"%H", "%P", "%an", "%as", "%at", "%D", "%s"}
+	if includeMessages {
+		fields = append(fields, "%b")
+	}
+	format := strings.Join(fields, "%x00")
+	output, truncated, err := repo.runLimitedContext(ctx, historyOutputLimit, true, "log", "-z", "--topo-order", "--decorate=full", fmt.Sprintf("-n%d", count+1), "--format="+format, repo.revisionArg)
 	if err != nil {
 		return nil, false, err
 	}
-	var bodies map[string]string
-	if includeMessages {
-		bodies = make(map[string]string)
-		messages, messageErr := repo.run("log", "--topo-order", fmt.Sprintf("-n%d", count+1), "--format=%x00%H%x00%b", repo.revisionArg)
-		if messageErr != nil {
-			return nil, false, messageErr
-		}
-		fields := strings.Split(messages, "\x00")
-		for index := 1; index+1 < len(fields); index += 2 {
-			bodies[fields[index]] = strings.TrimSpace(fields[index+1])
-		}
+	if truncated {
+		return nil, false, fmt.Errorf("history metadata exceeds %d MiB; disable commit-description search or load fewer commits", historyOutputLimit/1024/1024)
 	}
 	rows := make([]historyRow, 0, count+2)
 	for _, synthetic := range []historyRow{{kind: "unstaged", subject: "Unstaged changes"}, {kind: "staged", subject: "Staged changes"}} {
-		files, fileErr := repo.changedFiles(synthetic, ignoreWhitespace)
+		files, fileErr := repo.changedFilesContext(ctx, synthetic, ignoreWhitespace)
 		if fileErr != nil {
 			return nil, false, fileErr
 		}
@@ -188,15 +229,17 @@ func (repo *repository) history(count int, ignoreWhitespace, includeMessages boo
 			rows = append(rows, synthetic)
 		}
 	}
-	commits := make([]historyRow, 0, count+1)
-	for _, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
-		fields := strings.TrimPrefix(line, recordMarker)
-		parts := strings.SplitN(fields, fieldMarker, 7)
-		for len(parts) < 7 {
-			parts = append(parts, "")
+	commits, parts, width := make([]historyRow, 0, count+1), strings.Split(output, "\x00"), len(fields)
+	for index := 0; index+width <= len(parts); index += width {
+		values := parts[index : index+width]
+		timestamp, _ := strconv.ParseInt(values[4], 10, 64)
+		body := ""
+		if includeMessages {
+			body = strings.TrimSpace(values[7])
 		}
-		timestamp, _ := strconv.ParseInt(parts[4], 10, 64)
-		commits = append(commits, historyRow{kind: "commit", revision: parts[0], parents: strings.Fields(parts[1]), author: parts[2], date: parts[3], timestamp: timestamp, refs: strings.TrimSpace(parts[5]), subject: parts[6], body: bodies[parts[0]]})
+		row := historyRow{kind: "commit", revision: values[0], parents: strings.Fields(values[1]), author: values[2], date: values[3], timestamp: timestamp, refs: strings.TrimSpace(values[5]), subject: values[6], body: body}
+		row.searchSubject, row.searchBody, row.searchRefs = strings.ToLower(row.subject), strings.ToLower(row.body), strings.ToLower(row.refs)
+		commits = append(commits, row)
 	}
 	layoutGraph(commits)
 	hasMore := len(commits) > count
@@ -207,12 +250,12 @@ func (repo *repository) history(count int, ignoreWhitespace, includeMessages boo
 }
 
 func (repo *repository) commitDetailsContext(ctx context.Context, revision string) (commitDetails, error) {
-	format := strings.Join([]string{"%H", "%s", "%an", "%ae", "%aI", "%cn", "%ce", "%cI", "%P", "%b"}, fieldMarker)
+	format := strings.Join([]string{"%H", "%s", "%an", "%ae", "%aI", "%cn", "%ce", "%cI", "%P", "%b"}, "%x00")
 	output, err := repo.runContext(ctx, "show", "-s", "--format="+format, revision)
 	if err != nil {
 		return commitDetails{}, err
 	}
-	parts := strings.SplitN(strings.TrimSuffix(output, "\n"), fieldMarker, 10)
+	parts := strings.SplitN(strings.TrimSuffix(output, "\n"), "\x00", 10)
 	for len(parts) < 10 {
 		parts = append(parts, "")
 	}
@@ -221,7 +264,7 @@ func (repo *repository) commitDetailsContext(ctx context.Context, revision strin
 	if err != nil {
 		return commitDetails{}, err
 	}
-	for _, ref := range strings.Fields(refs) {
+	for _, ref := range strings.Split(strings.TrimSuffix(refs, "\n"), "\n") {
 		switch {
 		case strings.HasPrefix(ref, "refs/tags/"):
 			details.tags = append(details.tags, strings.TrimPrefix(ref, "refs/tags/"))
@@ -240,10 +283,7 @@ func (repo *repository) changedFiles(row historyRow, ignoreWhitespace bool) ([]c
 }
 
 func (repo *repository) changedFilesContext(ctx context.Context, row historyRow, ignoreWhitespace bool) ([]changedFile, error) {
-	args := []string{"diff", "--name-status", "--find-renames", "--find-copies"}
-	if ignoreWhitespace {
-		args = append(args, "--ignore-all-space")
-	}
+	args := []string{"diff", "--find-renames", "--find-copies"}
 	if row.kind == "staged" {
 		args = append(args, "--cached")
 	} else if row.kind == "commit" {
@@ -257,44 +297,56 @@ func (repo *repository) changedFilesContext(ctx context.Context, row historyRow,
 		}
 		args = append(args, parent, row.revision)
 	}
-	output, err := repo.runContext(ctx, args...)
+	statusArgs := append(append([]string(nil), args...), "--name-status", "-z")
+	output, err := repo.runContext(ctx, statusArgs...)
 	if err != nil {
 		return nil, err
 	}
 	files := make([]changedFile, 0)
-	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
-		parts := strings.Split(line, "\t")
-		if len(parts) < 2 {
-			continue
-		}
-		file := changedFile{status: parts[0], path: parts[1]}
-		if strings.ContainsAny(parts[0][:1], "RC") && len(parts) > 2 {
-			file.oldPath, file.path = parts[1], parts[2]
+	parts := strings.Split(output, "\x00")
+	for index := 0; index+1 < len(parts); {
+		file := changedFile{status: parts[index], path: parts[index+1]}
+		index += 2
+		if file.status != "" && strings.ContainsAny(file.status[:1], "RC") && index < len(parts) {
+			file.oldPath, file.path = file.path, parts[index]
+			index++
 		}
 		files = append(files, file)
 	}
 	if row.kind == "unstaged" {
-		untracked, trackErr := repo.runContext(ctx, "ls-files", "--others", "--exclude-standard")
+		untracked, trackErr := repo.runContext(ctx, "ls-files", "--others", "--exclude-standard", "-z")
 		if trackErr != nil {
 			return nil, trackErr
 		}
-		for _, path := range strings.Split(strings.TrimSuffix(untracked, "\n"), "\n") {
+		for _, path := range strings.Split(untracked, "\x00") {
 			if path != "" {
 				files = append(files, changedFile{status: "??", path: path})
 			}
 		}
 	}
-	filtered := files[:0]
-	for _, file := range files {
-		if file.status == "??" || !ignoreWhitespace {
-			filtered = append(filtered, file)
+	if !ignoreWhitespace {
+		return files, nil
+	}
+	visible, visibleErr := repo.runContext(ctx, append(append([]string(nil), args...), "--numstat", "-z", "--ignore-all-space")...)
+	if visibleErr != nil {
+		return nil, visibleErr
+	}
+	visiblePaths := make(map[string]bool)
+	for parts, index := strings.Split(visible, "\x00"), 0; index < len(parts) && parts[index] != ""; index++ {
+		fields := strings.SplitN(parts[index], "\t", 3)
+		if len(fields) != 3 {
 			continue
 		}
-		patch, patchErr := repo.diffContext(ctx, row, file, true, false)
-		if patchErr != nil {
-			return nil, patchErr
+		if fields[2] == "" && index+2 < len(parts) {
+			visiblePaths[parts[index+1]], visiblePaths[parts[index+2]] = true, true
+			index += 2
+		} else {
+			visiblePaths[fields[2]] = true
 		}
-		if patch != "" {
+	}
+	filtered := files[:0]
+	for _, file := range files {
+		if file.status == "??" || visiblePaths[file.path] || visiblePaths[file.oldPath] {
 			filtered = append(filtered, file)
 		}
 	}

@@ -14,11 +14,33 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"math"
 
 	"github.com/gotk3/gotk3/cairo"
 	"github.com/gotk3/gotk3/gdk"
 )
+
+func renderGraphs(rows []historyRow, width, height int, canceled func() bool) ([]*gdk.Pixbuf, error) {
+	graphs, cache := make([]*gdk.Pixbuf, len(rows)), make(map[string]*gdk.Pixbuf)
+	for index, row := range rows {
+		if canceled() {
+			return nil, context.Canceled
+		}
+		key := fmt.Sprintf("%s:%d:%v:%v", row.kind, row.graph.position, row.graph.lanes, row.graph.next)
+		if graph := cache[key]; graph != nil {
+			graphs[index] = graph
+			continue
+		}
+		graph, err := renderGraph(row, width, height)
+		if err != nil {
+			return nil, err
+		}
+		cache[key], graphs[index] = graph, graph
+	}
+	return graphs, nil
+}
 
 const (
 	graphLaneWidth = 16
@@ -132,6 +154,7 @@ var graphColors = [][3]float64{
 // the following commit's layout below it.
 func renderGraph(row historyRow, width, height int) (*gdk.Pixbuf, error) {
 	surface := cairo.CreateImageSurface(cairo.FORMAT_ARGB32, width, height)
+	defer surface.Close()
 	context := cairo.Create(surface)
 	defer context.Close()
 	context.SetLineWidth(2)

@@ -21,6 +21,7 @@ import (
 const (
 	idleDuration        = 12 * time.Hour
 	initialHistoryLimit = 50
+	maxAutoHistory      = 5000
 )
 
 //go:embed logo/giti-logo.png
@@ -50,9 +51,12 @@ type giti struct {
 	graphWidth                 int
 	selectionGeneration        uint64
 	diffGeneration             uint64
+	historyGeneration          uint64
+	searchGeneration           uint64
 	notificationGeneration     uint64
 	selectionCancel            context.CancelFunc
 	diffCancel                 context.CancelFunc
+	historyCancel              context.CancelFunc
 	statePath                  string
 	panesReady                 bool
 	stateSavePending           bool
@@ -133,7 +137,7 @@ func newGiti(repo *repository, resident bool, applications ...*gtk.Application) 
 	app.fileStore = must(gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING))
 	app.buildWindow(application)
 	if resident {
-		addMainSource(60, app.expireIfIdle)
+		addMainSource(time.Minute, app.expireIfIdle)
 	}
 	return app, nil
 }
@@ -163,6 +167,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.window.Connect("destroy", func() { app.panesReady = false })
 
 	app.historyView = must(gtk.TreeViewNewWithModel(app.historyStore))
+	setAccessibility(&app.historyView.Widget, "Commit history", "Git commits ordered from newest to oldest; each row states its parent topology")
 	app.historyView.SetHeadersVisible(false)
 	historyContext, _ := app.historyView.GetStyleContext()
 	historyContext.AddClass("giti-list")
@@ -248,6 +253,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	searchOptions.PackStart(app.searchMessages, false, false, 0)
 	searchOptions.PackStart(app.searchReferences, false, false, 0)
 	app.searchSettings = must(gtk.MenuButtonNew())
+	setAccessibility(&app.searchSettings.Widget, "Search options", "Choose whether search includes commit descriptions, branches, and tags")
 	app.searchSettings.SetImage(must(gtk.ImageNewFromIconName("preferences-system-symbolic", gtk.ICON_SIZE_BUTTON)))
 	app.searchSettings.SetTooltipText("Search options")
 	app.searchSettings.SetRelief(gtk.RELIEF_NONE)
@@ -279,6 +285,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.historyStack.AddNamed(scroller(app.searchResults), "search")
 
 	app.fileView = must(gtk.TreeViewNewWithModel(app.fileStore))
+	setAccessibility(&app.fileView.Widget, "Changed files", "Files changed by the selected history entry")
 	app.fileView.SetHeadersVisible(false)
 	app.fileView.SetTooltipColumn(0)
 	fileContext, _ := app.fileView.GetStyleContext()
@@ -296,6 +303,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.diffBuffer.CreateTag("added", map[string]any{"background": "#d7f5dd", "foreground": "#174d22"})
 	app.diffBuffer.CreateTag("removed", map[string]any{"background": "#f9d7d9", "foreground": "#682126"})
 	app.diffView = must(gtk.TextViewNewWithBuffer(app.diffBuffer))
+	setAccessibility(&app.diffView.Widget, "Commit diff", "Patch for the selected file; additions begin with plus and removals with minus")
 	app.diffView.SetEditable(false)
 	app.diffView.SetCursorVisible(false)
 	app.diffView.SetMonospace(true)
@@ -367,31 +375,31 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	initializePane := func(pane *gtk.Paned, vertical bool, position, fallback int) {
 		var handler glib.SignalHandle
 		handler = pane.Connect("size-allocate", func() {
-			size := pane.GetAllocatedWidth()
-			if vertical {
-				size = pane.GetAllocatedHeight()
-			}
-			if size <= 1 {
-				return
-			}
-			if position <= 0 {
-				position = fallback
-				if position < 0 {
-					position = size / 2
-				}
-			}
-			margin := min(80, size/4)
-			pane.SetPosition(max(margin, min(position, size-margin)))
 			pane.HandlerDisconnect(handler)
-			initialized++
-			app.panesReady = initialized == 2
+			addMainSource(50*time.Millisecond, func() bool {
+				size := pane.GetAllocatedWidth()
+				if vertical {
+					size = pane.GetAllocatedHeight()
+				}
+				if position <= 0 {
+					position = fallback
+					if position < 0 {
+						position = size / 2
+					}
+				}
+				margin := min(80, size/4)
+				pane.SetPosition(max(margin, min(position, size-margin)))
+				initialized++
+				app.panesReady = initialized == 2
+				return false
+			})
 		})
 		pane.Connect("notify::position", func() {
 			if !app.panesReady || app.stateSavePending {
 				return
 			}
 			app.stateSavePending = true
-			addMainSource(1, func() bool {
+			addMainSource(time.Second, func() bool {
 				app.stateSavePending = false
 				app.persistUIState()
 				return false
@@ -433,6 +441,7 @@ func scroller(child gtk.IWidget) *gtk.ScrolledWindow {
 
 func copySHAButton(sha string) *gtk.Button {
 	button := must(gtk.ButtonNewFromIconName("edit-copy-symbolic", gtk.ICON_SIZE_BUTTON))
+	setAccessibility(&button.Widget, "Copy commit SHA", "Copy "+sha+" to the clipboard")
 	button.SetTooltipText("Copy SHA: " + sha)
 	button.Connect("clicked", func() {
 		clipboard := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD))
@@ -447,7 +456,15 @@ func (app *giti) rememberDiffScroll() {
 	}
 }
 
-func (app *giti) loadHistory() error {
+func (app *giti) loadHistory() {
+	app.loadHistoryTo("")
+}
+
+func (app *giti) loadHistoryTo(reveal string) {
+	app.historyGeneration++
+	if app.historyCancel != nil {
+		app.historyCancel()
+	}
 	app.selectionGeneration++
 	app.diffGeneration++
 	if app.selectionCancel != nil {
@@ -456,89 +473,152 @@ func (app *giti) loadHistory() error {
 	if app.diffCancel != nil {
 		app.diffCancel()
 	}
-	generation := app.selectionGeneration
+	historyGeneration := app.historyGeneration
 	preferredKind, preferredRevision := "", ""
 	if app.currentRow != nil {
 		preferredKind, preferredRevision = app.currentRow.kind, app.currentRow.revision
 	}
-	rows, hasMore, err := app.repository.history(app.historyLimit, !app.whitespaceToggle.GetActive(), app.searchMessages.GetActive())
-	if err != nil {
-		app.showError(err)
-		return err
-	}
-	app.loadButton.SetVisible(hasMore)
-	app.historyRows = rows
-	app.historyStore.Clear()
-	graphWidth := 48
-	for _, row := range rows {
-		graphWidth = max(graphWidth, max(len(row.graph.lanes), len(row.graph.next))*graphLaneWidth)
-	}
-	app.graphWidth = graphWidth
-	app.graphColumn.SetFixedWidth(graphWidth)
-	target := -1
-	for index, row := range rows {
-		graph, graphErr := renderGraph(row, graphWidth, graphRowHeight)
-		if graphErr != nil {
-			app.showError(graphErr)
-			return graphErr
+	ctx, cancel := context.WithCancel(context.Background())
+	app.historyCancel = cancel
+	repo, limit := app.repository, app.historyLimit
+	ignoreWhitespace, includeMessages := !app.whitespaceToggle.GetActive(), app.searchMessages.GetActive()
+	app.loadButton.SetSensitive(false)
+	go func() {
+		var rows []historyRow
+		var graphs []*gdk.Pixbuf
+		var hasMore, found, beyondAutoLimit bool
+		var err error
+		autoLimit := max(limit, maxAutoHistory)
+		if reveal != "" {
+			index := -1
+			index, beyondAutoLimit, err = repo.historyIndexContext(ctx, reveal, autoLimit)
+			found = index >= 0
+			if found {
+				limit = max(limit, index+1)
+			}
 		}
-		iter := app.historyStore.Append()
-		app.historyStore.Set(iter, []int{0, 1, 2}, []any{graph, historyLabel(row), row.kind})
-		if target < 0 {
-			target = index
+		if err == nil {
+			rows, hasMore, err = repo.historyContext(ctx, limit, ignoreWhitespace, includeMessages)
+			if reveal != "" && found {
+				found = false
+				for _, row := range rows {
+					found = found || row.revision == reveal
+				}
+			}
 		}
-		if row.kind == preferredKind && (preferredRevision == "" || preferredRevision == row.revision) {
-			target, preferredKind = index, ""
+		graphWidth := 48
+		for _, row := range rows {
+			graphWidth = max(graphWidth, max(len(row.graph.lanes), len(row.graph.next))*graphLaneWidth)
 		}
-	}
-	addMainSource(0, func() bool {
-		if generation == app.selectionGeneration {
-			app.fitGraphRows()
+		if err == nil {
+			graphs, err = renderGraphs(rows, graphWidth, graphRowHeight, func() bool { return ctx.Err() != nil })
 		}
-		return false
-	})
-	if target >= 0 {
 		addMainSource(0, func() bool {
-			if generation == app.selectionGeneration && target < len(app.historyRows) {
+			if ctx.Err() != nil || historyGeneration != app.historyGeneration || repo != app.repository {
+				return false
+			}
+			app.loadButton.SetSensitive(true)
+			if err != nil {
+				app.historyCancel = nil
+				app.showError(err)
+				return false
+			}
+			app.historyLimit, app.graphWidth, app.historyRows = limit, graphWidth, rows
+			app.loadButton.SetVisible(hasMore)
+			app.graphColumn.SetFixedWidth(graphWidth)
+			app.historyStore.Clear()
+			target := -1
+			for index, row := range rows {
+				iter := app.historyStore.Append()
+				app.historyStore.Set(iter, []int{0, 1, 2}, []any{graphs[index], historyLabel(row), row.kind})
+				if target < 0 {
+					target = index
+				}
+				if row.kind == preferredKind && (preferredRevision == "" || preferredRevision == row.revision) {
+					target, preferredKind = index, ""
+				}
+				if reveal != "" && row.revision == reveal {
+					target = index
+				}
+			}
+			if target >= 0 {
 				path := must(gtk.TreePathNewFromIndicesv([]int{target}))
 				selection, _ := app.historyView.GetSelection()
 				selection.SelectPath(path)
+				if reveal != "" {
+					app.historyView.ScrollToCell(path, nil, true, 0, .5)
+					app.historyView.GrabFocus()
+				}
+			}
+			app.updateGraphSearch()
+			addMainSource(0, func() bool {
+				if historyGeneration == app.historyGeneration && repo == app.repository {
+					app.fitGraphRows(ctx, historyGeneration, repo)
+					if reveal != "" {
+						app.selectHistoryRevision(reveal)
+					}
+				}
+				return false
+			})
+			if reveal != "" && !found {
+				message := "Parent " + reveal[:7] + " is not present in this repository history."
+				if beyondAutoLimit {
+					message = fmt.Sprintf("Parent %s was not found in the first %d commits.", reveal[:7], autoLimit)
+				}
+				app.notificationGeneration++
+				notificationGeneration := app.notificationGeneration
+				app.notificationLabel.SetText(message)
+				app.notification.Show()
+				addMainSource(5*time.Second, func() bool {
+					if notificationGeneration == app.notificationGeneration {
+						app.notification.Hide()
+					}
+					return false
+				})
 			}
 			return false
 		})
-	}
-	app.updateGraphSearch()
-	return nil
+	}()
 }
 
-func (app *giti) fitGraphRows() {
+func (app *giti) fitGraphRows(ctx context.Context, historyGeneration uint64, repo *repository) {
 	column := app.historyView.GetColumn(0)
 	height := graphRowHeight
-	for index := range app.historyRows {
-		path := must(gtk.TreePathNewFromIndicesv([]int{index}))
-		height = max(height, app.historyView.GetCellArea(path, column).GetHeight())
+	for index, row := range app.historyRows {
+		if row.kind == "commit" {
+			path := must(gtk.TreePathNewFromIndicesv([]int{index}))
+			height = max(height, app.historyView.GetCellArea(path, column).GetHeight())
+			break
+		}
 	}
 	if height == graphRowHeight {
+		app.historyCancel = nil
 		return
 	}
-	for index, row := range app.historyRows {
-		path := must(gtk.TreePathNewFromIndicesv([]int{index}))
-		iter, err := app.historyStore.GetIter(path)
-		if err != nil {
-			continue
+	rows, width := app.historyRows, app.graphWidth
+	go func() {
+		graphs, err := renderGraphs(rows, width, height, func() bool { return ctx.Err() != nil })
+		if ctx.Err() != nil {
+			return
 		}
-		value, err := app.historyStore.GetValue(iter, 0)
-		if err == nil {
-			current, valueErr := value.GoValue()
-			if pixbuf, ok := current.(*gdk.Pixbuf); valueErr == nil && ok && pixbuf.GetHeight() == height {
-				continue
+		addMainSource(0, func() bool {
+			if ctx.Err() != nil || historyGeneration != app.historyGeneration || repo != app.repository {
+				return false
 			}
-		}
-		graph, err := renderGraph(row, app.graphWidth, height)
-		if err == nil {
-			app.historyStore.SetValue(iter, 0, graph)
-		}
-	}
+			app.historyCancel = nil
+			if err != nil {
+				app.showError(err)
+				return false
+			}
+			for index, graph := range graphs {
+				path := must(gtk.TreePathNewFromIndicesv([]int{index}))
+				if iter, iterErr := app.historyStore.GetIter(path); iterErr == nil {
+					app.historyStore.SetValue(iter, 0, graph)
+				}
+			}
+			return false
+		})
+	}()
 }
 
 func referenceLists(refs string) (branches, tags []string) {
@@ -609,11 +689,13 @@ func historyLabel(row historyRow) string {
 		refs.WriteString("  ")
 		refs.WriteString(part.markup)
 	}
-	topology := ""
-	if len(row.parents) > 1 {
-		topology = fmt.Sprintf("  ·  merge  ·  %d parents", len(row.parents))
+	topology := "root commit"
+	if len(row.parents) == 1 {
+		topology = "1 parent"
+	} else if len(row.parents) > 1 {
+		topology = fmt.Sprintf("merge · %d parents", len(row.parents))
 	}
-	return fmt.Sprintf("<b>%s</b>%s\n<span foreground=\"#374151\"><tt>%s</tt>  ·  %s%s</span>", html.EscapeString(row.subject), refs.String(), html.EscapeString(row.revision[:7]), html.EscapeString(row.author), topology)
+	return fmt.Sprintf("<b>%s</b>%s\n<span foreground=\"#374151\"><tt>%s</tt>  ·  %s  ·  %s</span>", html.EscapeString(row.subject), refs.String(), html.EscapeString(row.revision[:7]), html.EscapeString(row.author), topology)
 }
 
 type searchMatch struct {
@@ -642,16 +724,26 @@ func searchHistory(rows []historyRow, query string, options searchOptions) []sea
 		if row.kind != "commit" {
 			continue
 		}
-		fields := []field{{row.subject, 1000, 100}}
+		subject, body, refs := row.searchSubject, row.searchBody, row.searchRefs
+		if subject == "" && row.subject != "" {
+			subject = strings.ToLower(row.subject)
+		}
+		if body == "" && row.body != "" {
+			body = strings.ToLower(row.body)
+		}
+		if refs == "" && row.refs != "" {
+			refs = strings.ToLower(row.refs)
+		}
+		fields := []field{{subject, 1000, 100}}
 		if options.references {
-			fields = append(fields, field{row.refs, 750, 50})
+			fields = append(fields, field{refs, 750, 50})
 		}
 		if options.messages {
-			fields = append(fields, field{row.body, 500, 25})
+			fields = append(fields, field{body, 500, 25})
 		}
 		score, descriptionScore := 0, 0
 		for fieldIndex, field := range fields {
-			text := strings.ToLower(field.text)
+			text := field.text
 			fieldScore := 0
 			if strings.Contains(text, phrase) {
 				fieldScore += field.phraseScore
@@ -708,11 +800,23 @@ func searchHistory(rows []historyRow, query string, options searchOptions) []sea
 
 func (app *giti) updateGraphSearch() {
 	query, _ := app.historySearch.GetText()
+	app.searchGeneration++
 	if strings.TrimSpace(query) == "" {
 		app.searchMatches = nil
 		app.historyStack.SetVisibleChildName("graph")
 		return
 	}
+	app.searchMatches = nil
+	generation := app.searchGeneration
+	addMainSource(150*time.Millisecond, func() bool {
+		if generation == app.searchGeneration {
+			app.renderGraphSearch(query)
+		}
+		return false
+	})
+}
+
+func (app *giti) renderGraphSearch(query string) {
 	if children := app.searchResults.GetChildren(); children != nil {
 		children.Foreach(func(child any) { app.searchResults.Remove(child.(gtk.IWidget)) })
 		children.Free()
@@ -765,30 +869,10 @@ func (app *giti) selectHistoryRevision(revision string) bool {
 	return false
 }
 
-func (app *giti) revealHistoryRevision(revision string) (bool, error) {
-	if app.selectHistoryRevision(revision) {
-		return true, nil
+func (app *giti) revealHistoryRevision(revision string) {
+	if !app.selectHistoryRevision(revision) {
+		app.loadHistoryTo(revision)
 	}
-	for app.loadButton.GetVisible() {
-		previousLimit := app.historyLimit
-		app.historyLimit += max(100, app.historyLimit)
-		if err := app.loadHistory(); err != nil {
-			app.historyLimit = previousLimit
-			return false, err
-		}
-		if app.selectHistoryRevision(revision) {
-			repo := app.repository
-			addMainSource(0, func() bool {
-				if app.repository == repo {
-					app.fitGraphRows()
-					app.selectHistoryRevision(revision)
-				}
-				return false
-			})
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func (app *giti) openSearchResult(index int) {
@@ -867,20 +951,7 @@ func (app *giti) setCommitHeader(details commitDetails) {
 			button.SetTooltipText("Open parent " + parent)
 			button.Connect("clicked", func() {
 				app.historySearch.SetText("")
-				found, err := app.revealHistoryRevision(parent)
-				if err != nil || found {
-					return
-				}
-				app.notificationGeneration++
-				generation := app.notificationGeneration
-				app.notificationLabel.SetText("Parent " + parent[:7] + " is not present in this repository history.")
-				app.notification.Show()
-				addMainSource(5, func() bool {
-					if generation == app.notificationGeneration {
-						app.notification.Hide()
-					}
-					return false
-				})
+				app.revealHistoryRevision(parent)
 			})
 			parents.PackStart(button, false, false, 0)
 		}
@@ -971,6 +1042,18 @@ func (app *giti) onHistorySelected() {
 	if index >= len(app.historyRows) {
 		return
 	}
+	row := app.historyRows[index]
+	description := "Selected " + row.subject
+	if row.kind == "commit" {
+		topology := "root commit"
+		if len(row.parents) == 1 {
+			topology = "one parent"
+		} else if len(row.parents) > 1 {
+			topology = fmt.Sprintf("merge commit with %d parents", len(row.parents))
+		}
+		description = fmt.Sprintf("Selected %s, %s, by %s", row.subject, topology, row.author)
+	}
+	setAccessibility(&app.historyView.Widget, "Commit history", description)
 	app.selectionGeneration++
 	generation := app.selectionGeneration
 	if app.selectionCancel != nil {
@@ -1113,13 +1196,21 @@ func (app *giti) onFileSelected() {
 
 func (app *giti) setDiff(patch string) {
 	app.diffBuffer.SetText("")
-	for _, line := range displayLines(patch) {
-		iter := app.diffBuffer.GetEndIter()
-		if line.tag == "" {
-			app.diffBuffer.Insert(iter, line.text)
-		} else {
-			app.diffBuffer.InsertWithTagByName(iter, line.text, line.tag)
+	lines := displayLines(patch)
+	for start := 0; start < len(lines); {
+		end, text := start+1, strings.Builder{}
+		text.WriteString(lines[start].text)
+		for end < len(lines) && lines[end].tag == lines[start].tag {
+			text.WriteString(lines[end].text)
+			end++
 		}
+		iter := app.diffBuffer.GetEndIter()
+		if lines[start].tag == "" {
+			app.diffBuffer.Insert(iter, text.String())
+		} else {
+			app.diffBuffer.InsertWithTagByName(iter, text.String(), lines[start].tag)
+		}
+		start = end
 	}
 }
 
@@ -1195,6 +1286,9 @@ func (app *giti) clearRepositoryView() {
 	}
 	if app.diffCancel != nil {
 		app.diffCancel()
+	}
+	if app.historyCancel != nil {
+		app.historyCancel()
 	}
 	app.historyRows, app.files, app.searchMatches = nil, nil, nil
 	app.diffScroll = make(map[string]scrollPosition)

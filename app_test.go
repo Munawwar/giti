@@ -95,7 +95,7 @@ func TestSearchHistoryUsesNewestDateToBreakScoreTies(t *testing.T) {
 func TestHistoryLabelDescribesMergeAndEscapesContent(t *testing.T) {
 	row := historyRow{kind: "commit", revision: "123456789", subject: "merge <side>", refs: "HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1<&>, tag: refs/tags/v2, tag: refs/tags/v3, tag: refs/tags/v4, tag: refs/tags/v5", author: "A & B", parents: []string{"one", "two"}}
 	label := historyLabel(row)
-	for _, want := range []string{"merge &lt;side&gt;", "A &amp; B", "merge  ·  2 parents"} {
+	for _, want := range []string{"merge &lt;side&gt;", "A &amp; B", "merge · 2 parents"} {
 		if !strings.Contains(label, want) {
 			t.Fatalf("history label %q does not contain %q", label, want)
 		}

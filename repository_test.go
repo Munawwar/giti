@@ -241,3 +241,45 @@ func TestCanceledGitWorkStops(t *testing.T) {
 		t.Fatalf("canceled Git work returned %v", err)
 	}
 }
+
+func TestGitParsingPreservesUnusualNamesAndMarkerText(t *testing.T) {
+	path := testRepository(t)
+	tracked, untracked := " tracked\tline\nend .txt", " untracked\tline\nend .txt"
+	if err := os.WriteFile(filepath.Join(path, tracked), []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "--", tracked}, {"commit", "-m", "subject __GITI_FIELD__", "-m", "body __GITI_COMMIT__"}} {
+		if output, err := exec.Command("git", append([]string{"-C", path}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(path, tracked), []byte("after\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, untracked), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := newRepository(path, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, _, err := repo.history(2, true, true)
+	if err != nil || rows[0].kind != "unstaged" || rows[1].subject != "subject __GITI_FIELD__" || rows[1].body != "body __GITI_COMMIT__" {
+		t.Fatalf("history parsing lost marker text: rows=%#v err=%v", rows, err)
+	}
+	files, err := repo.changedFiles(rows[0], true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{tracked: true, untracked: true}
+	for _, file := range files {
+		delete(want, file.path)
+	}
+	if len(want) != 0 {
+		t.Fatalf("unusual file names were not preserved: missing=%v files=%#v", want, files)
+	}
+	details, err := repo.commitDetailsContext(context.Background(), repo.revision)
+	if err != nil || details.subject != "subject __GITI_FIELD__" || details.body != "body __GITI_COMMIT__" {
+		t.Fatalf("commit details lost marker text: %#v err=%v", details, err)
+	}
+}

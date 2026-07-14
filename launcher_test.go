@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestLauncherArguments(t *testing.T) {
@@ -72,6 +73,27 @@ func TestContactResidentMissing(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "giti.sock")); !os.IsNotExist(err) {
 		t.Fatalf("launcher created a socket: %v", err)
+	}
+}
+
+func TestResidentStalledClientDoesNotBlockLaunches(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	server := newResidentServer(&giti{busy: true})
+	if err := server.start(); err != nil {
+		t.Fatal(err)
+	}
+	defer server.stop()
+	stalled, err := net.Dial("unix", server.socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stalled.Close()
+	started := time.Now()
+	if response := contactResident(openRequest{Path: "/repo", Revision: "HEAD"}); response != "BUSY" {
+		t.Fatalf("stalled client blocked resident response: %q", response)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("resident response took %v behind stalled client", elapsed)
 	}
 }
 
