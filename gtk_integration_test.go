@@ -297,8 +297,21 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 		t.Fatalf("diff selection was not copyable: %q: %v", copied, err)
 	}
 	app.fullFileToggle.SetActive(true)
-	if !app.fullFileToggle.GetActive() {
-		t.Fatal("full-file mode did not activate")
+	iterateGTKUntil(t, 2*time.Second, func() bool {
+		return app.diffLoaded && app.diffOverviewReveal.GetRevealChild() && app.diffOverview.GetAllocatedWidth() >= 24 && app.diffOverview.GetAllocatedHeight() > 1
+	})
+	if !app.fullFileToggle.GetActive() || !app.diffOverviewReveal.GetRevealChild() || app.diffOverview.GetAllocatedWidth() < 24 || app.diffOverview.GetAllocatedHeight() <= 1 || len(app.overviewMarkers) == 0 {
+		t.Fatalf("full-file overview was not shown: full=%v size=%dx%d markers=%d", app.fullFileToggle.GetActive(), app.diffOverview.GetAllocatedWidth(), app.diffOverview.GetAllocatedHeight(), len(app.overviewMarkers))
+	}
+	for gtk.EventsPending() {
+		gtk.MainIteration()
+	}
+	fullFileScroll := app.diffScroller.GetVAdjustment()
+	fullFileScroll.SetValue(0)
+	app.scrollDiffOverview(float64(app.diffOverview.GetAllocatedHeight()))
+	iterateGTKUntil(t, time.Second, func() bool { return fullFileScroll.GetValue() > 0 })
+	if app.overviewLines < 100 || fullFileScroll.GetValue() == 0 {
+		t.Fatalf("full-file overview did not expose or navigate its changes: lines=%d markers=%#v scroll=%v", app.overviewLines, app.overviewMarkers, fullFileScroll.GetValue())
 	}
 	app.fileView.GrabFocus()
 	app.fileView.SetCursor(must(gtk.TreePathNewFromIndicesv([]int{1})), nil, false)
@@ -311,7 +324,7 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	}
 	start, end = app.diffBuffer.GetBounds()
 	second, _ := app.diffBuffer.GetText(start, end, true)
-	if !app.fileView.IsFocus() || app.fullFileToggle.GetActive() || app.currentFile.path != "second.txt" || !strings.Contains(second, "+second") || strings.Contains(second, "+one") {
+	if !app.fileView.IsFocus() || !app.fullFileToggle.GetActive() || !app.fullFilePreferred || !app.diffOverviewReveal.GetRevealChild() || app.currentFile.path != "second.txt" || !strings.Contains(second, "+second") || strings.Contains(second, "+one") {
 		t.Fatalf("file switch retained state or content: full=%v file=%#v diff=%q", app.fullFileToggle.GetActive(), app.currentFile, second)
 	}
 	app.fileView.SetCursor(must(gtk.TreePathNewFromIndicesv([]int{0})), nil, false)
@@ -428,7 +441,7 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	}
 	start, end = app.diffBuffer.GetBounds()
 	cleared, _ := app.diffBuffer.GetText(start, end, true)
-	if app.window.GetVisible() || app.currentRow != nil || app.currentFile != nil || app.historyRows != nil || app.files != nil || cleared != "" {
+	if app.window.GetVisible() || app.currentRow != nil || app.currentFile != nil || app.historyRows != nil || app.files != nil || app.fullFilePreferred || app.fullFileToggle.GetActive() || cleared != "" {
 		t.Fatalf("hidden view retained repository data: row=%#v file=%#v rows=%d files=%d diff=%q", app.currentRow, app.currentFile, len(app.historyRows), len(app.files), cleared)
 	}
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())

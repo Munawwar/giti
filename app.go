@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"fmt"
 	"html"
+	"math"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gotk3/gotk3/cairo"
 	"github.com/gotk3/gotk3/gdk"
 	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
@@ -83,13 +85,18 @@ type giti struct {
 	diffBuffer                 *gtk.TextBuffer
 	diffView                   *gtk.TextView
 	diffScroller               *gtk.ScrolledWindow
+	diffOverview               *gtk.DrawingArea
+	diffOverviewReveal         *gtk.Revealer
 	diffStack                  *gtk.Stack
 	referencesPage             *gtk.Box
 	whitespaceToggle           *gtk.CheckButton
 	fullFileToggle             *gtk.CheckButton
+	fullFilePreferred          bool
 	loadButton                 *gtk.Button
 	notification               *gtk.InfoBar
 	notificationLabel          *gtk.Label
+	overviewMarkers            []overviewMarker
+	overviewLines              int
 	fullFileHandler            glib.SignalHandle
 	application                *gtk.Application
 }
@@ -308,12 +315,18 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.diffView.SetCursorVisible(false)
 	app.diffView.SetMonospace(true)
 	app.diffView.SetWrapMode(gtk.WRAP_NONE)
+	app.buildDiffOverview()
 
 	app.whitespaceToggle = must(gtk.CheckButtonNewWithLabel("Show whitespace changes"))
 	app.whitespaceToggle.SetTooltipText("Off by default: diffs use git --ignore-all-space")
 	app.whitespaceToggle.Connect("toggled", app.onWhitespaceToggled)
 	app.fullFileToggle = must(gtk.CheckButtonNewWithLabel("Show full file"))
-	app.fullFileHandler = app.fullFileToggle.Connect("toggled", app.onFullFileToggled)
+	app.fullFileHandler = app.fullFileToggle.Connect("toggled", func() {
+		app.fullFilePreferred = app.fullFileToggle.GetActive()
+		if app.currentFile != nil {
+			app.onFileSelected()
+		}
+	})
 	app.loadButton = must(gtk.ButtonNewWithLabel("Load more"))
 	app.loadButton.Connect("clicked", func() {
 		app.historyLimit += 100
@@ -358,13 +371,19 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	diffBox.PackStart(toolbar, false, false, 4)
 	diffBox.PackStart(app.commitHeader, false, false, 0)
 	app.diffScroller = scroller(app.diffView)
+	app.diffOverviewReveal = must(gtk.RevealerNew())
+	app.diffOverviewReveal.SetTransitionDuration(0)
+	app.diffOverviewReveal.Add(app.diffOverview)
+	diffPage := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
+	diffPage.PackStart(app.diffScroller, true, true, 0)
+	diffPage.PackStart(app.diffOverviewReveal, false, true, 0)
 	app.referencesPage = must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 8))
 	app.referencesPage.SetMarginStart(16)
 	app.referencesPage.SetMarginEnd(16)
 	app.referencesPage.SetMarginTop(16)
 	app.referencesPage.SetMarginBottom(16)
 	app.diffStack = must(gtk.StackNew())
-	app.diffStack.AddNamed(app.diffScroller, "diff")
+	app.diffStack.AddNamed(diffPage, "diff")
 	app.diffStack.AddNamed(scroller(app.referencesPage), "references")
 	diffBox.PackStart(app.diffStack, true, true, 0)
 	app.mainPane = must(gtk.PanedNew(gtk.ORIENTATION_HORIZONTAL))
@@ -430,6 +449,59 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	}
 	gtk.AddProviderForScreen(must(gdk.ScreenGetDefault()), app.styleProvider, uint(gtk.STYLE_PROVIDER_PRIORITY_APPLICATION))
 	app.loadHistory()
+}
+
+func (app *giti) buildDiffOverview() {
+	const targetWidth, trackWidth = 24, 10
+	app.diffOverview = must(gtk.DrawingAreaNew())
+	app.diffOverview.SetSizeRequest(targetWidth, -1)
+	app.diffOverview.SetVAlign(gtk.ALIGN_FILL)
+	app.diffOverview.SetVExpand(true)
+	app.diffOverview.SetTooltipText("Change overview — click or drag to scroll")
+	app.diffOverview.AddEvents(int(gdk.BUTTON_PRESS_MASK | gdk.BUTTON1_MOTION_MASK))
+	setAccessibility(&app.diffOverview.Widget, "Diff change overview", "Added and removed lines across the full file; click or drag to scroll")
+	app.diffOverview.Connect("draw", func(_ *gtk.DrawingArea, context *cairo.Context) bool {
+		width, height := float64(app.diffOverview.GetAllocatedWidth()), float64(app.diffOverview.GetAllocatedHeight())
+		trackX := (width - trackWidth) / 2
+		context.SetSourceRGB(.97, .97, .97)
+		context.Paint()
+		context.SetSourceRGB(.94, .95, .96)
+		context.Rectangle(trackX, 0, trackWidth, height)
+		context.Fill()
+		if app.overviewLines < 1 || height < 1 {
+			return false
+		}
+		markerHeight, denominator := math.Max(2, math.Min(5, height/float64(app.overviewLines))), float64(max(1, app.overviewLines-1))
+		for _, marker := range app.overviewMarkers {
+			x, markerWidth := trackX, trackWidth/2.0
+			if marker.added {
+				x = markerWidth
+				context.SetSourceRGB(.18, .55, .28)
+			} else {
+				context.SetSourceRGB(.78, .25, .30)
+			}
+			context.Rectangle(x, float64(marker.line)/denominator*(height-markerHeight), markerWidth, markerHeight)
+			context.Fill()
+		}
+		return false
+	})
+	app.diffOverview.Connect("button-press-event", func(_ *gtk.DrawingArea, event *gdk.Event) bool {
+		button := gdk.EventButtonNewFromEvent(event)
+		if button.Button() == gdk.BUTTON_PRIMARY {
+			app.scrollDiffOverview(button.Y())
+			return true
+		}
+		return false
+	})
+	app.diffOverview.Connect("motion-notify-event", func(_ *gtk.DrawingArea, event *gdk.Event) bool {
+		motion := gdk.EventMotionNewFromEvent(event)
+		if motion.State()&gdk.BUTTON1_MASK != 0 {
+			_, y := motion.MotionVal()
+			app.scrollDiffOverview(y)
+			return true
+		}
+		return false
+	})
 }
 
 func scroller(child gtk.IWidget) *gtk.ScrolledWindow {
@@ -1063,7 +1135,7 @@ func (app *giti) onHistorySelected() {
 		app.diffCancel()
 	}
 	app.diffGeneration++
-	app.resetFullFile()
+	app.resetDiffOverview()
 	app.rememberDiffScroll()
 	app.diffBuffer.SetText("")
 	app.setCommitHeader(commitDetails{subject: "Loading commit details…"})
@@ -1143,22 +1215,21 @@ func (app *giti) onFileSelected() {
 	}
 	file := &app.files[index]
 	app.rememberDiffScroll()
-	if app.currentFile == nil || *file != *app.currentFile {
-		app.resetFullFile()
-	}
 	app.currentFile = file
 	app.diffLoaded = false
 	app.fullFileToggle.SetSensitive(false)
 	app.diffBuffer.SetText("")
+	app.resetDiffOverview()
 	app.diffScroller.GetHAdjustment().SetValue(0)
 	app.diffScroller.GetVAdjustment().SetValue(0)
 	ctx, cancel := context.WithCancel(context.Background())
 	app.diffCancel = cancel
 	repo, row, selectedFile := app.repository, *app.currentRow, *file
 	position := app.diffScroll[diffKey(row, selectedFile)]
-	ignoreWhitespace, fullFile := !app.whitespaceToggle.GetActive(), app.fullFileToggle.GetActive()
+	ignoreWhitespace, preferFullFile := !app.whitespaceToggle.GetActive(), app.fullFilePreferred
 	go func() {
 		size := repo.fileSizeContext(ctx, row, selectedFile)
+		fullFile := preferFullFile && size <= fullFileLimit
 		patch, loadErr := repo.diffContext(ctx, row, selectedFile, ignoreWhitespace, fullFile)
 		addMainSource(0, func() bool {
 			if ctx.Err() != nil || generation != app.diffGeneration || selectionGeneration != app.selectionGeneration || repo != app.repository {
@@ -1172,8 +1243,8 @@ func (app *giti) onFileSelected() {
 			allowed := size <= fullFileLimit
 			app.fullFileToggle.HandlerBlock(app.fullFileHandler)
 			app.fullFileToggle.SetSensitive(allowed)
+			app.fullFileToggle.SetActive(fullFile)
 			if !allowed {
-				app.fullFileToggle.SetActive(false)
 				app.fullFileToggle.SetTooltipText("Disabled for files larger than 2 MiB")
 			} else {
 				app.fullFileToggle.SetTooltipText("")
@@ -1197,6 +1268,12 @@ func (app *giti) onFileSelected() {
 func (app *giti) setDiff(patch string) {
 	app.diffBuffer.SetText("")
 	lines := displayLines(patch)
+	app.overviewMarkers, app.overviewLines = app.overviewMarkers[:0], len(lines)
+	for index, line := range lines {
+		if line.tag != "" {
+			app.overviewMarkers = append(app.overviewMarkers, overviewMarker{line: index, added: line.tag == "added"})
+		}
+	}
 	for start := 0; start < len(lines); {
 		end, text := start+1, strings.Builder{}
 		text.WriteString(lines[start].text)
@@ -1212,6 +1289,13 @@ func (app *giti) setDiff(patch string) {
 		}
 		start = end
 	}
+	app.diffOverviewReveal.SetRevealChild(app.fullFileToggle.GetActive() && len(app.overviewMarkers) > 0)
+	app.diffOverview.QueueDraw()
+}
+
+type overviewMarker struct {
+	line  int
+	added bool
 }
 
 type displayLine struct {
@@ -1254,16 +1338,22 @@ func (app *giti) onWhitespaceToggled() {
 	}
 }
 
-func (app *giti) onFullFileToggled() {
-	if app.currentFile != nil {
-		app.onFileSelected()
+func (app *giti) resetDiffOverview() {
+	app.overviewMarkers, app.overviewLines = app.overviewMarkers[:0], 0
+	if app.diffOverviewReveal != nil {
+		app.diffOverviewReveal.SetRevealChild(false)
+		app.diffOverview.QueueDraw()
 	}
 }
 
-func (app *giti) resetFullFile() {
-	app.fullFileToggle.HandlerBlock(app.fullFileHandler)
-	app.fullFileToggle.SetActive(false)
-	app.fullFileToggle.HandlerUnblock(app.fullFileHandler)
+func (app *giti) scrollDiffOverview(y float64) {
+	height := app.diffOverview.GetAllocatedHeight()
+	if height < 1 || app.overviewLines < 1 {
+		return
+	}
+	adjustment := app.diffScroller.GetVAdjustment()
+	ratio := max(0, min(y/float64(height), 1))
+	adjustment.SetValue(adjustment.GetLower() + ratio*max(0, adjustment.GetUpper()-adjustment.GetLower()-adjustment.GetPageSize()))
 }
 
 func (app *giti) persistUIState() {
@@ -1298,7 +1388,11 @@ func (app *giti) clearRepositoryView() {
 	app.fileStore.Clear()
 	app.setCommitHeader(commitDetails{})
 	app.diffBuffer.SetText("")
-	app.resetFullFile()
+	app.fullFilePreferred = false
+	app.fullFileToggle.HandlerBlock(app.fullFileHandler)
+	app.fullFileToggle.SetActive(false)
+	app.fullFileToggle.HandlerUnblock(app.fullFileHandler)
+	app.resetDiffOverview()
 }
 
 func (app *giti) hideResident() {
