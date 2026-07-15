@@ -129,17 +129,25 @@ func TestHistoryLabelDescribesMergeAndEscapesContent(t *testing.T) {
 		}
 	}
 	refs := label
-	for _, want := range []string{`background="#d8f0dd"`, "main ← HEAD", `background="#dce8f8"`, "origin/main", `background="#f8e7a3"`, "v1&lt;&amp;&gt;", "v2", "+ more tags"} {
+	if strings.HasPrefix(label, "  ") {
+		t.Fatalf("history references have unwanted leading margin: %q", label)
+	}
+	for _, want := range []string{`background="#d8f0dd"`, "main ← HEAD", `background="#dce8f8"`, "origin/main", `background="#f8e7a3"`, "5 tags"} {
 		if !strings.Contains(refs, want) {
 			t.Fatalf("history references %q does not contain %q", refs, want)
 		}
 	}
-	if strings.Contains(refs, "v3") || strings.Contains(refs, "v4") || strings.Contains(refs, "v5") || strings.Index(refs, "HEAD") > strings.Index(refs, "v1") {
-		t.Fatalf("history references were not ordered and capped: %q", refs)
+	if strings.Contains(refs, "v1") || strings.Contains(refs, "v2") || strings.Contains(refs, "v3") || strings.Contains(refs, "v4") || strings.Contains(refs, "v5") || strings.Index(refs, "5 tags") > strings.Index(refs, "main ← HEAD") || strings.Index(refs, "main ← HEAD") > strings.Index(refs, "merge &lt;side&gt;") {
+		t.Fatalf("history references were not summarized and ordered: %q", refs)
 	}
 	row.refs = "main, refs/remotes/origin/main, feature, release, tag: v1, tag: v2, tag: v3"
 	refs = historyLabel(row)
-	if !strings.Contains(refs, "+ more branches") || !strings.Contains(refs, "+ more tags") || !(strings.Index(refs, "feature") < strings.Index(refs, "main") && strings.Index(refs, "+ more branches") < strings.Index(refs, "v1")) {
+	if !strings.Contains(refs, "3 tags") || !strings.Contains(refs, "+ more branches") || !(strings.Index(refs, "3 tags") < strings.Index(refs, "feature") && strings.Index(refs, "feature") < strings.Index(refs, "main") && strings.Index(refs, "main") < strings.Index(refs, "merge")) {
 		t.Fatalf("overflow decorations were not ordered: %q", refs)
+	}
+	row.refs = "main, tag: v1"
+	refs = historyLabel(row)
+	if !strings.Contains(refs, "v1") || strings.Contains(refs, "1 tags") || strings.Index(refs, "v1") > strings.Index(refs, "merge") {
+		t.Fatalf("single tags were not shown by name: %q", refs)
 	}
 }

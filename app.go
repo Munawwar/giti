@@ -804,10 +804,18 @@ func historyLabel(row historyRow) string {
 	if row.kind != "commit" {
 		return "<b>" + html.EscapeString(row.subject) + "</b>"
 	}
+	branches, tags := referenceLists(row.refs)
 	var refs strings.Builder
-	for _, part := range referenceParts(referenceLists(row.refs)) {
+	if len(tags) == 1 {
+		refs.WriteString(referenceBadge(tags[0], "tag"))
 		refs.WriteString("  ")
+	} else if len(tags) > 1 {
+		refs.WriteString(referenceBadge(fmt.Sprintf("%d tags", len(tags)), "tag"))
+		refs.WriteString("  ")
+	}
+	for _, part := range referenceParts(branches, nil) {
 		refs.WriteString(part.markup)
+		refs.WriteString("  ")
 	}
 	topology := "root commit"
 	if len(row.parents) == 1 {
@@ -815,7 +823,7 @@ func historyLabel(row historyRow) string {
 	} else if len(row.parents) > 1 {
 		topology = fmt.Sprintf("merge · %d parents", len(row.parents))
 	}
-	return fmt.Sprintf("<b>%s</b>%s\n<span foreground=\"#374151\"><tt>%s</tt>  ·  %s  ·  %s</span>", html.EscapeString(row.subject), refs.String(), html.EscapeString(row.revision[:7]), html.EscapeString(row.author), topology)
+	return fmt.Sprintf("%s<b>%s</b>\n<span foreground=\"#374151\"><tt>%s</tt>  ·  %s  ·  %s</span>", refs.String(), html.EscapeString(row.subject), html.EscapeString(row.revision[:7]), html.EscapeString(row.author), topology)
 }
 
 type searchMatch struct {
