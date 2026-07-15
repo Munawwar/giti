@@ -35,12 +35,29 @@ treeview.giti-list.view {
 }
 treeview.giti-list.view:selected,
 treeview.giti-list.view:selected:focus {
-  background-color: #ffe2d2;
+  background-color: #fff0e8;
   color: #2d1b12;
 }
 treeview.giti-list.view:selected:backdrop {
-  background-color: #ffecdf;
+  background-color: #fff7f2;
   color: #2d1b12;
+}
+label selection {
+  background-color: @theme_selected_bg_color;
+  color: @theme_selected_fg_color;
+}
+button.giti-ref-copy {
+  padding: 0;
+  min-height: 0;
+  min-width: 0;
+}
+textview.giti-references text selection {
+  background-color: @theme_selected_bg_color;
+  color: @theme_selected_fg_color;
+}
+infobar.giti-toast {
+  border-radius: 6px;
+  box-shadow: 0 4px 12px alpha(#000000, 0.24);
 }`
 
 type giti struct {
@@ -89,6 +106,8 @@ type giti struct {
 	diffOverviewReveal         *gtk.Revealer
 	diffStack                  *gtk.Stack
 	referencesPage             *gtk.Box
+	referencesView             *gtk.TextView
+	headerReferenceButtons     []*gtk.Button
 	whitespaceToggle           *gtk.CheckButton
 	fullFileToggle             *gtk.CheckButton
 	fullFilePreferred          bool
@@ -430,6 +449,11 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.notification = must(gtk.InfoBarNew())
 	app.notification.SetMessageType(gtk.MESSAGE_INFO)
 	app.notification.SetShowCloseButton(true)
+	app.notification.SetHAlign(gtk.ALIGN_CENTER)
+	app.notification.SetVAlign(gtk.ALIGN_START)
+	app.notification.SetMarginTop(12)
+	notificationContext, _ := app.notification.GetStyleContext()
+	notificationContext.AddClass("giti-toast")
 	app.notificationLabel = must(gtk.LabelNew(""))
 	app.notificationLabel.SetXAlign(0)
 	must(app.notification.GetContentArea()).PackStart(app.notificationLabel, true, true, 0)
@@ -437,10 +461,10 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		app.notificationGeneration++
 		app.notification.Hide()
 	})
-	root := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0))
-	root.PackStart(app.notification, false, false, 0)
-	root.PackStart(app.mainPane, true, true, 0)
-	app.window.Add(root)
+	overlay := must(gtk.OverlayNew())
+	overlay.Add(app.mainPane)
+	overlay.AddOverlay(app.notification)
+	app.window.Add(overlay)
 	app.window.ShowAll()
 	app.notification.Hide()
 	app.styleProvider = must(gtk.CssProviderNew())
@@ -511,13 +535,14 @@ func scroller(child gtk.IWidget) *gtk.ScrolledWindow {
 	return scroll
 }
 
-func copySHAButton(sha string) *gtk.Button {
+func (app *giti) copySHAButton(sha string) *gtk.Button {
 	button := must(gtk.ButtonNewFromIconName("edit-copy-symbolic", gtk.ICON_SIZE_BUTTON))
 	setAccessibility(&button.Widget, "Copy commit SHA", "Copy "+sha+" to the clipboard")
 	button.SetTooltipText("Copy SHA: " + sha)
 	button.Connect("clicked", func() {
 		clipboard := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD))
 		clipboard.SetText(sha)
+		app.showNotification("Copied commit ID to clipboard.", 2*time.Second)
 	})
 	return button
 }
@@ -637,16 +662,7 @@ func (app *giti) loadHistoryTo(reveal string) {
 				if beyondAutoLimit {
 					message = fmt.Sprintf("Parent %s was not found in the first %d commits.", reveal[:7], autoLimit)
 				}
-				app.notificationGeneration++
-				notificationGeneration := app.notificationGeneration
-				app.notificationLabel.SetText(message)
-				app.notification.Show()
-				addMainSource(5*time.Second, func() bool {
-					if notificationGeneration == app.notificationGeneration {
-						app.notification.Hide()
-					}
-					return false
-				})
+				app.showNotification(message, 5*time.Second)
 			}
 			return false
 		})
@@ -715,19 +731,24 @@ func referenceLists(refs string) (branches, tags []string) {
 }
 
 func referenceBadge(value, kind string) string {
-	background, foreground := "#d8f0dd", "#1f5131"
+	value, _, background, foreground := referenceAppearance(value, kind)
+	return fmt.Sprintf(`<span background="%s" foreground="%s" weight="bold"> %s </span>`, background, foreground, html.EscapeString(value))
+}
+
+func referenceAppearance(value, kind string) (display, style, background, foreground string) {
+	style, background, foreground = "giti-ref-local", "#d8f0dd", "#1f5131"
 	if kind == "tag" {
-		background, foreground = "#f8e7a3", "#594600"
+		style, background, foreground = "giti-ref-tag", "#f8e7a3", "#594600"
 	} else if strings.HasPrefix(value, remoteRefPrefix) {
-		background, foreground = "#dce8f8", "#244e7a"
+		style, background, foreground = "giti-ref-remote", "#dce8f8", "#244e7a"
 		value = strings.TrimPrefix(value, remoteRefPrefix)
 	} else if value == "HEAD" {
-		background, foreground = "#e5e7eb", "#374151"
+		style, background, foreground = "giti-ref-head", "#e5e7eb", "#374151"
 	}
 	if kind == "branch" {
 		value = strings.Replace(value, headRefSuffix, " ← HEAD", 1)
 	}
-	return fmt.Sprintf(`<span background="%s" foreground="%s" weight="bold"> %s </span>`, background, foreground, html.EscapeString(value))
+	return value, style, background, foreground
 }
 
 type referencePart struct {
@@ -907,7 +928,7 @@ func (app *giti) renderGraphSearch(query string) {
 		label.SetLineWrap(true)
 		label.SetMarkup(searchResultMarkup(match))
 		result.PackStart(label, true, true, 0)
-		result.PackEnd(copySHAButton(match.row.revision), false, false, 0)
+		result.PackEnd(app.copySHAButton(match.row.revision), false, false, 0)
 		app.searchResults.Insert(result, -1)
 	}
 	app.historyStack.SetVisibleChildName("search")
@@ -956,12 +977,14 @@ func (app *giti) openSearchResult(index int) {
 }
 
 func (app *giti) setCommitHeader(details commitDetails) {
+	app.headerReferenceButtons = nil
 	if children := app.commitHeader.GetChildren(); children != nil {
 		children.Foreach(func(child any) { app.commitHeader.Remove(child.(gtk.IWidget)) })
 		children.Free()
 	}
 	title := must(gtk.LabelNew(""))
 	title.SetXAlign(0)
+	title.SetSelectable(true)
 	title.SetMarkup("<span size=\"large\" weight=\"bold\">" + html.EscapeString(details.subject) + "</span>")
 	app.commitHeader.PackStart(title, false, false, 0)
 	if details.sha == "" {
@@ -971,25 +994,39 @@ func (app *giti) setCommitHeader(details commitDetails) {
 	commit := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
 	commitLabel := must(gtk.LabelNew(""))
 	commitLabel.SetXAlign(0)
+	commitLabel.SetSelectable(true)
 	commitLabel.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Commit</b> <tt>%s</tt></span>", html.EscapeString(details.sha)))
 	commit.PackStart(commitLabel, false, false, 0)
-	commit.PackStart(copySHAButton(details.sha), false, false, 0)
+	commit.PackStart(app.copySHAButton(details.sha), false, false, 0)
 	app.commitHeader.PackStart(commit, false, false, 0)
 	meta := must(gtk.LabelNew(""))
 	meta.SetXAlign(0)
 	meta.SetLineWrap(true)
+	meta.SetSelectable(true)
 	meta.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Author</b> %s &lt;%s&gt;  ·  %s\n<b>Committer</b> %s &lt;%s&gt;  ·  %s</span>", html.EscapeString(details.author), html.EscapeString(details.authorEmail), html.EscapeString(details.authored), html.EscapeString(details.committer), html.EscapeString(details.committerEmail), html.EscapeString(details.committed)))
 	app.commitHeader.PackStart(meta, false, false, 0)
 	if len(details.branches) > 0 || len(details.tags) > 0 {
 		refs := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 6))
 		addBadge := func(value, kind string) {
+			display, _, _, _ := referenceAppearance(value, kind)
 			label := must(gtk.LabelNew(""))
 			label.SetXAlign(0)
 			label.SetEllipsize(pango.ELLIPSIZE_END)
 			label.SetMaxWidthChars(28)
-			label.SetTooltipText(value)
 			label.SetMarkup(referenceBadge(value, kind))
-			refs.PackStart(label, false, false, 0)
+			button := must(gtk.ButtonNew())
+			button.SetRelief(gtk.RELIEF_NONE)
+			button.SetTooltipText("Copy " + kind + ": " + display)
+			setAccessibility(&button.Widget, "Copy "+kind+" "+display, "Copy the complete reference name to the clipboard")
+			context, _ := button.GetStyleContext()
+			context.AddClass("giti-ref-copy")
+			button.Add(label)
+			button.Connect("clicked", func() {
+				must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD)).SetText(display)
+				app.showNotification("Copied "+kind+" to clipboard.", 2*time.Second)
+			})
+			app.headerReferenceButtons = append(app.headerReferenceButtons, button)
+			refs.PackStart(button, false, false, 0)
 		}
 		for _, branch := range details.branches[:min(2, len(details.branches))] {
 			addBadge(branch, "branch")
@@ -1015,7 +1052,9 @@ func (app *giti) setCommitHeader(details commitDetails) {
 	}
 	if len(details.parents) > 0 {
 		parents := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 4))
-		parents.PackStart(must(gtk.LabelNew("Parents:")), false, false, 0)
+		parentLabel := must(gtk.LabelNew("Parents:"))
+		parentLabel.SetSelectable(true)
+		parents.PackStart(parentLabel, false, false, 0)
 		for _, parent := range details.parents {
 			parent := parent
 			button := must(gtk.ButtonNewWithLabel("↖ " + parent[:7]))
@@ -1070,31 +1109,47 @@ func (app *giti) showReferences(branches, tags []string) {
 	back.SetHAlign(gtk.ALIGN_START)
 	back.Connect("clicked", app.showDiffPage)
 	app.referencesPage.PackStart(back, false, false, 0)
-	title := must(gtk.LabelNew(""))
-	title.SetXAlign(0)
-	title.SetMarkup("<span size=\"large\" weight=\"bold\">Branches and tags</span>")
-	app.referencesPage.PackStart(title, false, false, 0)
-	addSection := func(name string, values []string, kind string) {
-		if len(values) == 0 {
-			return
-		}
-		section := must(gtk.LabelNew(""))
-		section.SetXAlign(0)
-		section.SetMarkup("<b>" + name + "</b>")
-		app.referencesPage.PackStart(section, false, false, 8)
-		for _, value := range values {
-			label := must(gtk.LabelNew(""))
-			label.SetXAlign(0)
-			label.SetLineWrap(true)
-			label.SetMarkup(referenceBadge(value, kind))
-			app.referencesPage.PackStart(label, false, false, 0)
+	buffer := must(gtk.TextBufferNew(nil))
+	buffer.CreateTag("title", map[string]any{"weight": int(pango.WEIGHT_BOLD), "scale": 1.2})
+	buffer.CreateTag("section", map[string]any{"weight": int(pango.WEIGHT_BOLD)})
+	insert := func(text, tag string) {
+		iter := buffer.GetEndIter()
+		if tag == "" {
+			buffer.Insert(iter, text)
+		} else {
+			buffer.InsertWithTagByName(iter, text, tag)
 		}
 	}
-	addSection("Branches", branches, "branch")
-	addSection("Tags", tags, "tag")
+	insert("Branches and tags", "title")
+	createdTags := make(map[string]bool, 4)
+	for _, section := range []struct {
+		name, kind string
+		values     []string
+	}{{"Branches", "branch", branches}, {"Tags", "tag", tags}} {
+		if len(section.values) == 0 {
+			continue
+		}
+		insert("\n\n"+section.name, "section")
+		for _, value := range section.values {
+			display, tag, background, foreground := referenceAppearance(value, section.kind)
+			if !createdTags[tag] {
+				buffer.CreateTag(tag, map[string]any{"background": background, "foreground": foreground, "weight": int(pango.WEIGHT_BOLD), "pixels-above-lines": 3, "pixels-below-lines": 3})
+				createdTags[tag] = true
+			}
+			insert("\n "+display+" ", tag)
+		}
+	}
 	if len(branches) == 0 && len(tags) == 0 {
-		app.referencesPage.PackStart(must(gtk.LabelNew("No branches or tags.")), false, false, 8)
+		insert("\n\nNo branches or tags.", "")
 	}
+	app.referencesView = must(gtk.TextViewNewWithBuffer(buffer))
+	app.referencesView.SetEditable(false)
+	app.referencesView.SetCursorVisible(false)
+	app.referencesView.SetWrapMode(gtk.WRAP_CHAR)
+	app.referencesView.SetAcceptsTab(false)
+	context, _ := app.referencesView.GetStyleContext()
+	context.AddClass("giti-references")
+	app.referencesPage.PackStart(app.referencesView, true, true, 0)
 	app.referencesPage.ShowAll()
 	app.diffStack.SetVisibleChildName("references")
 }
@@ -1451,4 +1506,17 @@ func (app *giti) showError(err error) {
 	dialog := gtk.MessageDialogNew(app.window, gtk.DIALOG_MODAL, gtk.MESSAGE_ERROR, gtk.BUTTONS_CLOSE, "Giti could not load the repository\n\n%s", err)
 	dialog.Run()
 	dialog.Destroy()
+}
+
+func (app *giti) showNotification(message string, duration time.Duration) {
+	app.notificationGeneration++
+	generation := app.notificationGeneration
+	app.notificationLabel.SetText(message)
+	app.notification.Show()
+	addMainSource(duration, func() bool {
+		if generation == app.notificationGeneration {
+			app.notification.Hide()
+		}
+		return false
+	})
 }

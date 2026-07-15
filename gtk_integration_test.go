@@ -14,6 +14,7 @@ import (
 	"github.com/gotk3/gotk3/gdk"
 	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
+	"github.com/gotk3/gotk3/pango"
 )
 
 func iterateGTKUntil(t *testing.T, timeout time.Duration, condition func() bool) {
@@ -185,18 +186,36 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	if savedState.MainPanePosition != app.mainPane.GetPosition() || savedState.RepositoryPanePosition != app.repositoryPane.GetPosition() {
 		t.Fatalf("pane positions were not persisted: %#v", savedState)
 	}
-	details := commitDetails{sha: strings.Repeat("a", 40), subject: "subject"}
+	longBranch := "feature/" + strings.Repeat("copyable-reference-", 8)
+	details := commitDetails{sha: strings.Repeat("a", 40), subject: "subject", branches: []string{longBranch}}
 	app.setCommitHeader(details)
 	children := app.commitHeader.GetChildren()
 	compactHeader := children.Length()
 	children.Free()
+	referenceButton := app.headerReferenceButtons[0]
+	referenceWidget, referenceErr := referenceButton.GetChild()
+	referenceLabel, labelOK := referenceWidget.(*gtk.Label)
+	referenceValue, textErr := "", referenceErr
+	if labelOK {
+		referenceValue, textErr = referenceLabel.GetText()
+	}
+	contentWidth, contentHeight := app.mainPane.GetAllocatedWidth(), app.mainPane.GetAllocatedHeight()
+	referenceButton.Clicked()
+	for gtk.EventsPending() {
+		gtk.MainIteration()
+	}
+	copiedReference, copyReferenceErr := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD)).WaitForText()
+	copyNotification, notificationErr := app.notificationLabel.GetText()
 	details.body = "A longer description\n\nwith multiple lines."
 	app.setCommitHeader(details)
 	children = app.commitHeader.GetChildren()
 	expandedHeader := children.Length()
+	headerTitle, titleErr := gtk.WidgetToLabel(children.NthData(0).(*gtk.Widget))
+	headerMeta, metaErr := gtk.WidgetToLabel(children.NthData(2).(*gtk.Widget))
 	children.Free()
-	if expandedHeader != compactHeader+1 {
-		t.Fatalf("commit description expander missing: compact=%d body=%d", compactHeader, expandedHeader)
+	referenceValid := labelOK && textErr == nil && !referenceLabel.GetSelectable() && referenceLabel.GetEllipsize() == pango.ELLIPSIZE_END && strings.Contains(referenceValue, longBranch) && referenceButton.GetCanFocus() && copiedReference == longBranch && copyReferenceErr == nil && app.notification.GetVisible() && copyNotification == "Copied branch to clipboard." && notificationErr == nil && app.mainPane.GetAllocatedWidth() == contentWidth && app.mainPane.GetAllocatedHeight() == contentHeight
+	if expandedHeader != compactHeader+1 || titleErr != nil || metaErr != nil || referenceErr != nil || !referenceValid || !headerTitle.GetSelectable() || !headerMeta.GetSelectable() {
+		t.Fatalf("commit header copy control is incomplete: compact=%d body=%d title=%v meta=%v reference=%q/%v/%v/%v copied=%q/%v notification=%q/%v content=%dx%d/%dx%d", compactHeader, expandedHeader, titleErr, metaErr, referenceValue, referenceErr, labelOK, textErr, copiedReference, copyReferenceErr, copyNotification, notificationErr, contentWidth, contentHeight, app.mainPane.GetAllocatedWidth(), app.mainPane.GetAllocatedHeight())
 	}
 	defer func() {
 		app.clearRepositoryView()
@@ -237,8 +256,15 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	}
 	graphScroll.SetValue(0)
 	app.showReferences([]string{"main", "origin/main", "feature"}, []string{"v1", "v2", "v3"})
-	if app.diffStack.GetVisibleChildName() != "references" || app.referencesPage.GetChildren() == nil {
-		t.Fatalf("references page did not replace diff view")
+	referenceBuffer := must(app.referencesView.GetBuffer())
+	referenceStart, referenceEnd := referenceBuffer.GetBounds()
+	referenceText, _ := referenceBuffer.GetText(referenceStart, referenceEnd, true)
+	referenceBuffer.SelectRange(referenceStart, referenceEnd)
+	referenceClipboard := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD))
+	referenceBuffer.CopyClipboard(referenceClipboard)
+	copiedReferences, copyErr := referenceClipboard.WaitForText()
+	if app.diffStack.GetVisibleChildName() != "references" || !strings.Contains(referenceText, "origin/main") || !strings.Contains(referenceText, "v3") || copiedReferences != referenceText || copyErr != nil {
+		t.Fatalf("references page was not shown as continuous copyable text: page=%q text=%q copied=%q err=%v", app.diffStack.GetVisibleChildName(), referenceText, copiedReferences, copyErr)
 	}
 	app.showDiffPage()
 	if app.diffStack.GetVisibleChildName() != "diff" {
