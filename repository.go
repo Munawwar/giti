@@ -49,8 +49,15 @@ func sortedReferences(branches, tags []string) ([]string, []string) {
 		if leftHead != rightHead {
 			return leftHead
 		}
-		leftName := strings.TrimPrefix(strings.TrimSuffix(branches[left], headRefSuffix), remoteRefPrefix)
-		rightName := strings.TrimPrefix(strings.TrimSuffix(branches[right], headRefSuffix), remoteRefPrefix)
+		leftValue := strings.TrimSuffix(branches[left], headRefSuffix)
+		rightValue := strings.TrimSuffix(branches[right], headRefSuffix)
+		leftRemote := strings.HasPrefix(leftValue, remoteRefPrefix)
+		rightRemote := strings.HasPrefix(rightValue, remoteRefPrefix)
+		if leftRemote != rightRemote {
+			return !leftRemote
+		}
+		leftName := strings.TrimPrefix(leftValue, remoteRefPrefix)
+		rightName := strings.TrimPrefix(rightValue, remoteRefPrefix)
 		if leftName != rightName {
 			return leftName < rightName
 		}
