@@ -2,9 +2,18 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestFileCopyActions(t *testing.T) {
+	repository, relative := filepath.Join(string(filepath.Separator), "work", "repo"), filepath.Join("src", "main.go")
+	actions := fileCopyActions(repository, relative)
+	if len(actions) != 2 || actions[0] != (clipboardAction{"Copy path", relative, "Copied path to clipboard."}) || actions[1] != (clipboardAction{"Copy full path", filepath.Join(repository, relative), "Copied full path to clipboard."}) {
+		t.Fatalf("unexpected file copy actions: %#v", actions)
+	}
+}
 
 func TestDesktopEntryMatchesApplicationID(t *testing.T) {
 	entry, err := os.ReadFile("data/" + applicationID + ".desktop")

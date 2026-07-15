@@ -313,6 +313,35 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.fileView = must(gtk.TreeViewNewWithModel(app.fileStore))
 	setAccessibility(&app.fileView.Widget, "Changed files", "Files changed by the selected history entry")
 	app.fileView.SetHeadersVisible(false)
+	app.fileView.AddEvents(int(gdk.BUTTON_PRESS_MASK))
+	app.fileView.Connect("button-press-event", func(_ *gtk.TreeView, event *gdk.Event) bool {
+		button := gdk.EventButtonNewFromEvent(event)
+		if button.Button() != gdk.BUTTON_SECONDARY {
+			return false
+		}
+		path, _, _, _, ok := app.fileView.GetPathAtPos(int(button.X()), int(button.Y()))
+		if !ok || app.repository == nil {
+			return false
+		}
+		selection, _ := app.fileView.GetSelection()
+		selection.SelectPath(path)
+		indices := path.GetIndices()
+		if len(indices) == 0 || indices[0] >= len(app.files) {
+			return false
+		}
+		relativePath := app.files[indices[0]].path
+		menu := must(gtk.MenuNew())
+		for _, action := range fileCopyActions(app.repository.path, relativePath) {
+			action := action
+			item := must(gtk.MenuItemNewWithLabel(action.label))
+			item.Connect("activate", func() { app.copyToClipboard(action.text, action.message) })
+			menu.Append(item)
+		}
+		menu.Connect("selection-done", menu.Destroy)
+		menu.ShowAll()
+		menu.PopupAtPointer(event)
+		return true
+	})
 	app.fileView.SetTooltipColumn(0)
 	fileContext, _ := app.fileView.GetStyleContext()
 	fileContext.AddClass("giti-list")
@@ -540,9 +569,7 @@ func (app *giti) copySHAButton(sha string) *gtk.Button {
 	setAccessibility(&button.Widget, "Copy commit SHA", "Copy "+sha+" to the clipboard")
 	button.SetTooltipText("Copy SHA: " + sha)
 	button.Connect("clicked", func() {
-		clipboard := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD))
-		clipboard.SetText(sha)
-		app.showNotification("Copied commit ID to clipboard.", 2*time.Second)
+		app.copyToClipboard(sha, "Copied commit ID to clipboard.")
 	})
 	return button
 }
@@ -1022,8 +1049,7 @@ func (app *giti) setCommitHeader(details commitDetails) {
 			context.AddClass("giti-ref-copy")
 			button.Add(label)
 			button.Connect("clicked", func() {
-				must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD)).SetText(display)
-				app.showNotification("Copied "+kind+" to clipboard.", 2*time.Second)
+				app.copyToClipboard(display, "Copied "+kind+" to clipboard.")
 			})
 			app.headerReferenceButtons = append(app.headerReferenceButtons, button)
 			refs.PackStart(button, false, false, 0)
@@ -1519,4 +1545,18 @@ func (app *giti) showNotification(message string, duration time.Duration) {
 		}
 		return false
 	})
+}
+
+func (app *giti) copyToClipboard(text, message string) {
+	must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD)).SetText(text)
+	app.showNotification(message, 2*time.Second)
+}
+
+type clipboardAction struct{ label, text, message string }
+
+func fileCopyActions(repositoryPath, relativePath string) []clipboardAction {
+	return []clipboardAction{
+		{"Copy path", relativePath, "Copied path to clipboard."},
+		{"Copy full path", filepath.Join(repositoryPath, relativePath), "Copied full path to clipboard."},
+	}
 }
