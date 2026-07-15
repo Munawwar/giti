@@ -819,10 +819,10 @@ func historyLabel(row historyRow) string {
 }
 
 type searchMatch struct {
-	row                historyRow
-	branches, tags     []string
-	score, index       int
-	matchesDescription bool
+	row                            historyRow
+	branches, tags                 []string
+	score, index                   int
+	matchesDescription, matchesSHA bool
 }
 
 type searchOptions struct {
@@ -854,6 +854,7 @@ func searchHistory(rows []historyRow, query string, options searchOptions) []sea
 		if refs == "" && row.refs != "" {
 			refs = strings.ToLower(row.refs)
 		}
+		shaMatch := isSHAQuery(phrase) && strings.HasPrefix(strings.ToLower(row.revision), phrase)
 		fields := []field{{subject, 1000, 100}}
 		if options.references {
 			fields = append(fields, field{refs, 750, 50})
@@ -876,8 +877,11 @@ func searchHistory(rows []historyRow, query string, options searchOptions) []sea
 				descriptionScore = fieldScore
 			}
 		}
+		if shaMatch {
+			score += 2000
+		}
 		if score > 0 {
-			match := searchMatch{row: row, score: score, index: index, matchesDescription: descriptionScore > 0}
+			match := searchMatch{row: row, score: score, index: index, matchesDescription: descriptionScore > 0, matchesSHA: shaMatch}
 			if options.references {
 				branches, tags := referenceLists(row.refs)
 				matchesQuery := func(value string) bool {
@@ -916,6 +920,18 @@ func searchHistory(rows []historyRow, query string, options searchOptions) []sea
 		return matches[left].index < matches[right].index
 	})
 	return matches
+}
+
+func isSHAQuery(query string) bool {
+	if len(query) < 5 {
+		return false
+	}
+	for _, char := range query {
+		if !(char >= '0' && char <= '9' || char >= 'a' && char <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func (app *giti) updateGraphSearch() {
@@ -968,9 +984,16 @@ func searchResultMarkup(match searchMatch) string {
 		badges.WriteString("  ")
 		badges.WriteString(part.markup)
 	}
-	hint := ""
+	hints := make([]string, 0, 2)
+	if match.matchesSHA {
+		hints = append(hints, "matches commit SHA")
+	}
 	if match.matchesDescription {
-		hint = "\n<span size=\"small\" foreground=\"#4b5563\">matches commit description</span>"
+		hints = append(hints, "matches commit description")
+	}
+	hint := ""
+	if len(hints) > 0 {
+		hint = "\n<span size=\"small\" foreground=\"#4b5563\">" + html.EscapeString(strings.Join(hints, " · ")) + "</span>"
 	}
 	return fmt.Sprintf("<b>%s</b>%s\n<span foreground=\"#374151\">%s  ·  %s  ·  <tt>%s</tt></span>%s", html.EscapeString(match.row.subject), badges.String(), html.EscapeString(match.row.date), html.EscapeString(match.row.author), html.EscapeString(match.row.revision[:7]), hint)
 }

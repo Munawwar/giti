@@ -66,6 +66,25 @@ func TestSearchHistoryRanksExactPhrasesAboveSeparateWords(t *testing.T) {
 	}
 }
 
+func TestSearchHistoryMatchesFiveDigitHexSHAOnly(t *testing.T) {
+	rows := []historyRow{
+		{kind: "commit", revision: "e8c38dd123456789012345678901234567890123", subject: "Refactor"},
+		{kind: "commit", revision: "edda1991234567890123456789012345678901234", subject: "Another"},
+	}
+	matches := searchHistory(rows, "e8c38", searchOptions{})
+	if len(matches) != 1 || matches[0].row.revision != rows[0].revision || !matches[0].matchesSHA || !strings.Contains(searchResultMarkup(matches[0]), "matches commit SHA") {
+		t.Fatalf("valid SHA prefix was not matched: %#v", matches)
+	}
+	for _, query := range []string{"e8c3", "edda1 1", "e8c3g"} {
+		if isSHAQuery(query) {
+			t.Fatalf("invalid SHA query was accepted: %q", query)
+		}
+	}
+	if matches := searchHistory(rows, "e8c3", searchOptions{}); len(matches) != 0 {
+		t.Fatalf("four-digit SHA prefix unexpectedly matched: %#v", matches)
+	}
+}
+
 func TestSearchHistoryOptionsIncludeMessagesAndReferences(t *testing.T) {
 	rows := []historyRow{
 		{kind: "commit", revision: "1111111", subject: "Refactor internals", body: "Document the orbital cache architecture."},
