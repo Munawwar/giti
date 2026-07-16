@@ -37,7 +37,10 @@ The installer asks whether to build fresh; choose **No** to install the bundled
 non-debug Linux x86_64 binary. On Ubuntu it installs missing GTK 3 runtime
 libraries and Git, then installs Giti to `~/.local/bin` and its desktop entry
 and hicolor icon to `~/.local/share`. This makes the Giti icon work in GNOME
-Wayland as well as X11.
+Wayland as well as X11. It also installs Bash, Zsh, and Fish completions, so
+typing `giti t<Tab>` offers matching local branches, remote branches, and tags.
+Installation is idempotent: rerunning the installer updates the same files
+without adding anything to your shell startup files.
 
 Choose **Yes** at the prompt, or use `./install.sh --build`, to compile from
 source. That path requires Go 1.24 or newer; install it using the official
@@ -49,6 +52,15 @@ For a system-wide `/usr/local` installation, use:
 ```sh
 ./install.sh --system
 ```
+
+Remove the corresponding user or system installation with:
+
+```sh
+./uninstall.sh
+./uninstall.sh --system
+```
+
+Uninstalling leaves shared system libraries and Giti's user preferences intact.
 
 You can then run `giti`, `giti main`, `giti v1.0.0`, or
 `giti <sha>` from any repository.

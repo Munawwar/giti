@@ -1,0 +1,11 @@
+#compdef giti
+
+local -a refs
+refs=("${(@f)$(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags 2>/dev/null)}")
+refs=("${(@)refs:#*/HEAD}")
+
+_arguments \
+    '(-1)-f[run in the foreground]' \
+    '(-1)--foreground[run in the foreground]' \
+    '(-f --foreground 1)-1[restart the resident]' \
+    '1:Git revision:(${(q)refs} HEAD)'

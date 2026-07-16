@@ -2,7 +2,6 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-APP_ID=io.github.Munawwar.Giti
 PREFIX=${HOME}/.local
 USER_INSTALL=true
 SKIP_DEPS=false
@@ -46,11 +45,7 @@ EOF
     shift
 done
 
-if [ "$USER_INSTALL" = true ]; then
-    DATA_HOME=${XDG_DATA_HOME:-${HOME}/.local/share}
-else
-    DATA_HOME=$PREFIX/share
-fi
+. "$ROOT/data/install-paths.sh"
 
 if [ "$BUILD_FRESH" = ask ]; then
     if [ -t 0 ]; then
@@ -105,7 +100,8 @@ if [ "$USER_INSTALL" = false ] && [ ! -w "$PREFIX" ]; then
     SUDO=sudo
 fi
 
-$SUDO install -d "$PREFIX/bin" "$DATA_HOME/applications" "$DATA_HOME/icons/hicolor/scalable/apps" "$DATA_HOME/icons/hicolor/256x256/apps"
+$SUDO install -d "$PREFIX/bin" "$DATA_HOME/applications" "$DATA_HOME/icons/hicolor/scalable/apps" "$DATA_HOME/icons/hicolor/256x256/apps" \
+    "$BASH_COMPLETION_HOME" "$ZSH_COMPLETION_HOME" "$FISH_COMPLETION_HOME"
 if [ -L "$PREFIX/bin/giti" ]; then
     $SUDO rm "$PREFIX/bin/giti"
 fi
@@ -114,6 +110,9 @@ $SUDO install -m755 "$GITI_BIN" "$PREFIX/bin/giti"
 $SUDO install -m644 "$ROOT/logo/giti-logo.svg" "$DATA_HOME/icons/hicolor/scalable/apps/$APP_ID.svg"
 $SUDO install -m644 "$ROOT/logo/giti-logo.png" "$DATA_HOME/icons/hicolor/256x256/apps/$APP_ID.png"
 sed "s|^Exec=.*|Exec=$PREFIX/bin/giti|" "$ROOT/data/$APP_ID.desktop" | $SUDO tee "$DATA_HOME/applications/$APP_ID.desktop" >/dev/null
+$SUDO install -m644 "$ROOT/completions/giti.bash" "$BASH_COMPLETION_HOME/giti"
+$SUDO install -m644 "$ROOT/completions/_giti" "$ZSH_COMPLETION_HOME/_giti"
+$SUDO install -m644 "$ROOT/completions/giti.fish" "$FISH_COMPLETION_HOME/giti.fish"
 
 if command -v update-desktop-database >/dev/null; then
     $SUDO update-desktop-database "$DATA_HOME/applications" || true
@@ -122,4 +121,4 @@ if command -v gtk-update-icon-cache >/dev/null; then
     $SUDO gtk-update-icon-cache -t -f "$DATA_HOME/icons/hicolor" || true
 fi
 
-echo "Installed Giti. Open it from the app launcher or run $PREFIX/bin/giti."
+echo "Installed Giti. Open it from the app launcher or run $PREFIX/bin/giti. Shell completions are installed for Bash, Zsh, and Fish."
