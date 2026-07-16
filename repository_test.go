@@ -173,10 +173,54 @@ func TestStagedUnstagedAndSingleFileDiffs(t *testing.T) {
 		if fileErr != nil || len(files) != 1 || files[0].path != expected {
 			t.Fatalf("unexpected files %v: %v", files, fileErr)
 		}
+		if index == 0 && (files[0].status != "??" || files[0].additions != 0 || files[0].deletions != 0 || files[0].binary) {
+			t.Fatalf("untracked file received tracked statistics: %#v", files[0])
+		}
+		if index == 1 && (files[0].additions != 1 || files[0].deletions != 0 || files[0].binary) {
+			t.Fatalf("staged file statistics are wrong: %#v", files[0])
+		}
 		patch, patchErr := repo.diff(rows[index], files[0], true, false)
 		if patchErr != nil || !strings.Contains(patch, "+"+strings.TrimSuffix(expected, ".txt")) {
 			t.Fatalf("unexpected patch: %v: %s", patchErr, patch)
 		}
+	}
+}
+
+func TestChangedFilesRetainRenameStatistics(t *testing.T) {
+	path := testRepository(t)
+	source := filepath.Join(path, "source.txt")
+	if err := os.WriteFile(source, []byte(strings.Repeat("existing line\n", 20)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("git", "-C", path, "add", "source.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add source: %v: %s", err, output)
+	}
+	if output, err := exec.Command("git", "-C", path, "commit", "-m", "add rename source").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, output)
+	}
+	renamed := filepath.Join(path, "renamed.txt")
+	if output, err := exec.Command("git", "-C", path, "mv", "source.txt", "renamed.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git mv: %v: %s", err, output)
+	}
+	if file, err := os.OpenFile(renamed, os.O_APPEND|os.O_WRONLY, 0); err != nil {
+		t.Fatal(err)
+	} else if _, err = file.WriteString("one more line\n"); err != nil {
+		file.Close()
+		t.Fatal(err)
+	} else if err = file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("git", "-C", path, "add", "renamed.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, output)
+	}
+	repo, _ := newRepository(path, "HEAD")
+	rows, _, err := repo.history(2, true, false)
+	if err != nil || len(rows) == 0 || rows[0].kind != "staged" {
+		t.Fatalf("staged rename missing: rows=%#v err=%v", rows, err)
+	}
+	files, err := repo.changedFiles(rows[0], true)
+	if err != nil || len(files) != 1 || files[0].oldPath != "source.txt" || files[0].path != "renamed.txt" || files[0].additions != 1 || files[0].deletions != 0 || files[0].binary {
+		t.Fatalf("rename statistics are wrong: files=%#v err=%v", files, err)
 	}
 }
 

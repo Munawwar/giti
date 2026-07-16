@@ -37,10 +37,14 @@ type commitDetails struct {
 	sha, subject, body, author, authorEmail, authored, committer, committerEmail, committed string
 	parents, branches, tags                                                                 []string
 	upstreams                                                                               map[string]string
+	additions, deletions, untracked                                                         int
+	statistics                                                                              bool
 }
 
 type changedFile struct {
 	status, path, oldPath string
+	additions, deletions  int
+	binary                bool
 }
 
 func sortedReferences(branches, tags []string) ([]string, []string) {
@@ -358,29 +362,47 @@ func (repo *repository) changedFilesContext(ctx context.Context, row historyRow,
 			}
 		}
 	}
-	if !ignoreWhitespace {
-		return files, nil
+	statArgs := append(append([]string(nil), args...), "--numstat", "-z")
+	if ignoreWhitespace {
+		statArgs = append(statArgs, "--ignore-all-space")
 	}
-	visible, visibleErr := repo.runContext(ctx, append(append([]string(nil), args...), "--numstat", "-z", "--ignore-all-space")...)
+	visible, visibleErr := repo.runContext(ctx, statArgs...)
 	if visibleErr != nil {
 		return nil, visibleErr
 	}
-	visiblePaths := make(map[string]bool)
-	for parts, index := strings.Split(visible, "\x00"), 0; index < len(parts) && parts[index] != ""; index++ {
+	type fileStat struct {
+		additions, deletions int
+		binary               bool
+	}
+	visiblePaths, stats := make(map[string]bool), make(map[string]fileStat)
+	for parts, index := strings.Split(visible, "\x00"), 0; index < len(parts) && parts[index] != ""; {
 		fields := strings.SplitN(parts[index], "\t", 3)
+		index++
 		if len(fields) != 3 {
 			continue
 		}
-		if fields[2] == "" && index+2 < len(parts) {
-			visiblePaths[parts[index+1]], visiblePaths[parts[index+2]] = true, true
+		paths := []string{fields[2]}
+		if fields[2] == "" && index+1 < len(parts) {
+			paths = []string{parts[index], parts[index+1]}
 			index += 2
-		} else {
-			visiblePaths[fields[2]] = true
+		}
+		stat := fileStat{binary: fields[0] == "-" || fields[1] == "-"}
+		if !stat.binary {
+			stat.additions, _ = strconv.Atoi(fields[0])
+			stat.deletions, _ = strconv.Atoi(fields[1])
+		}
+		for _, path := range paths {
+			visiblePaths[path], stats[path] = true, stat
 		}
 	}
 	filtered := files[:0]
 	for _, file := range files {
-		if file.status == "??" || visiblePaths[file.path] || visiblePaths[file.oldPath] {
+		if stat, ok := stats[file.path]; ok {
+			file.additions, file.deletions, file.binary = stat.additions, stat.deletions, stat.binary
+		} else if stat, ok := stats[file.oldPath]; ok {
+			file.additions, file.deletions, file.binary = stat.additions, stat.deletions, stat.binary
+		}
+		if !ignoreWhitespace || file.status == "??" || visiblePaths[file.path] || visiblePaths[file.oldPath] {
 			filtered = append(filtered, file)
 		}
 	}

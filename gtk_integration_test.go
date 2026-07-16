@@ -213,7 +213,7 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 		t.Fatalf("pane positions were not persisted: %#v", savedState)
 	}
 	longBranch := "feature/" + strings.Repeat("copyable-reference-", 8)
-	details := commitDetails{sha: strings.Repeat("a", 40), subject: "subject", branches: []string{longBranch}}
+	details := commitDetails{sha: strings.Repeat("a", 40), subject: "subject", branches: []string{longBranch}, additions: 12, deletions: 3, untracked: 4, statistics: true}
 	app.setCommitHeader(details)
 	children := app.commitHeader.GetChildren()
 	compactHeader := children.Length()
@@ -236,11 +236,23 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	app.setCommitHeader(details)
 	children = app.commitHeader.GetChildren()
 	expandedHeader := children.Length()
-	headerTitle, titleErr := gtk.WidgetToLabel(children.NthData(0).(*gtk.Widget))
+	headerRow := &gtk.Container{Widget: *children.NthData(0).(*gtk.Widget)}
+	headerChildren := headerRow.GetChildren()
+	headerTitle, titleErr := gtk.WidgetToLabel(headerChildren.NthData(0).(*gtk.Widget))
 	headerMeta, metaErr := gtk.WidgetToLabel(children.NthData(2).(*gtk.Widget))
+	statLabels := make([]string, 0, 3)
+	for index := uint(1); index < headerChildren.Length(); index++ {
+		label, labelErr := gtk.WidgetToLabel(headerChildren.NthData(index).(*gtk.Widget))
+		if labelErr == nil {
+			text, _ := label.GetText()
+			statLabels = append(statLabels, text)
+		}
+	}
+	headerChildren.Free()
 	children.Free()
 	referenceValid := labelOK && textErr == nil && !referenceLabel.GetSelectable() && referenceLabel.GetEllipsize() == pango.ELLIPSIZE_END && strings.Contains(referenceValue, longBranch) && referenceButton.GetCanFocus() && copiedReference == longBranch && copyReferenceErr == nil && app.notification.GetVisible() && copyNotification == "Copied branch to clipboard." && notificationErr == nil && app.mainPane.GetAllocatedWidth() == contentWidth && app.mainPane.GetAllocatedHeight() == contentHeight
-	if expandedHeader != compactHeader+1 || titleErr != nil || metaErr != nil || referenceErr != nil || !referenceValid || !headerTitle.GetSelectable() || !headerMeta.GetSelectable() {
+	statisticsValid := strings.Join(statLabels, ",") == "+12,−3,4 untracked"
+	if expandedHeader != compactHeader+1 || titleErr != nil || metaErr != nil || referenceErr != nil || !referenceValid || !statisticsValid || !headerTitle.GetSelectable() || !headerMeta.GetSelectable() {
 		t.Fatalf("commit header copy control is incomplete: compact=%d body=%d title=%v meta=%v reference=%q/%v/%v/%v copied=%q/%v notification=%q/%v content=%dx%d/%dx%d", compactHeader, expandedHeader, titleErr, metaErr, referenceValue, referenceErr, labelOK, textErr, copiedReference, copyReferenceErr, copyNotification, notificationErr, contentWidth, contentHeight, app.mainPane.GetAllocatedWidth(), app.mainPane.GetAllocatedHeight())
 	}
 	syncedDetails := commitDetails{
@@ -366,6 +378,17 @@ func TestGTKDiffInteraction(t *testing.T) {
 	}
 	if app.currentFile == nil || app.currentFile.path != "first.txt" || len(app.files) != 2 {
 		t.Fatalf("bad initial file selection: %#v from %#v", app.currentFile, app.files)
+	}
+	summary, summaryErr := app.fileSummary.GetText()
+	iter, hasFile := app.fileStore.GetIterFirst()
+	statMarkup := ""
+	if hasFile {
+		if value, valueErr := app.fileStore.GetValue(iter, 2); valueErr == nil {
+			statMarkup, _ = value.GetString()
+		}
+	}
+	if summaryErr != nil || summary != "2 files · 0 added · 0 deleted · 0 updated · 2 untracked" || !strings.Contains(statMarkup, "Untracked") {
+		t.Fatalf("untracked file summary is wrong: summary=%q err=%v stat=%q", summary, summaryErr, statMarkup)
 	}
 	start, end := app.diffBuffer.GetBounds()
 	compact, _ := app.diffBuffer.GetText(start, end, true)

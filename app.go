@@ -55,6 +55,23 @@ button.giti-ref-copy.giti-ref-joined {
   border-width: 0;
   margin: 0;
 }
+label.giti-stat {
+  border-radius: 4px;
+  font-weight: bold;
+  padding: 2px 6px;
+}
+label.giti-additions {
+  background-color: #d7f5dd;
+  color: #174d22;
+}
+label.giti-deletions {
+  background-color: #f9d7d9;
+  color: #682126;
+}
+label.giti-untracked {
+  background-color: #eef0f2;
+  color: #4b5563;
+}
 textview.giti-references text selection {
   background-color: @theme_selected_bg_color;
   color: @theme_selected_fg_color;
@@ -94,6 +111,7 @@ type giti struct {
 	historyStore, fileStore    *gtk.ListStore
 	historyView, fileView      *gtk.TreeView
 	historyScroller            *gtk.ScrolledWindow
+	fileSummary                *gtk.Label
 	graphColumn                *gtk.TreeViewColumn
 	mainPane, repositoryPane   *gtk.Paned
 	historySearch              *gtk.SearchEntry
@@ -164,7 +182,7 @@ func newGiti(repo *repository, resident bool, applications ...*gtk.Application) 
 		}
 	}
 	app.historyStore = must(gtk.ListStoreNew(gdk.PixbufGetType(), glib.TYPE_STRING, glib.TYPE_STRING))
-	app.fileStore = must(gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING))
+	app.fileStore = must(gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING))
 	app.buildWindow(application)
 	if resident {
 		addMainSource(time.Minute, app.expireIfIdle)
@@ -355,6 +373,10 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	fileColumn := must(gtk.TreeViewColumnNewWithAttribute("Files", fileRenderer, "text", 0))
 	fileColumn.SetExpand(true)
 	app.fileView.AppendColumn(fileColumn)
+	statRenderer := must(gtk.CellRendererTextNew())
+	statRenderer.SetProperty("xalign", 1.0)
+	statColumn := must(gtk.TreeViewColumnNewWithAttribute("Changes", statRenderer, "markup", 2))
+	app.fileView.AppendColumn(statColumn)
 	fileSelection, _ := app.fileView.GetSelection()
 	fileSelection.Connect("changed", app.onFileSelected)
 
@@ -395,7 +417,18 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.repositoryPane = must(gtk.PanedNew(gtk.ORIENTATION_VERTICAL))
 	app.repositoryPane.SetWideHandle(true)
 	app.repositoryPane.Pack1(graphBox, false, true)
-	app.repositoryPane.Pack2(scroller(app.fileView), true, true)
+	app.fileSummary = must(gtk.LabelNew("Select a history entry to see changed files"))
+	app.fileSummary.SetXAlign(0)
+	app.fileSummary.SetEllipsize(pango.ELLIPSIZE_END)
+	app.fileSummary.SetMarginStart(8)
+	app.fileSummary.SetMarginEnd(8)
+	app.fileSummary.SetMarginTop(6)
+	app.fileSummary.SetMarginBottom(4)
+	setAccessibility(&app.fileSummary.Widget, "Changed file summary", "Numbers of added, deleted, updated, and untracked files")
+	fileBox := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0))
+	fileBox.PackStart(app.fileSummary, false, false, 0)
+	fileBox.PackStart(scroller(app.fileView), true, true, 0)
+	app.repositoryPane.Pack2(fileBox, true, true)
 
 	toolbar := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
 	toolbar.PackEnd(app.whitespaceToggle, false, false, 8)
@@ -1132,8 +1165,33 @@ func (app *giti) setCommitHeader(details commitDetails) {
 	title := must(gtk.LabelNew(""))
 	title.SetXAlign(0)
 	title.SetSelectable(true)
+	title.SetEllipsize(pango.ELLIPSIZE_END)
 	title.SetMarkup("<span size=\"large\" weight=\"bold\">" + html.EscapeString(details.subject) + "</span>")
-	app.commitHeader.PackStart(title, false, false, 0)
+	titleRow := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
+	titleRow.PackStart(title, true, true, 0)
+	if details.statistics {
+		additions := must(gtk.LabelNew(fmt.Sprintf("+%d", details.additions)))
+		deletions := must(gtk.LabelNew(fmt.Sprintf("−%d", details.deletions)))
+		for _, badge := range []*gtk.Label{additions, deletions} {
+			context, _ := badge.GetStyleContext()
+			context.AddClass("giti-stat")
+			badge.SetTooltipText("Line totals exclude binary and untracked files")
+			titleRow.PackStart(badge, false, false, 0)
+		}
+		additionContext, _ := additions.GetStyleContext()
+		additionContext.AddClass("giti-additions")
+		deletionContext, _ := deletions.GetStyleContext()
+		deletionContext.AddClass("giti-deletions")
+		if details.untracked > 0 {
+			untracked := must(gtk.LabelNew(fmt.Sprintf("%d untracked", details.untracked)))
+			context, _ := untracked.GetStyleContext()
+			context.AddClass("giti-stat")
+			context.AddClass("giti-untracked")
+			untracked.SetTooltipText("Untracked files have no line counts")
+			titleRow.PackStart(untracked, false, false, 0)
+		}
+	}
+	app.commitHeader.PackStart(titleRow, false, false, 0)
 	if details.sha == "" {
 		app.commitHeader.ShowAll()
 		return
@@ -1368,6 +1426,7 @@ func (app *giti) onHistorySelected() {
 	app.rememberDiffScroll()
 	app.diffBuffer.SetText("")
 	app.setCommitHeader(commitDetails{subject: "Loading commit details…"})
+	app.fileSummary.SetText("Loading changed files…")
 	previousPath := ""
 	if app.currentFile != nil {
 		previousPath = app.currentFile.path
@@ -1397,16 +1456,46 @@ func (app *giti) onHistorySelected() {
 				app.showError(loadErr)
 				return false
 			}
-			if row.kind == "commit" {
-				app.setCommitHeader(details)
-			} else {
-				app.setCommitHeader(commitDetails{subject: row.subject})
+			added, deleted, updated, untracked, additions, deletions := 0, 0, 0, 0, 0, 0
+			for _, file := range files {
+				switch {
+				case file.status == "??":
+					untracked++
+				case strings.HasPrefix(file.status, "A"):
+					added++
+				case strings.HasPrefix(file.status, "D"):
+					deleted++
+				default:
+					updated++
+				}
+				if file.status != "??" && !file.binary {
+					additions, deletions = additions+file.additions, deletions+file.deletions
+				}
 			}
+			details.additions, details.deletions, details.untracked, details.statistics = additions, deletions, untracked, true
+			if row.kind != "commit" {
+				details.subject = row.subject
+			}
+			app.setCommitHeader(details)
+			summary := fmt.Sprintf("%d files · %d added · %d deleted · %d updated", len(files), added, deleted, updated)
+			untrackedMarkup := ""
+			if untracked > 0 {
+				summary += fmt.Sprintf(" · %d untracked", untracked)
+				untrackedMarkup = fmt.Sprintf(" · <span foreground=\"#4b5563\">%d untracked</span>", untracked)
+			}
+			app.fileSummary.SetMarkup(fmt.Sprintf("<b>%d files</b> · <span foreground=\"#2e8c47\">%d added</span> · <span foreground=\"#c7404d\">%d deleted</span> · %d updated%s", len(files), added, deleted, updated, untrackedMarkup))
+			app.fileSummary.SetTooltipText(summary)
 			app.files = files
 			target := 0
 			for fileIndex, file := range files {
 				iter := app.fileStore.Append()
-				app.fileStore.Set(iter, []int{0, 1}, []any{file.label(), strconv.Itoa(fileIndex)})
+				stat := fmt.Sprintf("<span foreground=\"#2e8c47\">+%d</span>  <span foreground=\"#c7404d\">−%d</span>", file.additions, file.deletions)
+				if file.status == "??" {
+					stat = "<span foreground=\"#6b7280\">Untracked</span>"
+				} else if file.binary {
+					stat = "<span foreground=\"#6b7280\">Binary</span>"
+				}
+				app.fileStore.Set(iter, []int{0, 1, 2}, []any{file.label(), strconv.Itoa(fileIndex), stat})
 				if file.path == previousPath {
 					target = fileIndex
 				}
@@ -1615,6 +1704,8 @@ func (app *giti) clearRepositoryView() {
 	app.historySearch.SetText("")
 	app.historyStore.Clear()
 	app.fileStore.Clear()
+	app.fileSummary.SetText("Select a history entry to see changed files")
+	app.fileSummary.SetTooltipText("")
 	app.setCommitHeader(commitDetails{})
 	app.diffBuffer.SetText("")
 	app.fullFilePreferred = false
