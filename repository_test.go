@@ -53,6 +53,14 @@ func TestSortedReferencesKeepsLocalBranchesBeforeRemotes(t *testing.T) {
 	}
 }
 
+func TestReferenceMetadataIncludesHeadAndUpstream(t *testing.T) {
+	output := "refs/heads/main\x00refs/remotes/origin/main\x00*\nrefs/remotes/origin/main\x00\x00 \nrefs/tags/v1\x00\x00 \n"
+	branches, tags, upstreams := referenceMetadata(output)
+	if strings.Join(branches, ",") != "main <- HEAD,refs/remotes/origin/main" || strings.Join(tags, ",") != "v1" || upstreams["main"] != "refs/remotes/origin/main" {
+		t.Fatalf("reference metadata was not parsed: %v %v %v", branches, tags, upstreams)
+	}
+}
+
 func TestRevisionFormsAndHistoryLimit(t *testing.T) {
 	path := testRepository(t)
 	sha, _ := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output()
@@ -110,7 +118,9 @@ func TestCommitDetailsIncludesRefsAndMergeParents(t *testing.T) {
 	run("add", "main.txt")
 	run("commit", "-m", "main")
 	run("merge", "--no-ff", "side", "-m", "merge side", "-m", "Explain the merge.\n\n1. Keep both changes\n2. Preserve history")
+	run("remote", "add", "origin", path)
 	run("update-ref", "refs/remotes/origin/main", "HEAD")
+	run("branch", "--set-upstream-to=origin/main", "main")
 	for _, tag := range []string{"one", "two", "three", "four"} {
 		run("tag", tag)
 	}
@@ -122,11 +132,11 @@ func TestCommitDetailsIncludesRefsAndMergeParents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if details.sha != repo.revision || details.author != "Test User" || !strings.Contains(details.body, "1. Keep both changes") || len(details.parents) != 2 || strings.Join(details.tags, ",") != "four,one,three,two" || !strings.Contains(strings.Join(details.branches, " "), remoteRefPrefix+"origin/main") {
+	if details.sha != repo.revision || details.author != "Test User" || !strings.Contains(details.body, "1. Keep both changes") || len(details.parents) != 2 || strings.Join(details.tags, ",") != "four,one,three,two" || !strings.Contains(strings.Join(details.branches, " "), remoteRefPrefix+"origin/main") || details.upstreams["main"] != remoteRefPrefix+"origin/main" {
 		t.Fatalf("unexpected commit details: %#v", details)
 	}
 	rows, _, err := repo.history(5, true, true)
-	if err != nil || len(rows) != 5 || len(rows[0].parents) != 2 || rows[0].graph.position != 0 || !strings.Contains(rows[0].body, "Preserve history") {
+	if err != nil || len(rows) != 5 || len(rows[0].parents) != 2 || rows[0].graph.position != 0 || !strings.Contains(rows[0].body, "Preserve history") || rows[0].upstreams["main"] != remoteRefPrefix+"origin/main" {
 		t.Fatalf("merge topology was not loaded: rows=%#v err=%v", rows, err)
 	}
 	for _, row := range rows {

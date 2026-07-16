@@ -121,7 +121,7 @@ func TestSearchHistoryUsesNewestDateToBreakScoreTies(t *testing.T) {
 }
 
 func TestHistoryLabelDescribesMergeAndEscapesContent(t *testing.T) {
-	row := historyRow{kind: "commit", revision: "123456789", subject: "merge <side>", refs: "HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1<&>, tag: refs/tags/v2, tag: refs/tags/v3, tag: refs/tags/v4, tag: refs/tags/v5", author: "A & B", parents: []string{"one", "two"}}
+	row := historyRow{kind: "commit", revision: "123456789", subject: "merge <side>", refs: "HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1<&>, tag: refs/tags/v2, tag: refs/tags/v3, tag: refs/tags/v4, tag: refs/tags/v5", author: "A & B", parents: []string{"one", "two"}, upstreams: map[string]string{"main": remoteRefPrefix + "origin/main"}}
 	label := historyLabel(row)
 	for _, want := range []string{"merge &lt;side&gt;", "A &amp; B", "merge · 2 parents"} {
 		if !strings.Contains(label, want) {
@@ -132,7 +132,7 @@ func TestHistoryLabelDescribesMergeAndEscapesContent(t *testing.T) {
 	if strings.HasPrefix(label, "  ") {
 		t.Fatalf("history references have unwanted leading margin: %q", label)
 	}
-	for _, want := range []string{`background="#d8f0dd"`, "main ← HEAD", `background="#dce8f8"`, "origin/main", `background="#f8e7a3"`, "5 tags"} {
+	for _, want := range []string{`background="#d8f0dd"`, "main ← HEAD", `background="#dce8f8"`, "origin/", `background="#f8e7a3"`, "5 tags", `</span><span`} {
 		if !strings.Contains(refs, want) {
 			t.Fatalf("history references %q does not contain %q", refs, want)
 		}
@@ -140,14 +140,49 @@ func TestHistoryLabelDescribesMergeAndEscapesContent(t *testing.T) {
 	if strings.Contains(refs, "v1") || strings.Contains(refs, "v2") || strings.Contains(refs, "v3") || strings.Contains(refs, "v4") || strings.Contains(refs, "v5") || strings.Index(refs, "5 tags") > strings.Index(refs, "main ← HEAD") || strings.Index(refs, "main ← HEAD") > strings.Index(refs, "merge &lt;side&gt;") {
 		t.Fatalf("history references were not summarized and ordered: %q", refs)
 	}
-	row.refs = "main, refs/remotes/origin/main, feature, release, tag: v1, tag: v2, tag: v3"
+	row.upstreams = nil
+	row.refs = "main, refs/remotes/origin/main, feature, release, zeta, tag: v1, tag: v2, tag: v3"
 	refs = historyLabel(row)
-	if !strings.Contains(refs, "3 tags") || !strings.Contains(refs, "+ more branches") || !(strings.Index(refs, "3 tags") < strings.Index(refs, "feature") && strings.Index(refs, "feature") < strings.Index(refs, "main") && strings.Index(refs, "main") < strings.Index(refs, "merge")) {
+	if !strings.Contains(refs, "3 tags") || !strings.Contains(refs, "+1 more branches") || !(strings.Index(refs, "3 tags") < strings.Index(refs, "feature") && strings.Index(refs, "feature") < strings.Index(refs, "main") && strings.Index(refs, "main") < strings.Index(refs, "origin/main") && strings.Index(refs, "origin/main") < strings.Index(refs, "+1 more branches") && strings.Index(refs, "+1 more branches") < strings.Index(refs, "merge")) {
 		t.Fatalf("overflow decorations were not ordered: %q", refs)
 	}
 	row.refs = "main, tag: v1"
 	refs = historyLabel(row)
 	if !strings.Contains(refs, "v1") || strings.Contains(refs, "1 tags") || strings.Index(refs, "v1") > strings.Index(refs, "merge") {
 		t.Fatalf("single tags were not shown by name: %q", refs)
+	}
+}
+
+func TestBranchReferencePartsCollapseUpstreamAndGroupMatchingRemotes(t *testing.T) {
+	branches := []string{
+		"main" + headRefSuffix,
+		"feat1",
+		"feat2",
+		remoteRefPrefix + "origin/main",
+		remoteRefPrefix + "upstream/main",
+		remoteRefPrefix + "origin/feat1",
+		remoteRefPrefix + "upstream/release",
+		remoteRefPrefix + "origin/feat3",
+	}
+	parts := branchReferenceParts(branches, map[string]string{
+		"main":  remoteRefPrefix + "origin/main",
+		"feat2": remoteRefPrefix + "upstream/release",
+	})
+	if len(parts) != 5 || !parts[0].synced || strings.Join(parts[0].branches, ",") != remoteRefPrefix+"origin/main,main"+headRefSuffix || !strings.Contains(parts[0].markup, `> origin/</span><span`) {
+		t.Fatalf("configured upstream was not compacted: %#v", parts)
+	}
+	if strings.Join(parts[1].branches, ",") != remoteRefPrefix+"upstream/main" || strings.Join(parts[2].branches, ",") != "feat1" || strings.Join(parts[3].branches, ",") != remoteRefPrefix+"origin/feat1" {
+		t.Fatalf("same-name remotes were not adjacent to locals: %#v", parts)
+	}
+	if !parts[4].overflow || parts[4].label != "+3 more branches" || strings.Contains(parts[4].markup, "background=") {
+		t.Fatalf("branch overflow was not combined and neutral: %#v", parts[4])
+	}
+}
+
+func TestBranchReferenceOverflowCountsHiddenCollapsedRefs(t *testing.T) {
+	branches := []string{"a", "b", "c", "d", "z", remoteRefPrefix + "origin/z"}
+	parts := branchReferenceParts(branches, map[string]string{"z": remoteRefPrefix + "origin/z"})
+	if len(parts) != 5 || parts[4].label != "+2 more branches" {
+		t.Fatalf("hidden synchronized refs were not both counted: %#v", parts)
 	}
 }

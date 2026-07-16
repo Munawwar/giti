@@ -51,6 +51,10 @@ button.giti-ref-copy {
   min-height: 0;
   min-width: 0;
 }
+button.giti-ref-copy.giti-ref-joined {
+  border-width: 0;
+  margin: 0;
+}
 textview.giti-references text selection {
   background-color: @theme_selected_bg_color;
   color: @theme_selected_fg_color;
@@ -234,10 +238,10 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		if len(indices) == 1 && indices[0] < len(app.historyRows) {
 			row := app.historyRows[indices[0]]
 			branches, tags := referenceLists(row.refs)
-			if row.kind != "commit" || len(branches) <= 2 && len(tags) <= 2 {
+			if row.kind != "commit" {
 				return false
 			}
-			prefix := "<b>" + html.EscapeString(row.subject) + "</b>"
+			prefix := ""
 			measure := func(markup string) (int, int) {
 				label := must(gtk.LabelNew(""))
 				label.SetMarkup(markup)
@@ -246,10 +250,9 @@ func (app *giti) buildWindow(application *gtk.Application) {
 				label.Destroy()
 				return width, height
 			}
-			for _, part := range referenceParts(referenceLists(row.refs)) {
-				prefix += "  "
+			for _, part := range historyReferenceParts(row) {
 				if !part.overflow {
-					prefix += part.markup
+					prefix += part.markup + "  "
 					continue
 				}
 				start, height := measure(prefix)
@@ -259,6 +262,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 					app.showReferences(branches, tags)
 					return true
 				}
+				prefix += "  "
 			}
 		}
 		return false
@@ -780,17 +784,99 @@ func referenceAppearance(value, kind string) (display, style, background, foregr
 
 type referencePart struct {
 	markup   string
+	label    string
+	branches []string
+	segments []string
+	synced   bool
 	overflow bool
 }
 
-func referenceParts(branches, tags []string) []referencePart {
-	parts := make([]referencePart, 0, 6)
-	for _, branch := range branches[:min(2, len(branches))] {
-		parts = append(parts, referencePart{markup: referenceBadge(branch, "branch")})
+type remoteBranch struct {
+	value, display, remote, path string
+}
+
+func syncedBranchBadges(local string, remote remoteBranch) (combined, remoteBadge, localBadge string) {
+	localDisplay, _, localBackground, localForeground := referenceAppearance(local, "branch")
+	_, _, remoteBackground, remoteForeground := referenceAppearance(remote.value, "branch")
+	prefix := strings.TrimSuffix(remote.display, remote.path)
+	remoteBadge = fmt.Sprintf(`<span background="%s" foreground="%s" weight="bold"> %s</span>`, remoteBackground, remoteForeground, html.EscapeString(prefix))
+	localBadge = fmt.Sprintf(`<span background="%s" foreground="%s" weight="bold">%s </span>`, localBackground, localForeground, html.EscapeString(localDisplay))
+	return remoteBadge + localBadge, remoteBadge, localBadge
+}
+
+func branchReferenceParts(branches []string, upstreams map[string]string) []referencePart {
+	const displayLimit = 4
+	locals, remotes := make([]string, 0, len(branches)), make([]remoteBranch, 0, len(branches))
+	for _, branch := range branches {
+		if !strings.HasPrefix(branch, remoteRefPrefix) {
+			locals = append(locals, branch)
+			continue
+		}
+		display := strings.TrimPrefix(branch, remoteRefPrefix)
+		remote, path := display, ""
+		if separator := strings.IndexByte(display, '/'); separator >= 0 {
+			remote, path = display[:separator], display[separator+1:]
+		}
+		remotes = append(remotes, remoteBranch{branch, display, remote, path})
 	}
-	if len(branches) > 2 {
-		parts = append(parts, referencePart{markup: referenceBadge("+ more branches", "branch"), overflow: true})
+	locals, _ = sortedReferences(locals, nil)
+	sort.Slice(remotes, func(left, right int) bool {
+		if remotes[left].path != remotes[right].path {
+			return remotes[left].path < remotes[right].path
+		}
+		if remotes[left].remote != remotes[right].remote {
+			return remotes[left].remote < remotes[right].remote
+		}
+		return remotes[left].value < remotes[right].value
+	})
+	byValue, used := make(map[string]remoteBranch, len(remotes)), make(map[string]bool, len(remotes))
+	for _, remote := range remotes {
+		byValue[remote.value] = remote
 	}
+	parts := make([]referencePart, 0, len(branches)+1)
+	for _, local := range locals {
+		name := strings.TrimSuffix(local, headRefSuffix)
+		upstream, tracks := byValue[upstreams[name]]
+		tracks = tracks && !used[upstream.value]
+		if tracks && name != "HEAD" && upstream.path == name {
+			markup, remoteBadge, localBadge := syncedBranchBadges(local, upstream)
+			parts = append(parts, referencePart{markup: markup, branches: []string{upstream.value, local}, segments: []string{remoteBadge, localBadge}, synced: true})
+			used[upstream.value] = true
+		} else {
+			parts = append(parts, referencePart{markup: referenceBadge(local, "branch"), branches: []string{local}})
+			if tracks {
+				parts = append(parts, referencePart{markup: referenceBadge(upstream.value, "branch"), branches: []string{upstream.value}})
+				used[upstream.value] = true
+			}
+		}
+		if name == "HEAD" {
+			continue
+		}
+		for _, remote := range remotes {
+			if !used[remote.value] && remote.path == name {
+				parts = append(parts, referencePart{markup: referenceBadge(remote.value, "branch"), branches: []string{remote.value}})
+				used[remote.value] = true
+			}
+		}
+	}
+	for _, remote := range remotes {
+		if !used[remote.value] {
+			parts = append(parts, referencePart{markup: referenceBadge(remote.value, "branch"), branches: []string{remote.value}})
+		}
+	}
+	if len(parts) <= displayLimit {
+		return parts
+	}
+	hidden := 0
+	for _, part := range parts[displayLimit:] {
+		hidden += len(part.branches)
+	}
+	label := fmt.Sprintf("+%d more branches", hidden)
+	return append(parts[:displayLimit], referencePart{markup: `<span foreground="#4b5563" weight="bold">` + label + `</span>`, label: label, overflow: true})
+}
+
+func referenceParts(branches, tags []string, upstreams map[string]string) []referencePart {
+	parts := branchReferenceParts(branches, upstreams)
 	for _, tag := range tags[:min(2, len(tags))] {
 		parts = append(parts, referencePart{markup: referenceBadge(tag, "tag")})
 	}
@@ -800,20 +886,23 @@ func referenceParts(branches, tags []string) []referencePart {
 	return parts
 }
 
+func historyReferenceParts(row historyRow) []referencePart {
+	branches, tags := referenceLists(row.refs)
+	parts := make([]referencePart, 0, 6)
+	if len(tags) == 1 {
+		parts = append(parts, referencePart{markup: referenceBadge(tags[0], "tag")})
+	} else if len(tags) > 1 {
+		parts = append(parts, referencePart{markup: referenceBadge(fmt.Sprintf("%d tags", len(tags)), "tag"), overflow: true})
+	}
+	return append(parts, branchReferenceParts(branches, row.upstreams)...)
+}
+
 func historyLabel(row historyRow) string {
 	if row.kind != "commit" {
 		return "<b>" + html.EscapeString(row.subject) + "</b>"
 	}
-	branches, tags := referenceLists(row.refs)
 	var refs strings.Builder
-	if len(tags) == 1 {
-		refs.WriteString(referenceBadge(tags[0], "tag"))
-		refs.WriteString("  ")
-	} else if len(tags) > 1 {
-		refs.WriteString(referenceBadge(fmt.Sprintf("%d tags", len(tags)), "tag"))
-		refs.WriteString("  ")
-	}
-	for _, part := range referenceParts(branches, nil) {
+	for _, part := range historyReferenceParts(row) {
 		refs.WriteString(part.markup)
 		refs.WriteString("  ")
 	}
@@ -988,7 +1077,7 @@ func (app *giti) renderGraphSearch(query string) {
 
 func searchResultMarkup(match searchMatch) string {
 	var badges strings.Builder
-	for _, part := range referenceParts(match.branches, match.tags) {
+	for _, part := range referenceParts(match.branches, match.tags, match.row.upstreams) {
 		badges.WriteString("  ")
 		badges.WriteString(part.markup)
 	}
@@ -1065,38 +1154,66 @@ func (app *giti) setCommitHeader(details commitDetails) {
 	app.commitHeader.PackStart(meta, false, false, 0)
 	if len(details.branches) > 0 || len(details.tags) > 0 {
 		refs := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 6))
-		addBadge := func(value, kind string) {
+		addBadge := func(target *gtk.Box, value, kind, markup, description string) *gtk.Button {
 			display, _, _, _ := referenceAppearance(value, kind)
+			copyValue := display
+			if kind == "branch" && strings.HasSuffix(value, headRefSuffix) {
+				copyValue = strings.TrimSuffix(value, headRefSuffix)
+			}
 			label := must(gtk.LabelNew(""))
 			label.SetXAlign(0)
 			label.SetEllipsize(pango.ELLIPSIZE_END)
 			label.SetMaxWidthChars(28)
-			label.SetMarkup(referenceBadge(value, kind))
+			if markup == "" {
+				markup = referenceBadge(value, kind)
+			}
+			label.SetMarkup(markup)
 			button := must(gtk.ButtonNew())
 			button.SetRelief(gtk.RELIEF_NONE)
-			button.SetTooltipText("Copy " + kind + ": " + display)
-			setAccessibility(&button.Widget, "Copy "+kind+" "+display, "Copy the complete reference name to the clipboard")
+			button.SetTooltipText("Copy " + kind + ": " + copyValue)
+			if description == "" {
+				description = "Copy the complete reference name to the clipboard"
+			}
+			setAccessibility(&button.Widget, "Copy "+kind+" "+copyValue, description)
 			context, _ := button.GetStyleContext()
 			context.AddClass("giti-ref-copy")
 			button.Add(label)
 			button.Connect("clicked", func() {
-				app.copyToClipboard(display, "Copied "+kind+" to clipboard.")
+				app.copyToClipboard(copyValue, "Copied "+kind+" to clipboard.")
 			})
 			app.headerReferenceButtons = append(app.headerReferenceButtons, button)
-			refs.PackStart(button, false, false, 0)
+			target.PackStart(button, false, false, 0)
+			return button
 		}
-		for _, branch := range details.branches[:min(2, len(details.branches))] {
-			addBadge(branch, "branch")
-		}
-		if len(details.branches) > 2 {
-			more := must(gtk.ButtonNewWithLabel("+ more branches"))
-			more.SetRelief(gtk.RELIEF_NONE)
-			more.SetTooltipText("Show all branches for this commit")
-			more.Connect("clicked", func() { app.showReferences(details.branches, details.tags) })
-			refs.PackStart(more, false, false, 0)
+		for _, part := range branchReferenceParts(details.branches, details.upstreams) {
+			if part.overflow {
+				more := must(gtk.ButtonNewWithLabel(part.label))
+				more.SetRelief(gtk.RELIEF_NONE)
+				more.SetTooltipText("Show all branches for this commit")
+				setAccessibility(&more.Widget, "Show hidden branches", "Open the complete branch and tag list")
+				more.Connect("clicked", func() { app.showReferences(details.branches, details.tags) })
+				refs.PackStart(more, false, false, 0)
+				continue
+			}
+			if !part.synced {
+				addBadge(refs, part.branches[0], "branch", "", "")
+				continue
+			}
+			group := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
+			remote, local := part.branches[0], part.branches[1]
+			remoteDisplay, _, _, _ := referenceAppearance(remote, "branch")
+			localDisplay, _, _, _ := referenceAppearance(local, "branch")
+			for _, button := range []*gtk.Button{
+				addBadge(group, remote, "branch", part.segments[0], "Copy the remote branch "+remoteDisplay+"; it matches local branch "+localDisplay),
+				addBadge(group, local, "branch", part.segments[1], "Copy the local branch "+localDisplay+"; it matches configured upstream "+remoteDisplay),
+			} {
+				context, _ := button.GetStyleContext()
+				context.AddClass("giti-ref-joined")
+			}
+			refs.PackStart(group, false, false, 0)
 		}
 		for _, tag := range details.tags[:min(2, len(details.tags))] {
-			addBadge(tag, "tag")
+			addBadge(refs, tag, "tag", "", "")
 		}
 		if len(details.tags) > 2 {
 			more := must(gtk.ButtonNewWithLabel("+ more tags"))

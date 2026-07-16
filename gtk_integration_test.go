@@ -217,6 +217,33 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	if expandedHeader != compactHeader+1 || titleErr != nil || metaErr != nil || referenceErr != nil || !referenceValid || !headerTitle.GetSelectable() || !headerMeta.GetSelectable() {
 		t.Fatalf("commit header copy control is incomplete: compact=%d body=%d title=%v meta=%v reference=%q/%v/%v/%v copied=%q/%v notification=%q/%v content=%dx%d/%dx%d", compactHeader, expandedHeader, titleErr, metaErr, referenceValue, referenceErr, labelOK, textErr, copiedReference, copyReferenceErr, copyNotification, notificationErr, contentWidth, contentHeight, app.mainPane.GetAllocatedWidth(), app.mainPane.GetAllocatedHeight())
 	}
+	syncedDetails := commitDetails{
+		sha:       strings.Repeat("b", 40),
+		subject:   "synchronized branches",
+		branches:  []string{"main" + headRefSuffix, remoteRefPrefix + "origin/main"},
+		upstreams: map[string]string{"main": remoteRefPrefix + "origin/main"},
+	}
+	app.setCommitHeader(syncedDetails)
+	if len(app.headerReferenceButtons) != 2 {
+		t.Fatalf("synchronized branch did not create two copy targets: %d", len(app.headerReferenceButtons))
+	}
+	wantLabels, wantCopies := []string{"origin/", "main ← HEAD"}, []string{"origin/main", "main"}
+	for index, button := range app.headerReferenceButtons {
+		child, childErr := button.GetChild()
+		label, labelOK := child.(*gtk.Label)
+		text := ""
+		if labelOK {
+			text, _ = label.GetText()
+		}
+		button.Clicked()
+		for gtk.EventsPending() {
+			gtk.MainIteration()
+		}
+		copied, copyErr := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD)).WaitForText()
+		if childErr != nil || !labelOK || strings.TrimSpace(text) != wantLabels[index] || copyErr != nil || copied != wantCopies[index] || button.GetAllocatedWidth() != label.GetAllocatedWidth() {
+			t.Fatalf("synchronized branch segment %d is incomplete: label=%q child=%v type=%v copied=%q/%v widths=%d/%d", index, text, childErr, labelOK, copied, copyErr, button.GetAllocatedWidth(), label.GetAllocatedWidth())
+		}
+	}
 	defer func() {
 		app.clearRepositoryView()
 		app.window.Destroy()

@@ -29,12 +29,14 @@ type historyRow struct {
 	searchSubject, searchBody, searchRefs             string
 	timestamp                                         int64
 	parents                                           []string
+	upstreams                                         map[string]string
 	graph                                             graphLayout
 }
 
 type commitDetails struct {
 	sha, subject, body, author, authorEmail, authored, committer, committerEmail, committed string
 	parents, branches, tags                                                                 []string
+	upstreams                                                                               map[string]string
 }
 
 type changedFile struct {
@@ -65,6 +67,36 @@ func sortedReferences(branches, tags []string) ([]string, []string) {
 	})
 	sort.Strings(tags)
 	return branches, tags
+}
+
+func referenceMetadata(output string) (branches, tags []string, upstreams map[string]string) {
+	upstreams = make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
+		fields := strings.SplitN(line, "\x00", 3)
+		ref := fields[0]
+		upstream := ""
+		if len(fields) > 1 {
+			upstream = fields[1]
+		}
+		switch {
+		case strings.HasPrefix(ref, "refs/tags/"):
+			tags = append(tags, strings.TrimPrefix(ref, "refs/tags/"))
+		case strings.HasPrefix(ref, "refs/heads/"):
+			branch := strings.TrimPrefix(ref, "refs/heads/")
+			display := branch
+			if len(fields) > 2 && strings.TrimSpace(fields[2]) == "*" {
+				display += headRefSuffix
+			}
+			branches = append(branches, display)
+			if upstream != "" {
+				upstreams[branch] = upstream
+			}
+		case strings.HasPrefix(ref, remoteRefPrefix):
+			branches = append(branches, ref)
+		}
+	}
+	branches, tags = sortedReferences(branches, tags)
+	return
 }
 
 func (file changedFile) label() string {
@@ -214,6 +246,11 @@ func (repo *repository) historyIndexContext(ctx context.Context, revision string
 }
 
 func (repo *repository) historyContext(ctx context.Context, count int, ignoreWhitespace, includeMessages bool) ([]historyRow, bool, error) {
+	metadata, err := repo.runContext(ctx, "for-each-ref", "--format=%(refname)%00%(upstream)%00%(HEAD)", "refs/heads/")
+	if err != nil {
+		return nil, false, err
+	}
+	_, _, upstreams := referenceMetadata(metadata)
 	fields := []string{"%H", "%P", "%an", "%as", "%at", "%D", "%s"}
 	if includeMessages {
 		fields = append(fields, "%b")
@@ -244,7 +281,7 @@ func (repo *repository) historyContext(ctx context.Context, count int, ignoreWhi
 		if includeMessages {
 			body = strings.TrimSpace(values[7])
 		}
-		row := historyRow{kind: "commit", revision: values[0], parents: strings.Fields(values[1]), author: values[2], date: values[3], timestamp: timestamp, refs: strings.TrimSpace(values[5]), subject: values[6], body: body}
+		row := historyRow{kind: "commit", revision: values[0], parents: strings.Fields(values[1]), author: values[2], date: values[3], timestamp: timestamp, refs: strings.TrimSpace(values[5]), subject: values[6], body: body, upstreams: upstreams}
 		row.searchSubject, row.searchBody, row.searchRefs = strings.ToLower(row.subject), strings.ToLower(row.body), strings.ToLower(row.refs)
 		commits = append(commits, row)
 	}
@@ -267,21 +304,11 @@ func (repo *repository) commitDetailsContext(ctx context.Context, revision strin
 		parts = append(parts, "")
 	}
 	details := commitDetails{sha: parts[0], subject: parts[1], author: parts[2], authorEmail: parts[3], authored: parts[4], committer: parts[5], committerEmail: parts[6], committed: parts[7], parents: strings.Fields(parts[8]), body: strings.TrimSpace(parts[9])}
-	refs, err := repo.runContext(ctx, "for-each-ref", "--format=%(refname)", "--points-at="+revision)
+	refs, err := repo.runContext(ctx, "for-each-ref", "--format=%(refname)%00%(upstream)%00%(HEAD)", "--points-at="+revision)
 	if err != nil {
 		return commitDetails{}, err
 	}
-	for _, ref := range strings.Split(strings.TrimSuffix(refs, "\n"), "\n") {
-		switch {
-		case strings.HasPrefix(ref, "refs/tags/"):
-			details.tags = append(details.tags, strings.TrimPrefix(ref, "refs/tags/"))
-		case strings.HasPrefix(ref, "refs/heads/"):
-			details.branches = append(details.branches, strings.TrimPrefix(ref, "refs/heads/"))
-		case strings.HasPrefix(ref, "refs/remotes/"):
-			details.branches = append(details.branches, ref)
-		}
-	}
-	details.branches, details.tags = sortedReferences(details.branches, details.tags)
+	details.branches, details.tags, details.upstreams = referenceMetadata(refs)
 	return details, nil
 }
 
