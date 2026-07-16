@@ -45,6 +45,13 @@ func TestLaunchModeUsesAnotherWindowWhenResidentIsBusy(t *testing.T) {
 func TestContactResident(t *testing.T) {
 	runtimeDir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+	request := openRequest{Path: "/repo", Revision: "main"}
+	if response := contactResident(request); response != "" {
+		t.Fatalf("unexpected response without resident %q", response)
+	}
+	if _, err := os.Stat(filepath.Join(runtimeDir, "giti.sock")); !os.IsNotExist(err) {
+		t.Fatalf("launcher created a socket: %v", err)
+	}
 	listener, err := net.Listen("unix", filepath.Join(runtimeDir, "giti.sock"))
 	if err != nil {
 		t.Fatal(err)
@@ -61,18 +68,8 @@ func TestContactResident(t *testing.T) {
 			connection.Write([]byte("OK\n"))
 		}
 	}()
-	if response := contactResident(openRequest{Path: "/repo", Revision: "main"}); response != "OK" {
+	if response := contactResident(request); response != "OK" {
 		t.Fatalf("unexpected response %q", response)
-	}
-}
-
-func TestContactResidentMissing(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	if response := contactResident(openRequest{Path: "/repo", Revision: "HEAD"}); response != "" {
-		t.Fatalf("unexpected response without resident %q", response)
-	}
-	if _, err := os.Stat(filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "giti.sock")); !os.IsNotExist(err) {
-		t.Fatalf("launcher created a socket: %v", err)
 	}
 }
 

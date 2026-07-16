@@ -7,8 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func testRepository(t *testing.T) string {
@@ -249,15 +252,27 @@ func TestRenameAndCopyDetection(t *testing.T) {
 }
 
 func TestCanceledGitWorkStops(t *testing.T) {
-	repo, err := newRepository(testRepository(t), "HEAD")
-	if err != nil {
+	bin, pidFile := t.TempDir(), filepath.Join(t.TempDir(), "git.pid")
+	git := filepath.Join(bin, "git")
+	if err := os.WriteFile(git, []byte("#!/bin/sh\nprintf '%s' \"$$\" >\"$GITI_TEST_PID\"\nexec sleep 30\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err = repo.changedFilesContext(ctx, historyRow{kind: "commit", revision: repo.revision}, true)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled Git work returned %v", err)
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	t.Setenv("GITI_TEST_PID", pidFile)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := (&repository{path: t.TempDir()}).runContext(ctx, "status")
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(started) > time.Second {
+		t.Fatalf("canceled Git process returned %v after %v", err, time.Since(started))
+	}
+	data, readErr := os.ReadFile(pidFile)
+	pid, parseErr := strconv.Atoi(string(data))
+	if readErr != nil || parseErr != nil {
+		t.Fatalf("Git process did not record its PID: %q, %v, %v", data, readErr, parseErr)
+	}
+	if killErr := syscall.Kill(pid, 0); !errors.Is(killErr, syscall.ESRCH) {
+		t.Fatalf("canceled Git process %d is still alive: %v", pid, killErr)
 	}
 }
 

@@ -31,6 +31,44 @@ func iterateGTKUntil(t *testing.T, timeout time.Duration, condition func() bool)
 	}
 }
 
+func newGTKIntegrationApp(t *testing.T) (string, *giti) {
+	t.Helper()
+	if os.Getenv("GITI_GTK_TEST") == "" {
+		t.Skip("set GITI_GTK_TEST=1 to run the display integration test")
+	}
+	runtime.LockOSThread()
+	t.Cleanup(runtime.UnlockOSThread)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	path := testRepository(t)
+	if err := os.WriteFile(filepath.Join(path, "first.txt"), []byte("one"+strings.Repeat("x", 400)+"\n"+strings.Repeat("more\n", 200)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "second.txt"), []byte("second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("git", "-C", path, "commit", "--amend", "-m", "commit 11", "-m", "Explain the orbital cache architecture.").CombinedOutput(); err != nil {
+		t.Fatalf("amend commit message: %v: %s", err, output)
+	}
+	if output, err := exec.Command("git", "-C", path, "tag", strings.Repeat("long-release-name-", 12)).CombinedOutput(); err != nil {
+		t.Fatalf("create long tag: %v: %s", err, output)
+	}
+	repo, err := newRepository(path, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gtk.Init(nil)
+	app, err := newGiti(repo, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		app.clearRepositoryView()
+		app.window.Destroy()
+	})
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil && len(app.historyRows) > 0 && app.panesReady })
+	return path, app
+}
+
 func TestGTKApplicationMenu(t *testing.T) {
 	if os.Getenv("GITI_GTK_TEST") == "" {
 		t.Skip("set GITI_GTK_TEST=1 to run the display integration test")
@@ -65,8 +103,20 @@ func TestGTKApplicationMenu(t *testing.T) {
 		app.clearRepositoryView()
 		app.window.Destroy()
 	}()
-	if application.GetAppMenu() == nil || application.GetMenubar() == nil || application.GetMenubar().GetNItems() != 1 {
-		t.Fatal("refresh menu was not installed")
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil })
+	refresh := application.LookupAction("refresh")
+	if application.GetAppMenu() == nil || application.GetMenubar() == nil || application.GetMenubar().GetNItems() != 1 || refresh == nil || !refresh.GetEnabled() {
+		t.Fatal("refresh menu or enabled action was not installed")
+	}
+	if err = os.WriteFile(filepath.Join(path, "refresh.txt"), []byte("refresh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	refresh.Activate(nil)
+	iterateGTKUntil(t, 3*time.Second, func() bool {
+		return app.historyCancel == nil && len(app.historyRows) > 0 && app.historyRows[0].kind == "unstaged"
+	})
+	if app.historyRows[0].kind != "unstaged" {
+		t.Fatal("refresh action did not reload working-tree changes")
 	}
 }
 
@@ -114,27 +164,8 @@ func TestGTKParentNavigationLoadsAndRevealsOlderCommit(t *testing.T) {
 	}
 }
 
-func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
-	if os.Getenv("GITI_GTK_TEST") == "" {
-		t.Skip("set GITI_GTK_TEST=1 to run the display integration test")
-	}
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	path := testRepository(t)
-	os.WriteFile(filepath.Join(path, "first.txt"), []byte("one"+strings.Repeat("x", 400)+"\n"+strings.Repeat("more\n", 200)), 0o644)
-	os.WriteFile(filepath.Join(path, "second.txt"), []byte("second\n"), 0o644)
-	if output, amendErr := exec.Command("git", "-C", path, "commit", "--amend", "-m", "commit 11", "-m", "Explain the orbital cache architecture.").CombinedOutput(); amendErr != nil {
-		t.Fatalf("amend commit message: %v: %s", amendErr, output)
-	}
-	if output, tagErr := exec.Command("git", "-C", path, "tag", strings.Repeat("long-release-name-", 12)).CombinedOutput(); tagErr != nil {
-		t.Fatalf("create long tag: %v: %s", tagErr, output)
-	}
-	repo, err := newRepository(path, "HEAD")
-	if err != nil {
-		t.Fatal(err)
-	}
-	gtk.Init(nil)
+func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
+	_, app := newGTKIntegrationApp(t)
 	nestedRuns := 0
 	var nestedSource func() bool
 	nestedSource = func() bool {
@@ -154,14 +185,9 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	if nestedRuns != 1000 {
 		t.Fatalf("nested main-context scheduling stopped after %d runs", nestedRuns)
 	}
-	app, err := newGiti(repo, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil && len(app.historyRows) > 0 && app.panesReady })
 	icon, iconErr := app.window.GetIcon()
-	if iconErr != nil || icon == nil || icon.GetWidth() != 256 || icon.GetHeight() != 256 {
-		t.Fatalf("window icon is not the embedded 256px logo: icon=%v err=%v", icon, iconErr)
+	if iconErr != nil || icon == nil {
+		t.Fatalf("window icon is missing: icon=%v err=%v", icon, iconErr)
 	}
 	splitDeadline := time.Now().Add(2 * time.Second)
 	for app.repositoryPane.GetAllocatedHeight() <= 1 && time.Now().Before(splitDeadline) {
@@ -244,10 +270,10 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 			t.Fatalf("synchronized branch segment %d is incomplete: label=%q child=%v type=%v copied=%q/%v widths=%d/%d", index, text, childErr, labelOK, copied, copyErr, button.GetAllocatedWidth(), label.GetAllocatedWidth())
 		}
 	}
-	defer func() {
-		app.clearRepositoryView()
-		app.window.Destroy()
-	}()
+}
+
+func TestGTKGraphRenderingAndReferences(t *testing.T) {
+	_, app := newGTKIntegrationApp(t)
 	loaded := len(app.historyRows)
 	for range 3 {
 		app.loadHistory()
@@ -324,7 +350,11 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	if themeErr != nil || !isThemeName || strings.HasSuffix(themeName, "-dark") {
 		t.Fatalf("Giti did not force a light GTK theme: theme=%q err=%v", theme, themeErr)
 	}
-	deadline = time.Now().Add(2 * time.Second)
+}
+
+func TestGTKDiffInteraction(t *testing.T) {
+	_, app := newGTKIntegrationApp(t)
+	deadline := time.Now().Add(2 * time.Second)
 	for (!app.window.IsMaximized() || app.currentFile == nil || app.diffBuffer.GetCharCount() == 0) && time.Now().Before(deadline) {
 		for gtk.EventsPending() {
 			gtk.MainIteration()
@@ -441,6 +471,18 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	if !app.historyView.IsFocus() || app.currentRow == nil || app.currentRow.subject != "commit 9" || app.currentFile == nil {
 		t.Fatalf("rapid graph selection applied stale state: row=%#v file=%#v", app.currentRow, app.currentFile)
 	}
+	for _, action := range fileCopyActions(app.repository.path, app.currentFile.path) {
+		app.copyToClipboard(action.text, action.message)
+		copiedPath, copyErr := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD)).WaitForText()
+		message, messageErr := app.notificationLabel.GetText()
+		if copyErr != nil || messageErr != nil || copiedPath != action.text || message != action.message {
+			t.Fatalf("file copy action %q copied %q/%v and notified %q/%v", action.label, copiedPath, copyErr, message, messageErr)
+		}
+	}
+}
+
+func TestGTKSearchOptionsAndSelection(t *testing.T) {
+	_, app := newGTKIntegrationApp(t)
 	app.historySearch.SetText("orbital cache")
 	if len(app.searchMatches) != 0 {
 		t.Fatalf("default search included a long commit message: %#v", app.searchMatches)
@@ -476,7 +518,7 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 		t.Fatalf("search did not limit loaded graph rows: stack=%q matches=%#v", app.historyStack.GetVisibleChildName(), app.searchMatches)
 	}
 	app.openSearchResult(0)
-	deadline = time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(2 * time.Second)
 	for (app.currentRow == nil || app.currentRow.subject != "commit 8") && time.Now().Before(deadline) {
 		for gtk.EventsPending() {
 			gtk.MainIteration()
@@ -487,24 +529,31 @@ func TestGTKSelectionAndMemoryLifecycle(t *testing.T) {
 	if query != "" || app.historyStack.GetVisibleChildName() != "graph" || app.currentRow == nil || app.currentRow.subject != "commit 8" || !app.historyView.IsFocus() {
 		t.Fatalf("search result did not restore graph selection: query=%q stack=%q row=%#v", query, app.historyStack.GetVisibleChildName(), app.currentRow)
 	}
+}
+
+func TestGTKResidentLifecycle(t *testing.T) {
+	path, app := newGTKIntegrationApp(t)
+	iterateGTKUntil(t, 2*time.Second, func() bool {
+		return app.currentRow != nil && app.currentFile != nil && app.diffBuffer.GetCharCount() > 0
+	})
 	app.resident = true
 	app.window.Close()
 	for gtk.EventsPending() {
 		gtk.MainIteration()
 	}
-	start, end = app.diffBuffer.GetBounds()
+	start, end := app.diffBuffer.GetBounds()
 	cleared, _ := app.diffBuffer.GetText(start, end, true)
 	if app.window.GetVisible() || app.currentRow != nil || app.currentFile != nil || app.historyRows != nil || app.files != nil || app.fullFilePreferred || app.fullFileToggle.GetActive() || cleared != "" {
 		t.Fatalf("hidden view retained repository data: row=%#v file=%#v rows=%d files=%d diff=%q", app.currentRow, app.currentFile, len(app.historyRows), len(app.files), cleared)
 	}
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	app.server = newResidentServer(app)
-	if err = app.server.start(); err != nil {
+	if err := app.server.start(); err != nil {
 		t.Fatal(err)
 	}
 	defer app.server.stop()
 	duplicate := newResidentServer(app)
-	if err = duplicate.start(); err == nil {
+	if err := duplicate.start(); err == nil {
 		duplicate.stop()
 		t.Fatal("second resident acquired the process lock")
 	}

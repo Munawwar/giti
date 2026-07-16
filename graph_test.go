@@ -2,8 +2,6 @@ package main
 
 import "testing"
 
-var testOnlyBinaryMarker = "giti-test-code-must-not-ship-8cf139b7"
-
 func TestGraphLayoutLinear(t *testing.T) {
 	rows := []historyRow{
 		{kind: "commit", revision: "c", parents: []string{"b"}},
@@ -19,7 +17,7 @@ func TestGraphLayoutLinear(t *testing.T) {
 			t.Fatalf("row %d lost its vertical edge: %#v", index, row.graph.lanes)
 		}
 	}
-	if len(rows[0].graph.next) != 1 || rows[0].graph.next[0].from[0] != 0 || testOnlyBinaryMarker == "" {
+	if len(rows[0].graph.next) != 1 || rows[0].graph.next[0].from[0] != 0 {
 		t.Fatalf("next-row edge missing: %#v", rows[0].graph.next)
 	}
 }

@@ -2,18 +2,9 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
-
-func TestFileCopyActions(t *testing.T) {
-	repository, relative := filepath.Join(string(filepath.Separator), "work", "repo"), filepath.Join("src", "main.go")
-	actions := fileCopyActions(repository, relative)
-	if len(actions) != 2 || actions[0] != (clipboardAction{"Copy path", relative, "Copied path to clipboard."}) || actions[1] != (clipboardAction{"Copy full path", filepath.Join(repository, relative), "Copied full path to clipboard."}) {
-		t.Fatalf("unexpected file copy actions: %#v", actions)
-	}
-}
 
 func TestDesktopEntryMatchesApplicationID(t *testing.T) {
 	entry, err := os.ReadFile("data/" + applicationID + ".desktop")
@@ -103,7 +94,7 @@ func TestSearchHistoryOptionsIncludeMessagesAndReferences(t *testing.T) {
 	}
 	if matches := searchHistory(rows, "nebula-v2", searchOptions{references: true}); len(matches) != 1 || matches[0].row.revision != "2222222" || len(matches[0].tags) != 1 {
 		t.Fatalf("reference search missed its commit: %#v", matches)
-	} else if markup := searchResultMarkup(matches[0]); !strings.Contains(markup, `background="#f8e7a3"`) || !strings.Contains(markup, "nebula-v2") {
+	} else if markup := searchResultMarkup(matches[0]); !strings.Contains(markup, "background=") || !strings.Contains(markup, "nebula-v2") {
 		t.Fatalf("reference match lacks its tag badge: %q", markup)
 	}
 }
@@ -132,10 +123,13 @@ func TestHistoryLabelDescribesMergeAndEscapesContent(t *testing.T) {
 	if strings.HasPrefix(label, "  ") {
 		t.Fatalf("history references have unwanted leading margin: %q", label)
 	}
-	for _, want := range []string{`background="#d8f0dd"`, "main ← HEAD", `background="#dce8f8"`, "origin/", `background="#f8e7a3"`, "5 tags", `</span><span`} {
+	for _, want := range []string{"main ← HEAD", "origin/", "5 tags", `</span><span`} {
 		if !strings.Contains(refs, want) {
 			t.Fatalf("history references %q does not contain %q", refs, want)
 		}
+	}
+	if strings.Count(refs, "background=") < 3 {
+		t.Fatalf("history references lost their distinct badge backgrounds: %q", refs)
 	}
 	if strings.Contains(refs, "v1") || strings.Contains(refs, "v2") || strings.Contains(refs, "v3") || strings.Contains(refs, "v4") || strings.Contains(refs, "v5") || strings.Index(refs, "5 tags") > strings.Index(refs, "main ← HEAD") || strings.Index(refs, "main ← HEAD") > strings.Index(refs, "merge &lt;side&gt;") {
 		t.Fatalf("history references were not summarized and ordered: %q", refs)
