@@ -69,14 +69,24 @@ func (server *residentServer) start() error {
 }
 
 func (server *residentServer) serve() {
+	// Listener exhaustion and other transient failures must not turn the resident
+	// process into a tight retry loop; a successful accept resets the backoff.
+	retryDelay := time.Duration(0)
 	for {
 		connection, err := server.listener.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
+			if retryDelay == 0 {
+				retryDelay = 10 * time.Millisecond
+			} else {
+				retryDelay = min(2*retryDelay, time.Second)
+			}
+			time.Sleep(retryDelay)
 			continue
 		}
+		retryDelay = 0
 		go server.handle(connection)
 	}
 }

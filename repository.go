@@ -321,6 +321,8 @@ func (repo *repository) changedFiles(row historyRow, ignoreWhitespace bool) ([]c
 }
 
 func (repo *repository) changedFilesContext(ctx context.Context, row historyRow, ignoreWhitespace bool) ([]changedFile, error) {
+	// Commit rows compare against the first parent, matching the single-parent
+	// diff shown elsewhere; root commits compare against Git's empty tree.
 	args := []string{"diff", "--find-renames", "--find-copies"}
 	if row.kind == "staged" {
 		args = append(args, "--cached")
@@ -335,6 +337,14 @@ func (repo *repository) changedFilesContext(ctx context.Context, row historyRow,
 		}
 		args = append(args, parent, row.revision)
 	}
+	// --name-status -z emits:
+	//
+	//	<status> NUL <path> NUL
+	//	<status> NUL <old-path> NUL <new-path> NUL  (rename or copy)
+	//
+	// Status is A added, M modified, D deleted, T type-changed, U unmerged,
+	// R<score> renamed, C<score> copied, X unknown, or B pairing-broken.
+	// Giti adds ?? separately for untracked files.
 	statusArgs := append(append([]string(nil), args...), "--name-status", "-z")
 	output, err := repo.runContext(ctx, statusArgs...)
 	if err != nil {
@@ -362,6 +372,12 @@ func (repo *repository) changedFilesContext(ctx context.Context, row historyRow,
 			}
 		}
 	}
+	// --numstat -z emits:
+	//
+	//	<added-lines> TAB <deleted-lines> TAB <path> NUL
+	//	<added-lines> TAB <deleted-lines> TAB NUL <old-path> NUL <new-path> NUL
+	//
+	// Binary files use "-" for both line counts.
 	statArgs := append(append([]string(nil), args...), "--numstat", "-z")
 	if ignoreWhitespace {
 		statArgs = append(statArgs, "--ignore-all-space")
@@ -395,6 +411,8 @@ func (repo *repository) changedFilesContext(ctx context.Context, row historyRow,
 			visiblePaths[path], stats[path] = true, stat
 		}
 	}
+	// The whitespace-aware numstat result doubles as the visibility set. Untracked
+	// files remain visible but deliberately receive no additions/deletions.
 	filtered := files[:0]
 	for _, file := range files {
 		if stat, ok := stats[file.path]; ok {

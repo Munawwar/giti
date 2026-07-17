@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+)
 
 func TestGraphLayoutLinear(t *testing.T) {
 	rows := []historyRow{
@@ -135,6 +139,17 @@ func TestRenderedGraphsReuseIdenticalLaneImages(t *testing.T) {
 	}
 	if graphs[1] != graphs[2] {
 		t.Fatal("identical linear lane rows retained separate pixbufs")
+	}
+}
+
+func TestCanceledGraphRenderReleasesPartialResult(t *testing.T) {
+	checks := 0
+	graphs, err := renderGraphs([]historyRow{{kind: "unstaged"}, {kind: "staged"}}, 48, graphRowHeight, func() bool {
+		checks++
+		return checks > 1
+	})
+	if graphs != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("partial graph render was not canceled: graphs=%v err=%v", graphs, err)
 	}
 }
 

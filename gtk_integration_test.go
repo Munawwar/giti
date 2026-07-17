@@ -236,7 +236,12 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	app.setCommitHeader(details)
 	children = app.commitHeader.GetChildren()
 	expandedHeader := children.Length()
-	headerRow := &gtk.Container{Widget: *children.NthData(0).(*gtk.Widget)}
+	headerRowWidget := children.NthData(0).(*gtk.Widget)
+	headerRowValue, headerRowErr := headerRowWidget.Cast()
+	headerRow, headerRowOK := headerRowValue.(*gtk.Box)
+	if headerRowErr != nil || !headerRowOK {
+		t.Fatalf("commit header title row is not a box: %T %v", headerRowValue, headerRowErr)
+	}
 	headerChildren := headerRow.GetChildren()
 	headerTitle, titleErr := gtk.WidgetToLabel(headerChildren.NthData(0).(*gtk.Widget))
 	headerMeta, metaErr := gtk.WidgetToLabel(children.NthData(2).(*gtk.Widget))
@@ -383,7 +388,7 @@ func TestGTKDiffInteraction(t *testing.T) {
 	iter, hasFile := app.fileStore.GetIterFirst()
 	statMarkup := ""
 	if hasFile {
-		if value, valueErr := app.fileStore.GetValue(iter, 2); valueErr == nil {
+		if value, valueErr := app.fileStore.GetValue(iter, 1); valueErr == nil {
 			statMarkup, _ = value.GetString()
 		}
 	}

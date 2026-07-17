@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"runtime"
 
 	"github.com/gotk3/gotk3/cairo"
 	"github.com/gotk3/gotk3/gdk"
@@ -24,6 +25,18 @@ import (
 
 func renderGraphs(rows []historyRow, width, height int, canceled func() bool) ([]*gdk.Pixbuf, error) {
 	graphs, cache := make([]*gdk.Pixbuf, len(rows)), make(map[string]*gdk.Pixbuf)
+	// Pixbuf storage is native and invisible to Go's heap accounting. Release
+	// incomplete renders eagerly instead of waiting for tiny wrappers to be GC'd.
+	complete := false
+	defer func() {
+		if complete {
+			return
+		}
+		for _, graph := range cache {
+			runtime.SetFinalizer(graph, nil)
+			graph.Unref()
+		}
+	}()
 	for index, row := range rows {
 		if canceled() {
 			return nil, context.Canceled
@@ -39,6 +52,7 @@ func renderGraphs(rows []historyRow, width, height int, canceled func() bool) ([
 		}
 		cache[key], graphs[index] = graph, graph
 	}
+	complete = true
 	return graphs, nil
 }
 
@@ -69,6 +83,7 @@ func layoutGraph(rows []historyRow) {
 	lanes, color := make([]*laneContainer, 0), 0
 	for rowIndex := range rows {
 		row := &rows[rowIndex]
+		// Reuse the lane waiting for this revision, or allocate a new root lane.
 		position := -1
 		for index, container := range lanes {
 			if container.to == row.revision {
@@ -83,6 +98,8 @@ func layoutGraph(rows []historyRow) {
 			lanes[position].from, lanes[position].to = row.revision, ""
 		}
 
+		// Snapshot incoming geometry before mutating the streaming lanes for the
+		// next row; renderGraph needs both sides of every commit boundary.
 		row.graph.position = position
 		row.graph.lanes = make([]graphLane, len(lanes))
 		for index, container := range lanes {
@@ -90,6 +107,8 @@ func layoutGraph(rows []historyRow) {
 			container.lane.from = []int{index}
 		}
 
+		// Route the first parent through the current lane when possible. Additional
+		// parents join existing lanes or allocate new colored merge lanes.
 		mine := lanes[position]
 		for parentIndex, parent := range row.parents {
 			parentPosition := -1
@@ -116,6 +135,7 @@ func layoutGraph(rows []historyRow) {
 				color++
 			}
 		}
+		// A lane with no remaining parent terminates at this commit.
 		if mine.to == "" {
 			for index, container := range lanes {
 				if container == mine {

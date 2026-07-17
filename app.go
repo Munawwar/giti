@@ -8,7 +8,6 @@ import (
 	"math"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -182,7 +181,7 @@ func newGiti(repo *repository, resident bool, applications ...*gtk.Application) 
 		}
 	}
 	app.historyStore = must(gtk.ListStoreNew(gdk.PixbufGetType(), glib.TYPE_STRING, glib.TYPE_STRING))
-	app.fileStore = must(gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING))
+	app.fileStore = must(gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING))
 	app.buildWindow(application)
 	if resident {
 		addMainSource(time.Minute, app.expireIfIdle)
@@ -191,6 +190,8 @@ func newGiti(repo *repository, resident bool, applications ...*gtk.Application) 
 }
 
 func (app *giti) buildWindow(application *gtk.Application) {
+	// Create the long-lived shell first; resident mode hides and reuses this
+	// widget tree rather than rebuilding it for every repository request.
 	state := loadUIState(app.statePath)
 	if application == nil {
 		app.window = must(gtk.WindowNew(gtk.WINDOW_TOPLEVEL))
@@ -214,6 +215,8 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	})
 	app.window.Connect("destroy", func() { app.panesReady = false })
 
+	// History graph and commit metadata share a row so graph geometry remains
+	// aligned with text after GTK applies font and scale settings.
 	app.historyView = must(gtk.TreeViewNewWithModel(app.historyStore))
 	setAccessibility(&app.historyView.Widget, "Commit history", "Git commits ordered from newest to oldest; each row states its parent topology")
 	app.historyView.SetHeadersVisible(false)
@@ -259,6 +262,9 @@ func (app *giti) buildWindow(application *gtk.Application) {
 			if row.kind != "commit" {
 				return false
 			}
+			// TreeView markup has no child widgets to receive clicks. Recreate the
+			// rendered prefix measurements to make only the inline overflow badge
+			// interactive without placing long references in a separate column.
 			prefix := ""
 			measure := func(markup string) (int, int) {
 				label := must(gtk.LabelNew(""))
@@ -285,6 +291,8 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		}
 		return false
 	})
+	// Search options affect both the loaded Git metadata and in-memory ranking:
+	// message search reloads history, while reference search only reranks it.
 	app.historySearch = must(gtk.SearchEntryNew())
 	app.historySearch.SetPlaceholderText("Search loaded commits")
 	app.historySearch.SetTooltipText("Case-insensitive: exact phrases rank above separate word matches")
@@ -332,6 +340,8 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.historyStack.AddNamed(app.historyScroller, "graph")
 	app.historyStack.AddNamed(scroller(app.searchResults), "search")
 
+	// Changed files keep paths and compact statistics in separate renderers so
+	// long paths ellipsize without displacing the right-aligned counts.
 	app.fileView = must(gtk.TreeViewNewWithModel(app.fileStore))
 	setAccessibility(&app.fileView.Widget, "Changed files", "Files changed by the selected history entry")
 	app.fileView.SetHeadersVisible(false)
@@ -375,11 +385,13 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.fileView.AppendColumn(fileColumn)
 	statRenderer := must(gtk.CellRendererTextNew())
 	statRenderer.SetProperty("xalign", 1.0)
-	statColumn := must(gtk.TreeViewColumnNewWithAttribute("Changes", statRenderer, "markup", 2))
+	statColumn := must(gtk.TreeViewColumnNewWithAttribute("Changes", statRenderer, "markup", 1))
 	app.fileView.AppendColumn(statColumn)
 	fileSelection, _ := app.fileView.GetSelection()
 	fileSelection.Connect("changed", app.onFileSelected)
 
+	// The diff pane owns both the text rendering and the optional full-file
+	// overview; selection changes update them as a single unit.
 	app.diffBuffer = must(gtk.TextBufferNew(nil))
 	app.diffBuffer.CreateTag("added", map[string]any{"background": "#d7f5dd", "foreground": "#174d22"})
 	app.diffBuffer.CreateTag("removed", map[string]any{"background": "#f9d7d9", "foreground": "#682126"})
@@ -407,6 +419,8 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		app.loadHistory()
 	})
 
+	// Compose the three principal regions only after their controls and signal
+	// handlers are ready, avoiding visible partially initialized state.
 	graphBox := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 4))
 	searchBox := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
 	searchBox.PackStart(app.historySearch, true, true, 0)
@@ -475,6 +489,8 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.mainPane.SetWideHandle(true)
 	app.mainPane.Pack1(app.repositoryPane, false, true)
 	app.mainPane.Pack2(diffBox, true, true)
+	// Pane sizes are only meaningful after the first allocation. Apply saved
+	// positions once, then debounce subsequent user-driven persistence.
 	initialized := 0
 	initializePane := func(pane *gtk.Paned, vertical bool, position, fallback int) {
 		var handler glib.SignalHandle
@@ -512,6 +528,8 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	}
 	initializePane(app.mainPane, false, state.MainPanePosition, 440)
 	initializePane(app.repositoryPane, true, state.RepositoryPanePosition, -1)
+	// Notifications live in an overlay so transient feedback never changes the
+	// pane allocation or diff scroll position.
 	app.notification = must(gtk.InfoBarNew())
 	app.notification.SetMessageType(gtk.MESSAGE_INFO)
 	app.notification.SetShowCloseButton(true)
@@ -622,6 +640,8 @@ func (app *giti) loadHistory() {
 }
 
 func (app *giti) loadHistoryTo(reveal string) {
+	// A history refresh invalidates every downstream selection and diff load.
+	// Generation checks protect GTK from callbacks already queued on the main loop.
 	app.historyGeneration++
 	if app.historyCancel != nil {
 		app.historyCancel()
@@ -649,6 +669,8 @@ func (app *giti) loadHistoryTo(reveal string) {
 		var graphs []*gdk.Pixbuf
 		var hasMore, found, beyondAutoLimit bool
 		var err error
+		// Parent navigation first locates the requested revision without building
+		// every intervening row, then expands the normal history query just enough.
 		autoLimit := max(limit, maxAutoHistory)
 		if reveal != "" {
 			index := -1
@@ -667,6 +689,8 @@ func (app *giti) loadHistoryTo(reveal string) {
 				}
 			}
 		}
+		// Render at the nominal row height off the GTK thread. A measured-height
+		// second pass runs after the model is visible when font scaling requires it.
 		graphWidth := 48
 		for _, row := range rows {
 			graphWidth = max(graphWidth, max(len(row.graph.lanes), len(row.graph.next))*graphLaneWidth)
@@ -684,6 +708,8 @@ func (app *giti) loadHistoryTo(reveal string) {
 				app.showError(err)
 				return false
 			}
+			// Commit the result to GTK only after the stale-work guard above; all
+			// model selection and follow-up measurement stays on the main thread.
 			app.historyLimit, app.graphWidth, app.historyRows = limit, graphWidth, rows
 			app.loadButton.SetVisible(hasMore)
 			app.graphColumn.SetFixedWidth(graphWidth)
@@ -839,6 +865,8 @@ func syncedBranchBadges(local string, remote remoteBranch) (combined, remoteBadg
 
 func branchReferenceParts(branches []string, upstreams map[string]string) []referencePart {
 	const displayLimit = 4
+	// Normalize local and remote ordering before pairing them; Git decoration
+	// order is presentation-oriented and is not stable enough for this layout.
 	locals, remotes := make([]string, 0, len(branches)), make([]remoteBranch, 0, len(branches))
 	for _, branch := range branches {
 		if !strings.HasPrefix(branch, remoteRefPrefix) {
@@ -862,6 +890,8 @@ func branchReferenceParts(branches []string, upstreams map[string]string) []refe
 		}
 		return remotes[left].value < remotes[right].value
 	})
+	// A remote is emitted once: preferably joined to its configured upstream,
+	// otherwise adjacent to a same-path local branch, then as an unmatched ref.
 	byValue, used := make(map[string]remoteBranch, len(remotes)), make(map[string]bool, len(remotes))
 	for _, remote := range remotes {
 		byValue[remote.value] = remote
@@ -897,6 +927,8 @@ func branchReferenceParts(branches []string, upstreams map[string]string) []refe
 			parts = append(parts, referencePart{markup: referenceBadge(remote.value, "branch"), branches: []string{remote.value}})
 		}
 	}
+	// Collapse only after pairing so the overflow count reflects hidden branch
+	// names rather than the smaller number of joined visual parts.
 	if len(parts) <= displayLimit {
 		return parts
 	}
@@ -985,6 +1017,8 @@ func searchHistory(rows []historyRow, query string, options searchOptions) []sea
 			refs = strings.ToLower(row.refs)
 		}
 		shaMatch := isSHAQuery(phrase) && strings.HasPrefix(strings.ToLower(row.revision), phrase)
+		// Exact phrases outrank repeated word hits; subjects outrank references,
+		// which outrank descriptions, and an explicit SHA prefix wins overall.
 		fields := []field{{subject, 1000, 100}}
 		if options.references {
 			fields = append(fields, field{refs, 750, 50})
@@ -1157,6 +1191,8 @@ func (app *giti) openSearchResult(index int) {
 }
 
 func (app *giti) setCommitHeader(details commitDetails) {
+	// Rebuild the header as one snapshot so controls cannot retain callbacks or
+	// copy targets from the previously selected commit.
 	app.headerReferenceButtons = nil
 	if children := app.commitHeader.GetChildren(); children != nil {
 		children.Foreach(func(child any) { app.commitHeader.Remove(child.(gtk.IWidget)) })
@@ -1169,6 +1205,8 @@ func (app *giti) setCommitHeader(details commitDetails) {
 	title.SetMarkup("<span size=\"large\" weight=\"bold\">" + html.EscapeString(details.subject) + "</span>")
 	titleRow := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
 	titleRow.PackStart(title, true, true, 0)
+	// Keep aggregate statistics outside the ellipsized title so they remain
+	// visible even for unusually long subjects.
 	if details.statistics {
 		additions := must(gtk.LabelNew(fmt.Sprintf("+%d", details.additions)))
 		deletions := must(gtk.LabelNew(fmt.Sprintf("−%d", details.deletions)))
@@ -1212,6 +1250,8 @@ func (app *giti) setCommitHeader(details commitDetails) {
 	app.commitHeader.PackStart(meta, false, false, 0)
 	if len(details.branches) > 0 || len(details.tags) > 0 {
 		refs := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 6))
+		// Reference badges are buttons because their visible text may be shortened;
+		// each closure retains the complete copy value and relationship description.
 		addBadge := func(target *gtk.Box, value, kind, markup, description string) *gtk.Button {
 			display, _, _, _ := referenceAppearance(value, kind)
 			copyValue := display
@@ -1243,6 +1283,8 @@ func (app *giti) setCommitHeader(details commitDetails) {
 			target.PackStart(button, false, false, 0)
 			return button
 		}
+		// Configured upstream pairs render as joined visual segments while keeping
+		// independent copy targets for the local and remote names.
 		for _, part := range branchReferenceParts(details.branches, details.upstreams) {
 			if part.overflow {
 				more := must(gtk.ButtonNewWithLabel(part.label))
@@ -1413,6 +1455,8 @@ func (app *giti) onHistorySelected() {
 		description = fmt.Sprintf("Selected %s, %s, by %s", row.subject, topology, row.author)
 	}
 	setAccessibility(&app.historyView.Widget, "Commit history", description)
+	// Cancel both layers of the previous selection. The generation numbers also
+	// reject callbacks that reached GLib just before their contexts were canceled.
 	app.selectionGeneration++
 	generation := app.selectionGeneration
 	if app.selectionCancel != nil {
@@ -1438,6 +1482,8 @@ func (app *giti) onHistorySelected() {
 	repo, row := app.repository, *app.currentRow
 	ignoreWhitespace := !app.whitespaceToggle.GetActive()
 	go func() {
+		// Commit metadata and changed-file statistics are independent Git queries,
+		// but run serially to avoid competing Git work for a short-lived selection.
 		details, detailsErr := commitDetails{}, error(nil)
 		if row.kind == "commit" {
 			details, detailsErr = repo.commitDetailsContext(ctx, row.revision)
@@ -1456,6 +1502,8 @@ func (app *giti) onHistorySelected() {
 				app.showError(loadErr)
 				return false
 			}
+			// Untracked files are a distinct state: they count toward the file summary
+			// but cannot contribute reliable line totals until Git tracks them.
 			added, deleted, updated, untracked, additions, deletions := 0, 0, 0, 0, 0, 0
 			for _, file := range files {
 				switch {
@@ -1485,6 +1533,8 @@ func (app *giti) onHistorySelected() {
 			}
 			app.fileSummary.SetMarkup(fmt.Sprintf("<b>%d files</b> · <span foreground=\"#2e8c47\">%d added</span> · <span foreground=\"#c7404d\">%d deleted</span> · %d updated%s", len(files), added, deleted, updated, untrackedMarkup))
 			app.fileSummary.SetTooltipText(summary)
+			// Replace the model only after its summary and header agree with the same
+			// result, then restore the previous path when it is still present.
 			app.files = files
 			target := 0
 			for fileIndex, file := range files {
@@ -1495,7 +1545,7 @@ func (app *giti) onHistorySelected() {
 				} else if file.binary {
 					stat = "<span foreground=\"#6b7280\">Binary</span>"
 				}
-				app.fileStore.Set(iter, []int{0, 1, 2}, []any{file.label(), strconv.Itoa(fileIndex), stat})
+				app.fileStore.Set(iter, []int{0, 1}, []any{file.label(), stat})
 				if file.path == previousPath {
 					target = fileIndex
 				}
@@ -1526,6 +1576,8 @@ func (app *giti) onFileSelected() {
 	if index >= len(app.files) {
 		return
 	}
+	// File loads are independently cancelable from history loads; both generation
+	// values must match before a patch can update the shared diff widgets.
 	app.diffGeneration++
 	generation, selectionGeneration := app.diffGeneration, app.selectionGeneration
 	if app.diffCancel != nil {
