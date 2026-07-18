@@ -16,8 +16,20 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
 )
+
+func init() {
+	// gotk3 otherwise runs GObject finalizers on Go's finalizer goroutine. Queue
+	// unrefs on GTK's context so widget and CSS teardown cannot race UI work.
+	glib.FinalizerStrategy = func(finalize glib.Finalizer) {
+		addMainSource(0, func() bool {
+			finalize()
+			return false
+		})
+	}
+}
 
 // addMainSource schedules work on GTK's main context without presenting an
 // integer callback handle to Go's garbage collector as a pointer.
