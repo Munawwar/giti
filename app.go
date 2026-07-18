@@ -131,6 +131,7 @@ type giti struct {
 	headerReferenceButtons     []*gtk.Button
 	whitespaceToggle           *gtk.CheckButton
 	fullFileToggle             *gtk.CheckButton
+	fullMergeToggle            *gtk.CheckButton
 	fullFilePreferred          bool
 	loadButton                 *gtk.Button
 	notification               *gtk.InfoBar
@@ -138,6 +139,7 @@ type giti struct {
 	overviewMarkers            []overviewMarker
 	overviewLines              int
 	fullFileHandler            glib.SignalHandle
+	fullMergeHandler           glib.SignalHandle
 	application                *gtk.Application
 }
 
@@ -413,6 +415,14 @@ func (app *giti) buildWindow(application *gtk.Application) {
 			app.onFileSelected()
 		}
 	})
+	app.fullMergeToggle = must(gtk.CheckButtonNewWithLabel("Show full merge"))
+	app.fullMergeToggle.SetTooltipText("Off: show the compact combined merge-resolution diff; on: compare the merge with its first parent")
+	app.fullMergeToggle.SetVisible(false)
+	app.fullMergeHandler = app.fullMergeToggle.Connect("toggled", func() {
+		if app.currentRow != nil && app.currentRow.kind == "commit" && len(app.currentRow.parents) > 1 {
+			app.onHistorySelected()
+		}
+	})
 	app.loadButton = must(gtk.ButtonNewWithLabel("Load more"))
 	app.loadButton.Connect("clicked", func() {
 		app.historyLimit += 100
@@ -447,6 +457,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	toolbar := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
 	toolbar.PackEnd(app.whitespaceToggle, false, false, 8)
 	toolbar.PackEnd(app.fullFileToggle, false, false, 0)
+	toolbar.PackEnd(app.fullMergeToggle, false, false, 8)
 	if application != nil {
 		refresh := glib.SimpleActionNew("refresh", nil)
 		refresh.Connect("activate", func() { app.loadHistory() })
@@ -1444,6 +1455,15 @@ func (app *giti) onHistorySelected() {
 		return
 	}
 	row := app.historyRows[index]
+	merge := row.kind == "commit" && len(row.parents) > 1
+	sameSelection := app.currentRow != nil && app.currentRow.kind == "commit" && app.currentRow.revision == row.revision
+	app.fullMergeToggle.HandlerBlock(app.fullMergeHandler)
+	if !merge || !sameSelection {
+		app.fullMergeToggle.SetActive(false)
+	}
+	app.fullMergeToggle.SetVisible(merge)
+	app.fullMergeToggle.HandlerUnblock(app.fullMergeHandler)
+	mergeResolution := merge && !app.fullMergeToggle.GetActive()
 	description := "Selected " + row.subject
 	if row.kind == "commit" {
 		topology := "root commit"
@@ -1488,7 +1508,7 @@ func (app *giti) onHistorySelected() {
 		if row.kind == "commit" {
 			details, detailsErr = repo.commitDetailsContext(ctx, row.revision)
 		}
-		files, loadErr := repo.changedFilesContext(ctx, row, ignoreWhitespace)
+		files, loadErr := repo.changedFilesForViewContext(ctx, row, ignoreWhitespace, mergeResolution)
 		addMainSource(0, func() bool {
 			if ctx.Err() != nil || generation != app.selectionGeneration || repo != app.repository {
 				return false
@@ -1520,18 +1540,29 @@ func (app *giti) onHistorySelected() {
 					additions, deletions = additions+file.additions, deletions+file.deletions
 				}
 			}
-			details.additions, details.deletions, details.untracked, details.statistics = additions, deletions, untracked, true
+			details.additions, details.deletions, details.untracked = additions, deletions, untracked
+			details.statistics = row.kind != "conflict" && row.kind != "resolved" && !mergeResolution
 			if row.kind != "commit" {
 				details.subject = row.subject
 			}
 			app.setCommitHeader(details)
 			summary := fmt.Sprintf("%d files · %d added · %d deleted · %d updated", len(files), added, deleted, updated)
-			untrackedMarkup := ""
-			if untracked > 0 {
+			markup := fmt.Sprintf("<b>%d files</b> · <span foreground=\"#2e8c47\">%d added</span> · <span foreground=\"#c7404d\">%d deleted</span> · %d updated", len(files), added, deleted, updated)
+			switch {
+			case row.kind == "conflict":
+				summary = fmt.Sprintf("%d conflicts · Needs resolution", len(files))
+				markup = fmt.Sprintf("<b>%d conflicts</b> · <span foreground=\"#c7404d\">Needs resolution</span>", len(files))
+			case row.kind == "resolved":
+				summary = fmt.Sprintf("%d conflicts · Resolution applied", len(files))
+				markup = fmt.Sprintf("<b>%d conflicts</b> · <span foreground=\"#2e8c47\">Resolution applied</span>", len(files))
+			case mergeResolution:
+				summary = fmt.Sprintf("%d merge-resolution files", len(files))
+				markup = fmt.Sprintf("<b>%d files</b> · Merge resolution", len(files))
+			case untracked > 0:
 				summary += fmt.Sprintf(" · %d untracked", untracked)
-				untrackedMarkup = fmt.Sprintf(" · <span foreground=\"#4b5563\">%d untracked</span>", untracked)
+				markup += fmt.Sprintf(" · <span foreground=\"#4b5563\">%d untracked</span>", untracked)
 			}
-			app.fileSummary.SetMarkup(fmt.Sprintf("<b>%d files</b> · <span foreground=\"#2e8c47\">%d added</span> · <span foreground=\"#c7404d\">%d deleted</span> · %d updated%s", len(files), added, deleted, updated, untrackedMarkup))
+			app.fileSummary.SetMarkup(markup)
 			app.fileSummary.SetTooltipText(summary)
 			// Replace the model only after its summary and header agree with the same
 			// result, then restore the previous path when it is still present.
@@ -1542,6 +1573,14 @@ func (app *giti) onHistorySelected() {
 				stat := fmt.Sprintf("<span foreground=\"#2e8c47\">+%d</span>  <span foreground=\"#c7404d\">−%d</span>", file.additions, file.deletions)
 				if file.status == "??" {
 					stat = "<span foreground=\"#6b7280\">Untracked</span>"
+				} else if file.conflict != "" {
+					color := "#c7404d"
+					if file.status == "✓" {
+						color = "#2e8c47"
+					}
+					stat = fmt.Sprintf("<span foreground=\"%s\">%s</span>", color, html.EscapeString(file.conflict))
+				} else if mergeResolution {
+					stat = "<span foreground=\"#6b7280\">Combined</span>"
 				} else if file.binary {
 					stat = "<span foreground=\"#6b7280\">Binary</span>"
 				}
@@ -1597,10 +1636,11 @@ func (app *giti) onFileSelected() {
 	repo, row, selectedFile := app.repository, *app.currentRow, *file
 	position := app.diffScroll[diffKey(row, selectedFile)]
 	ignoreWhitespace, preferFullFile := !app.whitespaceToggle.GetActive(), app.fullFilePreferred
+	mergeResolution := row.kind == "commit" && len(row.parents) > 1 && !app.fullMergeToggle.GetActive()
 	go func() {
 		size := repo.fileSizeContext(ctx, row, selectedFile)
 		fullFile := preferFullFile && size <= fullFileLimit
-		patch, loadErr := repo.diffContext(ctx, row, selectedFile, ignoreWhitespace, fullFile)
+		patch, loadErr := repo.diffForViewContext(ctx, row, selectedFile, ignoreWhitespace, fullFile, mergeResolution)
 		addMainSource(0, func() bool {
 			if ctx.Err() != nil || generation != app.diffGeneration || selectionGeneration != app.selectionGeneration || repo != app.repository {
 				return false
@@ -1674,20 +1714,26 @@ type displayLine struct {
 
 func displayLines(patch string) []displayLine {
 	lines := make([]displayLine, 0)
-	inHeader := true
+	inHeader, prefixWidth := true, 1
 	for _, line := range splitAfterLines(patch) {
 		if strings.HasPrefix(line, "@@") {
 			inHeader = false
-		} else if inHeader && (strings.HasPrefix(line, "diff --git ") || strings.HasPrefix(line, "index ") ||
+			// A normal @@ hunk has one prefix column; a combined @@@ hunk has
+			// two, one per parent. A line is colored only when those columns agree.
+			prefixWidth = max(1, len(line)-len(strings.TrimLeft(line, "@"))-1)
+		} else if inHeader && (strings.HasPrefix(line, "diff --") || strings.HasPrefix(line, "index ") ||
 			strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ")) {
 			continue
 		}
 		tag := ""
-		switch {
-		case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
-			tag = "added"
-		case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
-			tag = "removed"
+		if !inHeader && len(line) >= prefixWidth {
+			prefix := line[:prefixWidth]
+			switch {
+			case strings.Contains(prefix, "+") && !strings.Contains(prefix, "-"):
+				tag = "added"
+			case strings.Contains(prefix, "-") && !strings.Contains(prefix, "+"):
+				tag = "removed"
+			}
 		}
 		lines = append(lines, displayLine{text: line, tag: tag})
 	}
@@ -1764,6 +1810,10 @@ func (app *giti) clearRepositoryView() {
 	app.fullFileToggle.HandlerBlock(app.fullFileHandler)
 	app.fullFileToggle.SetActive(false)
 	app.fullFileToggle.HandlerUnblock(app.fullFileHandler)
+	app.fullMergeToggle.HandlerBlock(app.fullMergeHandler)
+	app.fullMergeToggle.SetActive(false)
+	app.fullMergeToggle.SetVisible(false)
+	app.fullMergeToggle.HandlerUnblock(app.fullMergeHandler)
 	app.resetDiffOverview()
 }
 
