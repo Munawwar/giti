@@ -68,7 +68,7 @@ func TestMergeResolutionIsDefaultAndFullMergeRemainsAvailable(t *testing.T) {
 	mergeTestGit(t, path, "add", "conflict.txt")
 	mergeTestGit(t, path, "commit", "-m", "merge side")
 
-	repo, err := newRepository(path, "HEAD")
+	repo, err := newRepository(path, historySpec{Revision: "HEAD"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestWorkingChangesSeparateConflictsResolutionsAndOrdinaryFiles(t *testing.T
 	mergeTestWrite(t, path, "staged.txt", "index\n")
 	mergeTestGit(t, path, "add", "staged.txt")
 
-	repo, err := newRepository(path, "HEAD")
+	repo, err := newRepository(path, historySpec{Revision: "HEAD"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestWorkingChangesSeparateConflictsResolutionsAndOrdinaryFiles(t *testing.T
 	mergeTestGit(t, path, "merge", "--abort")
 	merge()
 
-	repo, _ = newRepository(path, "HEAD")
+	repo, _ = newRepository(path, historySpec{Revision: "HEAD"})
 	rows, _, err = repo.history(2, true, false)
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func TestWorkingChangesSeparateConflictsResolutionsAndOrdinaryFiles(t *testing.T
 	mergeTestGit(t, path, "merge", "--abort")
 	mergeTestGit(t, path, "config", "rerere.autoupdate", "true")
 	merge()
-	repo, _ = newRepository(path, "HEAD")
+	repo, _ = newRepository(path, historySpec{Revision: "HEAD"})
 	rows, _, err = repo.history(2, true, false)
 	if err != nil {
 		t.Fatal(err)

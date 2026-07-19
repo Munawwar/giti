@@ -14,25 +14,49 @@ import (
 )
 
 func TestLauncherArguments(t *testing.T) {
+	path := testRepository(t)
+	if err := os.WriteFile(filepath.Join(path, "README.md"), []byte("read me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(path, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		args                         []string
-		revision                     string
+		history                      historySpec
 		foreground, force, wantError bool
 	}{
-		{args: []string{"giti"}, revision: "HEAD"},
-		{args: []string{"giti", "main"}, revision: "main"},
-		{args: []string{"giti", "-f"}, revision: "HEAD", foreground: true},
-		{args: []string{"giti", "--foreground", "v1"}, revision: "v1", foreground: true},
-		{args: []string{"giti", "-1"}, revision: "HEAD", force: true},
-		{args: []string{"giti", "-f", "-1"}, revision: "HEAD", wantError: true},
-		{args: []string{"giti", "--unknown"}, revision: "HEAD", wantError: true},
-		{args: []string{"giti", "one", "two"}, revision: "HEAD", wantError: true},
+		{args: []string{"giti"}, history: historySpec{Revision: "HEAD"}},
+		{args: []string{"giti", "main"}, history: historySpec{Revision: "main"}},
+		{args: []string{"giti", "README.md"}, history: historySpec{Revision: "HEAD", Path: "README.md"}},
+		{args: []string{"giti", "main", "README.md"}, history: historySpec{Revision: "main", Path: "README.md"}},
+		{args: []string{"giti", "--", "README.md"}, history: historySpec{Revision: "HEAD", Path: "README.md"}},
+		{args: []string{"giti", "--follow", "README.md"}, history: historySpec{Revision: "HEAD", Path: "README.md", Follow: true}},
+		{args: []string{"giti", "-f"}, history: historySpec{Revision: "HEAD"}, foreground: true},
+		{args: []string{"giti", "--foreground", "v1"}, history: historySpec{Revision: "v1"}, foreground: true},
+		{args: []string{"giti", "-1"}, history: historySpec{Revision: "HEAD"}, force: true},
+		{args: []string{"giti", "-f", "-1"}, history: historySpec{Revision: "HEAD"}, wantError: true},
+		{args: []string{"giti", "--unknown"}, history: historySpec{Revision: "HEAD"}, wantError: true},
+		{args: []string{"giti", "--follow"}, history: historySpec{Revision: "HEAD"}, wantError: true},
+		{args: []string{"giti", "--follow", "docs"}, history: historySpec{Revision: "HEAD", Path: "docs", Follow: true}, wantError: true},
+		{args: []string{"giti", "--", "README.md", "history.txt"}, history: historySpec{Revision: "HEAD"}, wantError: true},
+		{args: []string{"giti", "--follow", "--", "README.md", "history.txt"}, history: historySpec{Revision: "HEAD", Follow: true}, wantError: true},
+		{args: []string{"giti", "main", "older"}, history: historySpec{Revision: "HEAD"}, wantError: true},
+		{args: []string{"giti", "main~2..main"}, history: historySpec{Revision: "HEAD"}, wantError: true},
+		{args: []string{"giti", "main", "older", "--", "README.md"}, history: historySpec{Revision: "HEAD"}, wantError: true},
 	}
 	for _, test := range tests {
-		revision, foreground, force, err := launcherArguments(test.args)
-		if revision != test.revision || foreground != test.foreground || force != test.force || (err != nil) != test.wantError {
-			t.Errorf("launcherArguments(%q) = %q, %v, %v, %v", test.args, revision, foreground, force, err)
+		history, foreground, force, err := launcherArguments(test.args, path)
+		historyMismatch := !test.wantError && (history != test.history || foreground != test.foreground || force != test.force)
+		if historyMismatch || (err != nil) != test.wantError {
+			t.Errorf("launcherArguments(%q) = %#v, %v, %v, %v", test.args, history, foreground, force, err)
 		}
+	}
+	if err := os.WriteFile(filepath.Join(path, "main"), []byte("ambiguous\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := launcherArguments([]string{"giti", "main"}, path); err == nil || !strings.Contains(err.Error(), "both a revision and a path") {
+		t.Fatalf("ambiguous revision/path was accepted: %v", err)
 	}
 }
 
@@ -45,7 +69,7 @@ func TestLaunchModeUsesAnotherWindowWhenResidentIsBusy(t *testing.T) {
 func TestContactResident(t *testing.T) {
 	runtimeDir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
-	request := openRequest{Path: "/repo", Revision: "main"}
+	request := openRequest{Path: "/repo", History: historySpec{Revision: "main", Path: "README.md", Follow: true}}
 	if response := contactResident(request); response != "" {
 		t.Fatalf("unexpected response without resident %q", response)
 	}
@@ -64,7 +88,7 @@ func TestContactResident(t *testing.T) {
 		}
 		defer connection.Close()
 		var request openRequest
-		if json.NewDecoder(connection).Decode(&request) == nil && request.Path == "/repo" && request.Revision == "main" {
+		if json.NewDecoder(connection).Decode(&request) == nil && request.Path == "/repo" && request.History == (historySpec{Revision: "main", Path: "README.md", Follow: true}) {
 			connection.Write([]byte("OK\n"))
 		}
 	}()
@@ -86,7 +110,7 @@ func TestResidentStalledClientDoesNotBlockLaunches(t *testing.T) {
 	}
 	defer stalled.Close()
 	started := time.Now()
-	if response := contactResident(openRequest{Path: "/repo", Revision: "HEAD"}); response != "BUSY" {
+	if response := contactResident(openRequest{Path: "/repo", History: historySpec{Revision: "HEAD"}}); response != "BUSY" {
 		t.Fatalf("stalled client blocked resident response: %q", response)
 	}
 	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {

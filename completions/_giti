@@ -1,11 +1,27 @@
 #compdef giti
 
+local context state line
 local -a refs
 refs=("${(@f)$(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags 2>/dev/null)}")
-refs=("${(@)refs:#*/HEAD}")
+refs=("${(@)refs:#*/HEAD}" HEAD)
 
-_arguments \
+if (( ${words[(I)--]} > 0 && CURRENT > ${words[(I)--]} )); then
+    _files
+    return
+fi
+
+_arguments -s \
     '(-1)-f[run in the foreground]' \
     '(-1)--foreground[run in the foreground]' \
-    '(-f --foreground 1)-1[restart the resident]' \
-    '1:Git revision:(${(q)refs} HEAD)'
+    '(-1)--follow[follow a file across renames]' \
+    '(-f --foreground --follow 1)-1[restart the resident]' \
+    '1:Git revision or repository path:->revision-or-path' \
+    '2:file or directory:_files' && return
+
+case $state in
+    revision-or-path)
+        _alternative \
+            'revisions:Git revision:compadd -a refs' \
+            'paths:file or directory:_files'
+        ;;
+esac

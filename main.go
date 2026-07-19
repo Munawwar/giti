@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"runtime"
@@ -17,12 +18,16 @@ func main() {
 		return
 	}
 	if len(os.Args) != 4 {
-		fmt.Fprintf(os.Stderr, "usage: %s [--resident|--ephemeral] path revision\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "usage: %s [--resident|--ephemeral] path history-json\n", os.Args[0])
 		os.Exit(2)
 	}
 	runtime.LockOSThread()
-	resident, path, revision := os.Args[1] == "--resident", os.Args[2], os.Args[3]
-	repo, err := newRepository(path, revision)
+	resident, path, history := os.Args[1] == "--resident", os.Args[2], historySpec{}
+	if err := json.Unmarshal([]byte(os.Args[3]), &history); err != nil {
+		fmt.Fprintln(os.Stderr, "giti:", err)
+		os.Exit(2)
+	}
+	repo, err := newRepository(path, history)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "giti:", err)
 		os.Exit(1)

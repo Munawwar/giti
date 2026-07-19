@@ -16,15 +16,15 @@ import (
 )
 
 func launch(args []string) {
-	revision, foreground, force, err := launcherArguments(args)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
-	}
 	path, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	history, foreground, force, err := launcherArguments(args, path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
 	}
 	runtimeDir := runtimeDirectory()
 	executable, err := os.Executable()
@@ -40,13 +40,18 @@ func launch(args []string) {
 	}
 	response := ""
 	if !force && !foreground {
-		response = contactResident(openRequest{Path: path, Revision: revision})
+		response = contactResident(openRequest{Path: path, History: history})
 	}
 	if response == "OK" {
 		return
 	}
 	debug := strings.HasSuffix(filepath.Base(executable), "-debug")
 	mode := launchMode(response, foreground)
+	historyJSON, err := json.Marshal(history)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	if (response == "" || response == "BUSY") && !debug && !foreground {
 		if err = os.MkdirAll(runtimeDir, 0o700); err == nil {
 			var input, log *os.File
@@ -61,7 +66,7 @@ func launch(args []string) {
 				defer log.Close()
 			}
 			if err == nil {
-				command := exec.Command(executable, mode, path, revision)
+				command := exec.Command(executable, mode, path, string(historyJSON))
 				command.Stdin, command.Stdout, command.Stderr = input, log, log
 				command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 				if err = command.Start(); err == nil {
@@ -75,7 +80,7 @@ func launch(args []string) {
 		}
 		return
 	}
-	if err = syscall.Exec(executable, []string{executable, mode, path, revision}, os.Environ()); err != nil {
+	if err = syscall.Exec(executable, []string{executable, mode, path, string(historyJSON)}, os.Environ()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -88,35 +93,94 @@ func launchMode(response string, foreground bool) string {
 	return "--resident"
 }
 
-func launcherArguments(args []string) (revision string, foreground, force bool, err error) {
-	revision = "HEAD"
-	usage := fmt.Errorf("usage: %s [-f|--foreground] [HEAD|branch|tag|sha] | -1", args[0])
-	switch len(args) {
-	case 1:
-		return
-	case 2:
-		switch args[1] {
+func launcherArguments(args []string, path string) (history historySpec, foreground, force bool, err error) {
+	history.Revision = "HEAD"
+	usage := fmt.Errorf("usage: %s [-f|--foreground] [--follow] [revision] [--] [path] | -1", args[0])
+	positionals, paths, explicitPaths := make([]string, 0), make([]string, 0), false
+	// Giti owns its process flags. Everything after -- is always a path, allowing
+	// filenames beginning with a dash without forwarding arbitrary Git options.
+	for index := 1; index < len(args); index++ {
+		switch args[index] {
 		case "-f", "--foreground":
 			foreground = true
 		case "-1":
 			force = true
+		case "--follow":
+			history.Follow = true
+		case "--":
+			explicitPaths = true
+			paths = append(paths, args[index+1:]...)
+			index = len(args)
 		default:
-			if strings.HasPrefix(args[1], "-") {
-				err = usage
-			} else {
-				revision = args[1]
+			if strings.HasPrefix(args[index], "-") {
+				return history, false, false, usage
 			}
+			positionals = append(positionals, args[index])
 		}
-	case 3:
-		if args[1] != "-f" && args[1] != "--foreground" || strings.HasPrefix(args[2], "-") {
-			err = usage
-		} else {
-			foreground, revision = true, args[2]
-		}
-	default:
-		err = usage
 	}
-	return
+	// A forced resident restart is deliberately exclusive of repository/history
+	// arguments, so it cannot accidentally discard a requested open operation.
+	if force {
+		if foreground || history.Follow || explicitPaths || len(positionals) > 0 || len(paths) > 0 {
+			return history, false, false, usage
+		}
+		return history, false, true, nil
+	}
+	if explicitPaths {
+		if len(positionals) > 1 {
+			return history, false, false, usage
+		}
+		if len(positionals) == 1 {
+			history.Revision = positionals[0]
+		}
+	} else if len(positionals) > 0 {
+		// Match Gitk's convenient no-separator form for one starting revision:
+		// classify the first value as a commit when possible and the rest as paths.
+		candidate := positionals[0]
+		command := exec.Command("git", "-C", path, "rev-parse", "--verify", "--quiet", candidate+"^{commit}")
+		isRevision := command.Run() == nil
+		candidatePath := candidate
+		if !filepath.IsAbs(candidatePath) {
+			candidatePath = filepath.Join(path, candidatePath)
+		}
+		_, pathErr := os.Lstat(candidatePath)
+		if isRevision && pathErr == nil {
+			return history, false, false, fmt.Errorf("ambiguous argument %q: both a revision and a path; use -- before paths", candidate)
+		}
+		if isRevision {
+			for _, value := range positionals[1:] {
+				if exec.Command("git", "-C", path, "rev-parse", "--verify", "--quiet", value+"^{commit}").Run() == nil {
+					return history, false, false, fmt.Errorf("only one starting revision is supported; use -- before a path named %q", value)
+				}
+			}
+			history.Revision, paths = candidate, append(paths, positionals[1:]...)
+		} else if pathErr != nil && strings.Contains(candidate, "..") {
+			return history, false, false, errors.New("revision ranges are not supported yet")
+		} else {
+			paths = append(paths, positionals...)
+		}
+	}
+	// File mode intentionally accepts one literal file or directory. Follow has
+	// the additional Git limitation that this path must identify a file.
+	if len(paths) > 1 {
+		return history, false, false, errors.New("file search supports one path")
+	}
+	if len(paths) == 1 {
+		history.Path = paths[0]
+	}
+	if history.Follow && history.Path == "" {
+		return history, false, false, fmt.Errorf("--follow requires exactly one file path")
+	}
+	if history.Follow {
+		followPath := history.Path
+		if !filepath.IsAbs(followPath) {
+			followPath = filepath.Join(path, followPath)
+		}
+		if info, statErr := os.Stat(followPath); statErr == nil && info.IsDir() {
+			return history, false, false, fmt.Errorf("--follow supports files, not directories")
+		}
+	}
+	return history, foreground, false, nil
 }
 
 func stopResident(runtimeDir, executable string) error {
