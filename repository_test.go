@@ -68,7 +68,7 @@ func TestRevisionFormsAndHistoryLimit(t *testing.T) {
 	path := testRepository(t)
 	sha, _ := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output()
 	for _, revision := range []string{"HEAD", "main", "v1", strings.TrimSpace(string(sha))} {
-		repo, err := newRepository(path, revision)
+		repo, err := newRepository(path, historySpec{Revision: revision})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -93,7 +93,7 @@ func TestRevisionFormsAndHistoryLimit(t *testing.T) {
 			t.Fatalf("limited history does not continue into its lookahead: %#v", last.graph)
 		}
 	}
-	older, _ := newRepository(path, "older")
+	older, _ := newRepository(path, historySpec{Revision: "older"})
 	rows, _, _ := older.history(1, true, false)
 	if rows[0].subject != "commit 6" {
 		t.Fatalf("unexpected older top commit %q", rows[0].subject)
@@ -127,7 +127,7 @@ func TestCommitDetailsIncludesRefsAndMergeParents(t *testing.T) {
 	for _, tag := range []string{"one", "two", "three", "four"} {
 		run("tag", tag)
 	}
-	repo, err := newRepository(path, "HEAD")
+	repo, err := newRepository(path, historySpec{Revision: "HEAD"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestStagedUnstagedAndSingleFileDiffs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(path, "unstaged.txt"), []byte("unstaged\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	repo, _ := newRepository(path, "HEAD")
+	repo, _ := newRepository(path, historySpec{Revision: "HEAD"})
 	rows, _, err := repo.history(10, true, false)
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +213,7 @@ func TestChangedFilesRetainRenameStatistics(t *testing.T) {
 	if output, err := exec.Command("git", "-C", path, "add", "renamed.txt").CombinedOutput(); err != nil {
 		t.Fatalf("git add: %v: %s", err, output)
 	}
-	repo, _ := newRepository(path, "HEAD")
+	repo, _ := newRepository(path, historySpec{Revision: "HEAD"})
 	rows, _, err := repo.history(2, true, false)
 	if err != nil || len(rows) == 0 || rows[0].kind != "staged" {
 		t.Fatalf("staged rename missing: rows=%#v err=%v", rows, err)
@@ -229,7 +229,7 @@ func TestWhitespaceFullFileAndLimits(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(path, "history.txt"), []byte("commit        11\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	repo, _ := newRepository(path, "HEAD")
+	repo, _ := newRepository(path, historySpec{Revision: "HEAD"})
 	rows, _, _ := repo.history(10, true, false)
 	if rows[0].kind != "commit" {
 		t.Fatalf("whitespace-only change was not hidden: %v", rows[0])
@@ -254,7 +254,7 @@ func TestWhitespaceFullFileAndLimits(t *testing.T) {
 	exec.Command("git", "-C", path, "commit", "-m", "add context").Run()
 	context[0] = "changed"
 	os.WriteFile(filepath.Join(path, "context.txt"), []byte(strings.Join(context, "\n")+"\n"), 0o644)
-	repo, _ = newRepository(path, "HEAD")
+	repo, _ = newRepository(path, historySpec{Revision: "HEAD"})
 	rows, _, _ = repo.history(1, true, false)
 	files, _ := repo.changedFiles(rows[0], true)
 	compact, _ := repo.diff(rows[0], files[0], true, false)
@@ -272,7 +272,7 @@ func TestRenameAndCopyDetection(t *testing.T) {
 	if output, err := exec.Command("git", "-C", path, "mv", "history.txt", "renamed.txt").CombinedOutput(); err != nil {
 		t.Fatalf("git mv: %v: %s", err, output)
 	}
-	repo, _ := newRepository(path, "HEAD")
+	repo, _ := newRepository(path, historySpec{Revision: "HEAD"})
 	rows, _, _ := repo.history(1, true, false)
 	files, err := repo.changedFiles(rows[0], true)
 	if err != nil || len(files) != 1 || !strings.HasPrefix(files[0].status, "R") || files[0].oldPath != "history.txt" || files[0].path != "renamed.txt" {
@@ -337,7 +337,7 @@ func TestGitParsingPreservesUnusualNamesAndMarkerText(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(path, untracked), []byte("new\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	repo, err := newRepository(path, "HEAD")
+	repo, err := newRepository(path, historySpec{Revision: "HEAD"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -52,7 +52,7 @@ func newGTKIntegrationApp(t *testing.T) (string, *giti) {
 	if output, err := exec.Command("git", "-C", path, "tag", strings.Repeat("long-release-name-", 12)).CombinedOutput(); err != nil {
 		t.Fatalf("create long tag: %v: %s", err, output)
 	}
-	repo, err := newRepository(path, "HEAD")
+	repo, err := newRepository(path, historySpec{Revision: "HEAD"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestGTKApplicationMenu(t *testing.T) {
 	defer runtime.UnlockOSThread()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	path := testRepository(t)
-	repo, err := newRepository(path, "HEAD")
+	repo, err := newRepository(path, historySpec{Revision: "HEAD"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestGTKParentNavigationLoadsAndRevealsOlderCommit(t *testing.T) {
 	if err := saveUIState(uiStatePath(), uiState{MainPanePosition: 410, RepositoryPanePosition: 300, SearchCommitMessages: true, SearchReferences: true}); err != nil {
 		t.Fatal(err)
 	}
-	repo, err := newRepository(testRepository(t), "HEAD")
+	repo, err := newRepository(testRepository(t), historySpec{Revision: "HEAD"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestGTKParentNavigationLoadsAndRevealsOlderCommit(t *testing.T) {
 	}()
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil && len(app.historyRows) > 0 && app.panesReady })
 	app.historyLimit = 1
-	app.loadHistory()
+	app.loadHistory(false)
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil && len(app.historyRows) == 1 })
 	target, err := repo.run("rev-parse", "HEAD~11")
 	if err != nil {
@@ -293,7 +293,7 @@ func TestGTKGraphRenderingAndReferences(t *testing.T) {
 	_, app := newGTKIntegrationApp(t)
 	loaded := len(app.historyRows)
 	for range 3 {
-		app.loadHistory()
+		app.loadHistory(false)
 	}
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil })
 	if len(app.historyRows) != loaded || app.historyStore.IterNChildren(nil) != loaded {
@@ -554,8 +554,55 @@ func TestGTKSearchOptionsAndSelection(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	query, _ := app.historySearch.GetText()
-	if query != "" || app.historyStack.GetVisibleChildName() != "graph" || app.currentRow == nil || app.currentRow.subject != "commit 8" || !app.historyView.IsFocus() {
-		t.Fatalf("search result did not restore graph selection: query=%q stack=%q row=%#v", query, app.historyStack.GetVisibleChildName(), app.currentRow)
+	if query != "CoMmIt 8" || app.historyStack.GetVisibleChildName() != "graph" || !app.searchBack.GetVisible() || app.currentRow == nil || app.currentRow.subject != "commit 8" || !app.historyView.IsFocus() {
+		t.Fatalf("search result did not preserve the search while revealing its graph row: query=%q stack=%q row=%#v", query, app.historyStack.GetVisibleChildName(), app.currentRow)
+	}
+	app.searchBack.Clicked()
+	if app.historyStack.GetVisibleChildName() != "search" || app.searchBack.GetVisible() || len(app.searchMatches) == 0 || !app.searchResults.GetRowAtIndex(0).IsFocus() {
+		t.Fatalf("search results could not be restored: stack=%q matches=%d", app.historyStack.GetVisibleChildName(), len(app.searchMatches))
+	}
+
+	graphRows := len(app.historyRows)
+	app.searchFileMode.SetActive(true)
+	app.historySearch.SetText("history.txt")
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.searchCancel == nil && len(app.searchMatches) == 12 })
+	emptyMessage, _ := app.searchPlaceholder.GetText()
+	if !app.searchFileMode.GetActive() || app.searchTextOptions.GetVisible() || !app.searchFileOptions.GetVisible() || len(app.historyRows) != graphRows || emptyMessage != "No commits touch this path." {
+		t.Fatalf("file mode changed the regular graph or its options: rows=%d matches=%d", len(app.historyRows), len(app.searchMatches))
+	}
+	searchGeneration := app.searchGeneration
+	app.loadHistory(false)
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil })
+	if app.searchGeneration != searchGeneration {
+		t.Fatal("internal graph reload unnecessarily reran file search")
+	}
+	app.loadHistory(true)
+	iterateGTKUntil(t, 3*time.Second, func() bool {
+		return app.historyCancel == nil && app.searchCancel == nil && app.searchGeneration > searchGeneration
+	})
+	app.searchLimit = 1
+	app.updateGraphSearch()
+	iterateGTKUntil(t, 3*time.Second, func() bool {
+		return app.searchCancel == nil && len(app.searchMatches) == 1 && app.searchLoadButton.GetVisible()
+	})
+	app.searchLoadButton.GrabFocus()
+	app.searchLoadButton.Clicked()
+	iterateGTKUntil(t, 3*time.Second, func() bool {
+		return app.searchCancel == nil && len(app.searchMatches) == 12 && !app.searchLoadButton.GetVisible() && app.searchResults.GetRowAtIndex(0).IsFocus()
+	})
+	app.openSearchResult(7)
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.currentRow != nil && app.currentRow.revision == app.searchMatches[7].revision })
+	query, _ = app.historySearch.GetText()
+	if query != "history.txt" || app.historyStack.GetVisibleChildName() != "graph" || !app.searchBack.GetVisible() {
+		t.Fatalf("file result did not reveal the regular graph reversibly: query=%q stack=%q", query, app.historyStack.GetVisibleChildName())
+	}
+	app.historySearch.SetText("../outside")
+	iterateGTKUntil(t, 3*time.Second, func() bool {
+		message, _ := app.searchPlaceholder.GetText()
+		return app.searchCancel == nil && strings.HasPrefix(message, "Could not search:")
+	})
+	if app.historyStack.GetVisibleChildName() != "search" || len(app.searchMatches) != 0 {
+		t.Fatalf("file search error was not shown inline: stack=%q matches=%d", app.historyStack.GetVisibleChildName(), len(app.searchMatches))
 	}
 }
 
@@ -564,6 +611,8 @@ func TestGTKResidentLifecycle(t *testing.T) {
 	iterateGTKUntil(t, 2*time.Second, func() bool {
 		return app.currentRow != nil && app.currentFile != nil && app.diffBuffer.GetCharCount() > 0
 	})
+	app.historySearch.SetText("commit")
+	iterateGTKUntil(t, time.Second, func() bool { return len(app.searchMatches) == 12 })
 	app.resident = true
 	app.window.Close()
 	for gtk.EventsPending() {
@@ -571,7 +620,12 @@ func TestGTKResidentLifecycle(t *testing.T) {
 	}
 	start, end := app.diffBuffer.GetBounds()
 	cleared, _ := app.diffBuffer.GetText(start, end, true)
-	if app.window.GetVisible() || app.currentRow != nil || app.currentFile != nil || app.historyRows != nil || app.files != nil || app.fullFilePreferred || app.fullFileToggle.GetActive() || cleared != "" {
+	retainedResults := false
+	if children := app.searchResults.GetChildren(); children != nil {
+		children.Foreach(func(any) { retainedResults = true })
+		children.Free()
+	}
+	if app.window.GetVisible() || app.currentRow != nil || app.currentFile != nil || app.historyRows != nil || app.files != nil || retainedResults || app.fullFilePreferred || app.fullFileToggle.GetActive() || cleared != "" {
 		t.Fatalf("hidden view retained repository data: row=%#v file=%#v rows=%d files=%d diff=%q", app.currentRow, app.currentFile, len(app.historyRows), len(app.files), cleared)
 	}
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
@@ -589,19 +643,20 @@ func TestGTKResidentLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	json.NewEncoder(connection).Encode(openRequest{Path: path, Revision: "HEAD"})
+	json.NewEncoder(connection).Encode(openRequest{Path: path, History: historySpec{Revision: "HEAD", Path: "history.txt", Follow: true}})
 	response := make([]byte, 3)
 	connection.Read(response)
 	connection.Close()
 	reopenDeadline := time.Now().Add(2 * time.Second)
-	for app.currentRow == nil && time.Now().Before(reopenDeadline) {
+	for (app.currentRow == nil || app.searchCancel != nil || len(app.searchMatches) != 12) && time.Now().Before(reopenDeadline) {
 		for gtk.EventsPending() {
 			gtk.MainIteration()
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if string(response) != "OK\n" || app.currentRow == nil || !app.busy {
-		t.Fatalf("warm reopen failed: response=%q row=%#v busy=%v", response, app.currentRow, app.busy)
+	query, _ := app.historySearch.GetText()
+	if string(response) != "OK\n" || app.currentRow == nil || !app.busy || query != "history.txt" || !app.searchFileMode.GetActive() || !app.searchFollow.GetActive() || len(app.searchMatches) != 12 {
+		t.Fatalf("warm file-search reopen failed: response=%q row=%#v query=%q matches=%d busy=%v", response, app.currentRow, query, len(app.searchMatches), app.busy)
 	}
 }
 
@@ -613,7 +668,7 @@ func TestGTKGraphTextScaling(t *testing.T) {
 	defer runtime.UnlockOSThread()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	gtk.Init(nil)
-	repo, err := newRepository(testRepository(t), "HEAD")
+	repo, err := newRepository(testRepository(t), historySpec{Revision: "HEAD"})
 	if err != nil {
 		t.Fatal(err)
 	}

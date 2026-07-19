@@ -13,8 +13,8 @@ import (
 )
 
 type openRequest struct {
-	Path     string `json:"path"`
-	Revision string `json:"revision"`
+	Path    string      `json:"path"`
+	History historySpec `json:"history"`
 }
 
 type residentServer struct {
@@ -107,7 +107,7 @@ func (server *residentServer) handle(connection net.Conn) {
 	server.application.busy = true
 	server.application.stateMu.Unlock()
 	connection.Write([]byte("OK\n"))
-	addMainSource(0, func() bool { return server.application.openRepository(request.Path, request.Revision) })
+	addMainSource(0, func() bool { return server.application.openRepository(request.Path, request.History) })
 }
 
 func (server *residentServer) stop() {

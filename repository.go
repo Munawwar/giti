@@ -114,26 +114,65 @@ func (file changedFile) label() string {
 }
 
 type repository struct {
-	path, revision, revisionArg string
+	path, revision, revisionArg, searchPath string
+	follow                                  bool
+}
+
+type historySpec struct {
+	Revision string `json:"revision"`
+	Path     string `json:"path,omitempty"`
+	Follow   bool   `json:"follow,omitempty"`
 }
 
 type workingChanges struct {
 	needsResolution, resolutionApplied, unstaged, staged []changedFile
 }
 
-func newRepository(path, revision string) (*repository, error) {
-	repo := &repository{path: path, revisionArg: revision}
+func newRepository(path string, spec historySpec) (*repository, error) {
+	if spec.Revision == "" {
+		spec.Revision = "HEAD"
+	}
+	repo := &repository{path: path, revisionArg: spec.Revision, follow: spec.Follow}
 	root, err := repo.runAt(path, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return nil, err
 	}
-	repo.path = strings.TrimSpace(root)
-	resolved, err := repo.run("rev-parse", "--verify", revision+"^{commit}")
+	repo.path = strings.TrimSuffix(root, "\n")
+	prefix, err := repo.runAt(path, "rev-parse", "--show-prefix")
+	if err != nil {
+		return nil, err
+	}
+	if spec.Path != "" {
+		relative := spec.Path
+		if filepath.IsAbs(spec.Path) {
+			relative, err = filepath.Rel(repo.path, spec.Path)
+		} else {
+			relative = filepath.Join(filepath.FromSlash(strings.TrimSuffix(prefix, "\n")), spec.Path)
+		}
+		relative = filepath.Clean(relative)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("file search path %q is outside the repository", spec.Path)
+		}
+		repo.searchPath = filepath.ToSlash(relative)
+	}
+	if repo.follow && repo.searchPath == "" {
+		return nil, errors.New("--follow requires exactly one file")
+	}
+	if repo.follow {
+		if info, statErr := os.Stat(filepath.Join(repo.path, filepath.FromSlash(repo.searchPath))); statErr == nil && info.IsDir() {
+			return nil, errors.New("--follow supports files, not directories")
+		}
+	}
+	resolved, err := repo.run("rev-parse", "--verify", spec.Revision+"^{commit}")
 	if err != nil {
 		return nil, err
 	}
 	repo.revision = strings.TrimSpace(resolved)
 	return repo, nil
+}
+
+func (repo *repository) windowTitle() string {
+	return "Giti — " + filepath.Base(repo.path)
 }
 
 func (repo *repository) run(args ...string) (string, error) {
@@ -256,28 +295,19 @@ func (repo *repository) historyIndexContext(ctx context.Context, revision string
 }
 
 func (repo *repository) historyContext(ctx context.Context, count int, ignoreWhitespace, includeMessages bool) ([]historyRow, bool, error) {
-	metadata, err := repo.runContext(ctx, "for-each-ref", "--format=%(refname)%00%(upstream)%00%(HEAD)", "refs/heads/")
+	commits, hasMore, err := repo.commitHistoryContext(ctx, count, includeMessages, repo.revisionArg)
 	if err != nil {
 		return nil, false, err
 	}
-	_, _, upstreams := referenceMetadata(metadata)
-	fields := []string{"%H", "%P", "%an", "%as", "%at", "%D", "%s"}
-	if includeMessages {
-		fields = append(fields, "%b")
-	}
-	format := strings.Join(fields, "%x00")
-	output, truncated, err := repo.runLimitedContext(ctx, historyOutputLimit, true, "log", "-z", "--topo-order", "--decorate=full", fmt.Sprintf("-n%d", count+1), "--format="+format, repo.revisionArg)
-	if err != nil {
-		return nil, false, err
-	}
-	if truncated {
-		return nil, false, fmt.Errorf("history metadata exceeds %d MiB; disable commit-description search or load fewer commits", historyOutputLimit/1024/1024)
+	layoutGraph(commits)
+	if hasMore {
+		commits = commits[:count]
 	}
 	changes, err := repo.workingChangesContext(ctx, ignoreWhitespace)
 	if err != nil {
 		return nil, false, err
 	}
-	rows := make([]historyRow, 0, count+4)
+	rows := make([]historyRow, 0, len(commits)+4)
 	for _, synthetic := range []historyRow{
 		{kind: "conflict", subject: "Needs resolution", files: changes.needsResolution},
 		{kind: "resolved", subject: "Resolution applied", files: changes.resolutionApplied},
@@ -288,6 +318,71 @@ func (repo *repository) historyContext(ctx context.Context, count int, ignoreWhi
 			rows = append(rows, synthetic)
 		}
 	}
+	return append(rows, commits...), hasMore, nil
+}
+
+func (repo *repository) fileHistoryContext(ctx context.Context, path string, follow bool, count int) ([]historyRow, bool, error) {
+	if path == "" {
+		return nil, false, errors.New("file search path cannot be empty")
+	}
+	clean := filepath.Clean(filepath.FromSlash(path))
+	if filepath.IsAbs(clean) {
+		var err error
+		clean, err = filepath.Rel(repo.path, clean)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return nil, false, fmt.Errorf("file search path %q is outside the repository", path)
+	}
+	path = filepath.ToSlash(clean)
+	if follow {
+		if info, err := os.Stat(filepath.Join(repo.path, clean)); err == nil && info.IsDir() {
+			return nil, false, errors.New("following renames supports files, not directories")
+		}
+	}
+	args := []string{repo.revisionArg}
+	if follow {
+		args = append([]string{"--follow"}, args...)
+	}
+	// Search entries are file names, not Git pathspec expressions. The literal
+	// signature preserves names containing glob characters or pathspec magic.
+	args = append(args, "--", ":(literal)"+path)
+	rows, hasMore, err := repo.commitHistoryContext(ctx, count, false, args...)
+	if hasMore {
+		rows = rows[:count]
+	}
+	return rows, hasMore, err
+}
+
+func (repo *repository) commitHistoryContext(ctx context.Context, count int, includeMessages bool, revisionAndPathspec ...string) ([]historyRow, bool, error) {
+	metadata, err := repo.runContext(ctx, "for-each-ref", "--format=%(refname)%00%(upstream)%00%(HEAD)", "refs/heads/")
+	if err != nil {
+		return nil, false, err
+	}
+	_, _, upstreams := referenceMetadata(metadata)
+	fields := []string{"%H", "%P", "%an", "%as", "%at", "%D", "%s"}
+	if includeMessages {
+		fields = append(fields, "%b")
+	}
+	format := strings.Join(fields, "%x00")
+	logArgs := []string{"log", "-z", "--topo-order", "--decorate=full", fmt.Sprintf("-n%d", count+1), "--format=" + format}
+	logArgs = append(logArgs, revisionAndPathspec...)
+	output, truncated, err := repo.runLimitedContext(ctx, historyOutputLimit, true, logArgs...)
+	if err != nil {
+		return nil, false, err
+	}
+	if truncated {
+		return nil, false, fmt.Errorf("history metadata exceeds %d MiB; disable commit-description search or load fewer commits", historyOutputLimit/1024/1024)
+	}
+	// `git log -z` emits one NUL-delimited row per commit:
+	//
+	//	<sha> NUL <parents> NUL <author> NUL <date> NUL <unix-time> NUL
+	//	<decorations> NUL <subject> NUL [<body> NUL]
+	//
+	// The requested count includes one lookahead commit for graph continuation
+	// and for reporting whether more history exists.
 	commits, parts, width := make([]historyRow, 0, count+1), strings.Split(output, "\x00"), len(fields)
 	for index := 0; index+width <= len(parts); index += width {
 		values := parts[index : index+width]
@@ -300,12 +395,8 @@ func (repo *repository) historyContext(ctx context.Context, count int, ignoreWhi
 		row.searchSubject, row.searchBody, row.searchRefs = strings.ToLower(row.subject), strings.ToLower(row.body), strings.ToLower(row.refs)
 		commits = append(commits, row)
 	}
-	layoutGraph(commits)
 	hasMore := len(commits) > count
-	if hasMore {
-		commits = commits[:count]
-	}
-	return append(rows, commits...), hasMore, nil
+	return commits, hasMore, nil
 }
 
 func (repo *repository) commitDetailsContext(ctx context.Context, revision string) (commitDetails, error) {
@@ -360,7 +451,8 @@ func (repo *repository) changedFilesForViewContext(ctx context.Context, row hist
 		if ignoreWhitespace {
 			args = append(args, "--ignore-all-space")
 		}
-		output, err := repo.runContext(ctx, append(args, row.revision)...)
+		args = append(args, row.revision)
+		output, err := repo.runContext(ctx, args...)
 		if err != nil {
 			return nil, err
 		}

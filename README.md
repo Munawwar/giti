@@ -14,14 +14,12 @@ means world/universe and life in Persian.
 ![Giti graph viewer with branch and remote references, search controls, and file diff](docs/giti-screenshot.png)
 
 ```sh
-./giti
-./giti HEAD
-./giti main
-./giti v1.0.0
-./giti abc123
-./giti -f
-./giti --foreground main
-./giti -1
+giti # uses HEAD by default
+giti branch/tag/SHA
+giti file-name
+
+giti --forground main # without resident process
+giti -1 # force restart resident window
 ```
 
 ## Installation
@@ -38,7 +36,8 @@ non-debug Linux x86_64 binary. On Ubuntu it installs missing GTK 3 runtime
 libraries and Git, then installs Giti to `~/.local/bin` and its desktop entry
 and hicolor icon to `~/.local/share`. This makes the Giti icon work in GNOME
 Wayland as well as X11. It also installs Bash, Zsh, and Fish completions, so
-typing `giti t<Tab>` offers matching local branches, remote branches, and tags.
+typing `giti R<Tab>` offers matching repository paths alongside local branches,
+remote branches, and tags.
 Installation is idempotent: rerunning the installer updates the same files
 without adding anything to your shell startup files.
 
@@ -97,8 +96,32 @@ variable is unset).
 
 Use `giti -f` or `giti --foreground` for a one-shot app attached to the
 terminal. It bypasses the resident, can run alongside it, forwards terminal
-signals, and exits when its window closes. An optional revision may follow the
-flag.
+signals, and exits when its window closes.
+
+Open file/directory search by passing a path directly. The regular graph remains
+complete: select a search result to reveal that commit in its branch context,
+then use the back button to return to the results. The path stays editable in
+the search bar. Use `--` when it could be confused with a revision or begins
+with a dash:
+
+```sh
+giti README.md
+giti docs/
+giti main -- README.md
+```
+
+For a single file, `--follow` continues history across renames:
+
+```sh
+giti --follow -- README.md
+```
+
+The search options popover switches between commit-text and file-history modes.
+Text mode can additionally match commit descriptions and references; file mode
+loads the newest 50 matches initially, can load older matches in batches of 100,
+and can follow one file across renames. An optional starting revision and
+`-f`/`--foreground` can be combined with these forms. Revision ranges and other
+`git log` flags are not currently accepted.
 
 ## Debugging a crash
 

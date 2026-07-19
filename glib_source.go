@@ -8,6 +8,7 @@ package main
 
 guint giti_add_source(guint milliseconds, uintptr_t handle);
 void giti_set_accessibility(uintptr_t widget, const char *name, const char *description);
+void giti_set_accessibility_role_alert(uintptr_t widget);
 */
 import "C"
 
@@ -45,6 +46,10 @@ func setAccessibility(widget *gtk.Widget, name, description string) {
 	defer C.free(unsafe.Pointer(cName))
 	defer C.free(unsafe.Pointer(cDescription))
 	C.giti_set_accessibility(C.uintptr_t(widget.Native()), cName, cDescription)
+}
+
+func setAccessibilityRoleAlert(widget *gtk.Widget) {
+	C.giti_set_accessibility_role_alert(C.uintptr_t(widget.Native()))
 }
 
 //export gitiSourceFunc
