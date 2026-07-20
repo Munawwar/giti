@@ -178,12 +178,15 @@ func TestWorkingChangesSeparateConflictsResolutionsAndOrdinaryFiles(t *testing.T
 
 func TestDisplayLinesUnderstandsCombinedMergePrefixes(t *testing.T) {
 	lines := displayLines("diff --cc conflict.txt\nindex 123,456..789\n--- a/conflict.txt\n+++ b/conflict.txt\n@@@ -1,1 -1,1 +1,1 @@@\n- main\n -side\n++resolution\n  context\n")
-	want := []struct{ text, tag string }{{"@@@ -1,1 -1,1 +1,1 @@@\n", ""}, {"- main\n", "removed"}, {" -side\n", "removed"}, {"++resolution\n", "added"}, {"  context\n", ""}}
+	want := []struct {
+		text, tag string
+		old, new  int
+	}{{"@@@ -1,1 -1,1 +1,1 @@@\n", "", 0, 0}, {"- main\n", "removed", 1, 0}, {" -side\n", "removed", 0, 0}, {"++resolution\n", "added", 0, 1}, {"  context\n", "", 2, 2}}
 	if len(lines) != len(want) {
 		t.Fatalf("combined display lines = %#v", lines)
 	}
 	for index := range want {
-		if lines[index].text != want[index].text || lines[index].tag != want[index].tag {
+		if lines[index].text != want[index].text || lines[index].tag != want[index].tag || lines[index].old != want[index].old || lines[index].new != want[index].new {
 			t.Fatalf("combined line %d = %#v, want %#v", index, lines[index], want[index])
 		}
 	}

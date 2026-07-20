@@ -8,6 +8,7 @@ import (
 	"math"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -146,6 +147,7 @@ type giti struct {
 	diffBuffer                 *gtk.TextBuffer
 	diffView                   *gtk.TextView
 	diffScroller               *gtk.ScrolledWindow
+	diffGutter                 *gtk.DrawingArea
 	diffFind                   *gtk.SearchEntry
 	diffFindBox                *gtk.Box
 	diffFindCount              *gtk.Label
@@ -165,8 +167,11 @@ type giti struct {
 	notification               *gtk.InfoBar
 	notificationLabel          *gtk.Label
 	overviewMarkers            []overviewMarker
+	diffLineNumbers            []diffLineNumber
 	diffFindMatches            []diffFindMatch
 	overviewLines              int
+	diffGutterDigits           int
+	diffGutterWidth            int
 	diffFindIndex              int
 	diffFindLimited            bool
 	fullFileHandler            glib.SignalHandle
@@ -177,6 +182,19 @@ type giti struct {
 type scrollPosition struct{ horizontal, vertical float64 }
 
 type diffFindMatch struct{ start, end int }
+
+type diffLineKind int8
+
+const (
+	diffLineContext diffLineKind = iota
+	diffLineAdded
+	diffLineRemoved
+)
+
+type diffLineNumber struct {
+	old, new uint32
+	kind     diffLineKind
+}
 
 func diffKey(row historyRow, file changedFile) string {
 	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s", row.kind, row.revision, file.status, file.oldPath, file.path)
@@ -487,6 +505,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.diffView.SetMonospace(true)
 	app.diffView.SetWrapMode(gtk.WRAP_NONE)
 	app.buildDiffOverview()
+	app.buildDiffGutter()
 
 	app.whitespaceToggle = must(gtk.CheckButtonNewWithLabel("Show whitespace changes"))
 	app.whitespaceToggle.SetTooltipText("Off by default: diffs use git --ignore-all-space")
@@ -571,10 +590,12 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	diffBox.PackStart(toolbar, false, false, 4)
 	diffBox.PackStart(app.commitHeader, false, false, 0)
 	app.diffScroller = scroller(app.diffView)
+	app.diffScroller.GetVAdjustment().Connect("value-changed", app.diffGutter.QueueDraw)
 	app.diffOverviewReveal = must(gtk.RevealerNew())
 	app.diffOverviewReveal.SetTransitionDuration(0)
 	app.diffOverviewReveal.Add(app.diffOverview)
 	diffPage := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
+	diffPage.PackStart(app.diffGutter, false, true, 0)
 	diffPage.PackStart(app.diffScroller, true, true, 0)
 	diffPage.PackStart(app.diffOverviewReveal, false, true, 0)
 	app.referencesPage = must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 8))
@@ -652,6 +673,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.window.Add(overlay)
 	app.window.ShowAll()
 	app.notification.Hide()
+	app.diffGutter.Hide()
 	app.searchBack.Hide()
 	app.historySearch.SetText(app.repository.searchPath)
 	app.updateSearchMode()
@@ -835,6 +857,92 @@ func (app *giti) closeDiffFind() {
 	app.diffFindBox.Hide()
 	app.clearDiffFindMatches()
 	app.diffView.GrabFocus()
+}
+
+func (app *giti) buildDiffGutter() {
+	app.diffGutter = must(gtk.DrawingAreaNew())
+	app.diffGutterDigits, app.diffGutterWidth = 2, 80
+	app.diffGutter.SetSizeRequest(app.diffGutterWidth, -1)
+	app.diffGutter.SetVAlign(gtk.ALIGN_FILL)
+	app.diffGutter.SetVExpand(true)
+	app.diffGutter.SetTooltipText("Old and new file line numbers")
+	setAccessibility(&app.diffGutter.Widget, "Diff line numbers", "Old or first-parent line numbers followed by resulting-file line numbers")
+	app.diffGutter.Connect("draw", func(_ *gtk.DrawingArea, context *cairo.Context) bool {
+		width, height := app.diffGutter.GetAllocatedWidth(), app.diffGutter.GetAllocatedHeight()
+		context.SetSourceRGB(.965, .97, .975)
+		context.Paint()
+		if len(app.diffLineNumbers) == 0 || height < 1 {
+			return false
+		}
+		// TextView reports line positions in buffer coordinates; subtract its
+		// visible origin so the independent gutter tracks vertical scrolling.
+		// Wrap is disabled, so every logical line has the same measured height.
+		visible := app.diffView.GetVisibleRect()
+		first := app.diffBuffer.GetStartIter()
+		firstY, lineHeight := app.diffView.GetLineYrange(first)
+		if lineHeight < 1 {
+			return false
+		}
+		line := max(0, (visible.GetY()-firstY)/lineHeight)
+		context.SelectFontFace("monospace", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+		context.SetFontSize(max(8, float64(lineHeight)*.68))
+		digitWidth := context.TextExtents("0").XAdvance
+		// Resize only when the file's digit count or scaled font changes, keeping
+		// the two right-aligned columns compact without clipping large files.
+		columnWidth := int(math.Ceil(digitWidth*float64(app.diffGutterDigits) + 12))
+		requiredWidth := columnWidth*2 + 1
+		if requiredWidth != app.diffGutterWidth {
+			app.diffGutterWidth = requiredWidth
+			app.diffGutter.SetSizeRequest(requiredWidth, -1)
+			return false
+		}
+		font := context.FontExtents()
+		for line < len(app.diffLineNumbers) {
+			iter := app.diffBuffer.GetIterAtLine(line)
+			bufferY, rowHeight := app.diffView.GetLineYrange(iter)
+			y := bufferY - visible.GetY()
+			if y >= height {
+				break
+			}
+			numbers := app.diffLineNumbers[line]
+			switch numbers.kind {
+			case diffLineAdded:
+				context.SetSourceRGB(.843, .961, .867)
+			case diffLineRemoved:
+				context.SetSourceRGB(.976, .843, .851)
+			default:
+				context.SetSourceRGB(.965, .97, .975)
+			}
+			context.Rectangle(0, float64(y), float64(width), float64(rowHeight))
+			context.Fill()
+			switch numbers.kind {
+			case diffLineAdded:
+				context.SetSourceRGB(.09, .30, .13)
+			case diffLineRemoved:
+				context.SetSourceRGB(.41, .13, .15)
+			default:
+				context.SetSourceRGB(.42, .45, .50)
+			}
+			baseline := float64(y) + (float64(rowHeight)-font.Ascent-font.Descent)/2 + font.Ascent
+			for column, number := range []uint32{numbers.old, numbers.new} {
+				if number == 0 {
+					continue
+				}
+				text := strconv.FormatUint(uint64(number), 10)
+				context.MoveTo(float64((column+1)*columnWidth-6)-context.TextExtents(text).XAdvance, baseline)
+				context.ShowText(text)
+			}
+			line++
+		}
+		context.SetSourceRGB(.83, .85, .87)
+		context.SetLineWidth(1)
+		for _, x := range []float64{float64(columnWidth) + .5, float64(width) - .5} {
+			context.MoveTo(x, 0)
+			context.LineTo(x, float64(height))
+		}
+		context.Stroke()
+		return false
+	})
 }
 
 func (app *giti) buildDiffOverview() {
@@ -2047,7 +2155,21 @@ func (app *giti) setDiff(patch string) {
 	app.diffBuffer.SetText("")
 	lines := displayLines(patch)
 	app.overviewMarkers, app.overviewLines = app.overviewMarkers[:0], len(lines)
+	if cap(app.diffLineNumbers) < len(lines) {
+		app.diffLineNumbers = make([]diffLineNumber, len(lines))
+	} else {
+		app.diffLineNumbers = app.diffLineNumbers[:len(lines)]
+	}
+	maxLine := 0
 	for index, line := range lines {
+		kind := diffLineContext
+		if line.tag == "added" {
+			kind = diffLineAdded
+		} else if line.tag == "removed" {
+			kind = diffLineRemoved
+		}
+		app.diffLineNumbers[index] = diffLineNumber{uint32(line.old), uint32(line.new), kind}
+		maxLine = max(maxLine, line.old, line.new)
 		if line.tag != "" {
 			app.overviewMarkers = append(app.overviewMarkers, overviewMarker{line: index, added: line.tag == "added"})
 		}
@@ -2067,6 +2189,9 @@ func (app *giti) setDiff(patch string) {
 		}
 		start = end
 	}
+	app.diffGutterDigits = max(2, len(strconv.Itoa(maxLine)))
+	app.diffGutter.SetVisible(app.fullFileToggle.GetActive() && maxLine > 0)
+	app.diffGutter.QueueDraw()
 	app.diffOverviewReveal.SetRevealChild(app.fullFileToggle.GetActive() && len(app.overviewMarkers) > 0)
 	app.diffOverview.QueueDraw()
 	app.updateDiffFind()
@@ -2074,6 +2199,8 @@ func (app *giti) setDiff(patch string) {
 
 func (app *giti) clearDiff() {
 	app.diffBuffer.SetText("")
+	app.diffLineNumbers = app.diffLineNumbers[:0]
+	app.diffGutter.Hide()
 	app.updateDiffFind()
 }
 
@@ -2084,32 +2211,61 @@ type overviewMarker struct {
 
 type displayLine struct {
 	text, tag string
+	old, new  int
 }
 
 func displayLines(patch string) []displayLine {
 	lines := make([]displayLine, 0)
-	inHeader, prefixWidth := true, 1
+	inHeader, prefixWidth, oldLine, newLine := true, 1, 0, 0
 	for _, line := range splitAfterLines(patch) {
 		if strings.HasPrefix(line, "@@") {
 			inHeader = false
 			// A normal @@ hunk has one prefix column; a combined @@@ hunk has
 			// two, one per parent. A line is colored only when those columns agree.
 			prefixWidth = max(1, len(line)-len(strings.TrimLeft(line, "@"))-1)
+			oldLine, newLine = 0, 0
+			oldSet := false
+			for _, field := range strings.Fields(line) {
+				if len(field) < 2 || field[0] != '-' && field[0] != '+' {
+					continue
+				}
+				start, _ := strconv.Atoi(strings.SplitN(field[1:], ",", 2)[0])
+				if field[0] == '-' && !oldSet {
+					oldLine, oldSet = start, true // Combined diffs use the first parent's range.
+				} else if field[0] == '+' {
+					newLine = start
+				}
+			}
 		} else if inHeader && (strings.HasPrefix(line, "diff --") || strings.HasPrefix(line, "index ") ||
 			strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ")) {
 			continue
 		}
-		tag := ""
-		if !inHeader && len(line) >= prefixWidth {
+		display := displayLine{text: line}
+		if !inHeader && !strings.HasPrefix(line, "@@") && len(line) >= prefixWidth {
 			prefix := line[:prefixWidth]
+			valid := true
+			for _, marker := range prefix {
+				valid = valid && (marker == ' ' || marker == '+' || marker == '-')
+			}
 			switch {
 			case strings.Contains(prefix, "+") && !strings.Contains(prefix, "-"):
-				tag = "added"
+				display.tag = "added"
 			case strings.Contains(prefix, "-") && !strings.Contains(prefix, "+"):
-				tag = "removed"
+				display.tag = "removed"
+			}
+			if valid {
+				// A deletion advances only the old side; an addition advances only
+				// the result. Combined diffs map the old side to their first parent.
+				inResult := !strings.Contains(prefix, "-")
+				if prefix[0] == '-' || prefix[0] == ' ' && inResult {
+					display.old, oldLine = oldLine, oldLine+1
+				}
+				if inResult {
+					display.new, newLine = newLine, newLine+1
+				}
 			}
 		}
-		lines = append(lines, displayLine{text: line, tag: tag})
+		lines = append(lines, display)
 	}
 	return lines
 }
@@ -2192,6 +2348,7 @@ func (app *giti) clearRepositoryView() {
 	app.closeDiffFind()
 	app.diffFind.SetText("")
 	app.clearDiff()
+	app.diffLineNumbers = nil
 	app.fullFilePreferred = false
 	app.fullFileToggle.HandlerBlock(app.fullFileHandler)
 	app.fullFileToggle.SetActive(false)

@@ -28,8 +28,21 @@ func TestDisplayLinesHideRedundantHeaders(t *testing.T) {
 	if strings.Contains(rendered.String(), "diff --git") || strings.Contains(rendered.String(), "index ") || strings.Contains(rendered.String(), "--- ") {
 		t.Fatalf("redundant header retained: %s", rendered.String())
 	}
-	if len(lines) != 3 || lines[0].tag != "" || lines[1].tag != "removed" || lines[2].tag != "added" {
+	if len(lines) != 3 || lines[0].tag != "" || lines[1].tag != "removed" || lines[1].old != 1 || lines[1].new != 0 || lines[2].tag != "added" || lines[2].old != 0 || lines[2].new != 1 {
 		t.Fatalf("unexpected styles: %#v", lines)
+	}
+}
+
+func TestDisplayLinesTrackOldAndNewNumbersAcrossDeletion(t *testing.T) {
+	lines := displayLines("@@ -10,3 +20,2 @@\n context before\n-deleted\n context after\n")
+	want := [][2]int{{0, 0}, {10, 20}, {11, 0}, {12, 21}}
+	if len(lines) != len(want) {
+		t.Fatalf("numbered lines = %#v", lines)
+	}
+	for index, numbers := range want {
+		if lines[index].old != numbers[0] || lines[index].new != numbers[1] {
+			t.Fatalf("line %d numbers = %d/%d, want %d/%d", index, lines[index].old, lines[index].new, numbers[0], numbers[1])
+		}
 	}
 }
 

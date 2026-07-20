@@ -465,7 +465,7 @@ func TestGTKDiffInteraction(t *testing.T) {
 	}
 	start, end := app.diffBuffer.GetBounds()
 	compact, _ := app.diffBuffer.GetText(start, end, true)
-	if !strings.Contains(compact, "+one") || strings.Contains(compact, "second") || strings.Contains(compact, "diff --git") {
+	if !strings.Contains(compact, "+one") || strings.Contains(compact, "second") || strings.Contains(compact, "diff --git") || app.diffGutter.GetVisible() {
 		t.Fatalf("single-file rendered diff is wrong: %q", compact)
 	}
 	app.diffBuffer.SelectRange(start, end)
@@ -477,10 +477,17 @@ func TestGTKDiffInteraction(t *testing.T) {
 	}
 	app.fullFileToggle.SetActive(true)
 	iterateGTKUntil(t, 2*time.Second, func() bool {
-		return app.diffLoaded && app.diffOverviewReveal.GetRevealChild() && app.diffOverview.GetAllocatedWidth() >= 24 && app.diffOverview.GetAllocatedHeight() > 1
+		return app.diffLoaded && app.diffGutter.GetVisible() && app.diffGutter.GetAllocatedWidth() > 1 && app.diffOverviewReveal.GetRevealChild() && app.diffOverview.GetAllocatedWidth() >= 24 && app.diffOverview.GetAllocatedHeight() > 1
 	})
-	if !app.fullFileToggle.GetActive() || !app.diffOverviewReveal.GetRevealChild() || app.diffOverview.GetAllocatedWidth() < 24 || app.diffOverview.GetAllocatedHeight() <= 1 || len(app.overviewMarkers) == 0 {
-		t.Fatalf("full-file overview was not shown: full=%v size=%dx%d markers=%d", app.fullFileToggle.GetActive(), app.diffOverview.GetAllocatedWidth(), app.diffOverview.GetAllocatedHeight(), len(app.overviewMarkers))
+	if !app.fullFileToggle.GetActive() || len(app.diffLineNumbers) != app.overviewLines || !app.diffOverviewReveal.GetRevealChild() || app.diffOverview.GetAllocatedWidth() < 24 || app.diffOverview.GetAllocatedHeight() <= 1 || len(app.overviewMarkers) == 0 {
+		t.Fatalf("full-file navigation was not shown: full=%v gutter=%d lines=%d overview=%dx%d markers=%d", app.fullFileToggle.GetActive(), len(app.diffLineNumbers), app.overviewLines, app.diffOverview.GetAllocatedWidth(), app.diffOverview.GetAllocatedHeight(), len(app.overviewMarkers))
+	}
+	numberedAddition := false
+	for _, numbers := range app.diffLineNumbers {
+		numberedAddition = numberedAddition || numbers.kind == diffLineAdded && numbers.old == 0 && numbers.new > 0
+	}
+	if !numberedAddition {
+		t.Fatalf("full-file gutter did not number an added line: %#v", app.diffLineNumbers)
 	}
 	for gtk.EventsPending() {
 		gtk.MainIteration()
@@ -503,7 +510,7 @@ func TestGTKDiffInteraction(t *testing.T) {
 	}
 	start, end = app.diffBuffer.GetBounds()
 	second, _ := app.diffBuffer.GetText(start, end, true)
-	if !app.fileView.IsFocus() || !app.fullFileToggle.GetActive() || !app.fullFilePreferred || !app.diffOverviewReveal.GetRevealChild() || app.currentFile.path != "second.txt" || !strings.Contains(second, "+second") || strings.Contains(second, "+one") {
+	if !app.fileView.IsFocus() || !app.fullFileToggle.GetActive() || !app.fullFilePreferred || !app.diffGutter.GetVisible() || !app.diffOverviewReveal.GetRevealChild() || app.currentFile.path != "second.txt" || !strings.Contains(second, "+second") || strings.Contains(second, "+one") {
 		t.Fatalf("file switch retained state or content: full=%v file=%#v diff=%q", app.fullFileToggle.GetActive(), app.currentFile, second)
 	}
 	app.fileView.SetCursor(must(gtk.TreePathNewFromIndicesv([]int{0})), nil, false)
