@@ -181,7 +181,7 @@ func TestDisplayLinesUnderstandsCombinedMergePrefixes(t *testing.T) {
 	want := []struct {
 		text, tag string
 		old, new  int
-	}{{"@@@ -1,1 -1,1 +1,1 @@@\n", "", 0, 0}, {"- main\n", "removed", 1, 0}, {" -side\n", "removed", 0, 0}, {"++resolution\n", "added", 0, 1}, {"  context\n", "", 2, 2}}
+	}{{"@@@ -1,1 -1,1 +1,1 @@@\n", "hunk", 0, 0}, {"- main\n", "removed", 1, 0}, {" -side\n", "removed", 0, 0}, {"++resolution\n", "added", 0, 1}, {"  context\n", "", 2, 2}}
 	if len(lines) != len(want) {
 		t.Fatalf("combined display lines = %#v", lines)
 	}

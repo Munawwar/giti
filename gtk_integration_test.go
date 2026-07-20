@@ -467,7 +467,9 @@ func TestGTKDiffInteraction(t *testing.T) {
 	}
 	start, end := app.diffBuffer.GetBounds()
 	compact, _ := app.diffBuffer.GetText(start, end, true)
-	if !strings.Contains(compact, "+one") || strings.Contains(compact, "second") || strings.Contains(compact, "diff --git") || app.diffGutter.GetVisible() {
+	hunkTag := must(must(app.diffBuffer.GetTagTable()).Lookup("hunk"))
+	hunkOffset := strings.Index(compact, "@@")
+	if !strings.Contains(compact, "+one") || strings.Contains(compact, "second") || strings.Contains(compact, "diff --git") || hunkOffset < 0 || !app.diffBuffer.GetIterAtOffset(hunkOffset).HasTag(hunkTag) || app.diffGutter.GetVisible() {
 		t.Fatalf("single-file rendered diff is wrong: %q", compact)
 	}
 	app.diffBuffer.SelectRange(start, end)
@@ -481,7 +483,10 @@ func TestGTKDiffInteraction(t *testing.T) {
 	iterateGTKUntil(t, 2*time.Second, func() bool {
 		return app.diffLoaded && app.diffGutter.GetVisible() && app.diffGutter.GetAllocatedWidth() > 1 && app.diffOverviewReveal.GetRevealChild() && app.diffOverview.GetAllocatedWidth() >= 24 && app.diffOverview.GetAllocatedHeight() > 1
 	})
-	if !app.fullFileToggle.GetActive() || len(app.diffLineNumbers) != app.overviewLines || !app.diffOverviewReveal.GetRevealChild() || app.diffOverview.GetAllocatedWidth() < 24 || app.diffOverview.GetAllocatedHeight() <= 1 || len(app.overviewMarkers) == 0 {
+	fullStart, fullEnd := app.diffBuffer.GetBounds()
+	fullText, _ := app.diffBuffer.GetText(fullStart, fullEnd, true)
+	fullHunkOffset := strings.Index(fullText, "@@")
+	if !app.fullFileToggle.GetActive() || len(app.diffLineNumbers) != app.overviewLines || !app.diffOverviewReveal.GetRevealChild() || app.diffOverview.GetAllocatedWidth() < 24 || app.diffOverview.GetAllocatedHeight() <= 1 || len(app.overviewMarkers) == 0 || fullHunkOffset < 0 || app.diffBuffer.GetIterAtOffset(fullHunkOffset).HasTag(hunkTag) {
 		t.Fatalf("full-file navigation was not shown: full=%v gutter=%d lines=%d overview=%dx%d markers=%d", app.fullFileToggle.GetActive(), len(app.diffLineNumbers), app.overviewLines, app.diffOverview.GetAllocatedWidth(), app.diffOverview.GetAllocatedHeight(), len(app.overviewMarkers))
 	}
 	numberedAddition := false

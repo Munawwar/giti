@@ -499,6 +499,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.diffBuffer = must(gtk.TextBufferNew(nil))
 	app.diffBuffer.CreateTag("added", map[string]any{"background": "#d7f5dd", "foreground": "#174d22"})
 	app.diffBuffer.CreateTag("removed", map[string]any{"background": "#f9d7d9", "foreground": "#682126"})
+	app.diffBuffer.CreateTag("hunk", map[string]any{"background": "#eef0f2", "foreground": "#4b5563"})
 	app.diffBuffer.CreateTag(diffFindTag, map[string]any{"background": "#fff2a8"})
 	app.diffBuffer.CreateTag(diffFindCurrentTag, map[string]any{"background": "#f6bd4f", "foreground": "#2d2100"})
 	app.diffView = must(gtk.TextViewNewWithBuffer(app.diffBuffer))
@@ -2184,22 +2185,26 @@ func (app *giti) setDiff(patch string) {
 		}
 		app.diffLineNumbers[index] = diffLineNumber{uint32(line.old), uint32(line.new), kind}
 		maxLine = max(maxLine, line.old, line.new)
-		if line.tag != "" {
+		if line.tag == "added" || line.tag == "removed" {
 			app.overviewMarkers = append(app.overviewMarkers, overviewMarker{line: index, added: line.tag == "added"})
 		}
 	}
 	for start := 0; start < len(lines); {
 		end, text := start+1, strings.Builder{}
+		tag := lines[start].tag
+		if tag == "hunk" && app.fullFileToggle.GetActive() {
+			tag = ""
+		}
 		text.WriteString(lines[start].text)
 		for end < len(lines) && lines[end].tag == lines[start].tag {
 			text.WriteString(lines[end].text)
 			end++
 		}
 		iter := app.diffBuffer.GetEndIter()
-		if lines[start].tag == "" {
+		if tag == "" {
 			app.diffBuffer.Insert(iter, text.String())
 		} else {
-			app.diffBuffer.InsertWithTagByName(iter, text.String(), lines[start].tag)
+			app.diffBuffer.InsertWithTagByName(iter, text.String(), tag)
 		}
 		start = end
 	}
@@ -2232,7 +2237,8 @@ func displayLines(patch string) []displayLine {
 	lines := make([]displayLine, 0)
 	inHeader, prefixWidth, oldLine, newLine := true, 1, 0, 0
 	for _, line := range splitAfterLines(patch) {
-		if strings.HasPrefix(line, "@@") {
+		hunk := strings.HasPrefix(line, "@@")
+		if hunk {
 			inHeader = false
 			// A normal @@ hunk has one prefix column; a combined @@@ hunk has
 			// two, one per parent. A line is colored only when those columns agree.
@@ -2255,7 +2261,9 @@ func displayLines(patch string) []displayLine {
 			continue
 		}
 		display := displayLine{text: line}
-		if !inHeader && !strings.HasPrefix(line, "@@") && len(line) >= prefixWidth {
+		if hunk {
+			display.tag = "hunk"
+		} else if !inHeader && len(line) >= prefixWidth {
 			prefix := line[:prefixWidth]
 			valid := true
 			for _, marker := range prefix {
