@@ -23,6 +23,9 @@ const (
 	idleDuration        = 12 * time.Hour
 	initialHistoryLimit = 50
 	maxAutoHistory      = 5000
+	maxDiffFindMatches  = 5000
+	diffFindTag         = "find-match"
+	diffFindCurrentTag  = "find-match-current"
 )
 
 //go:embed logo/giti-logo.png
@@ -78,6 +81,13 @@ textview.giti-references text selection {
 infobar.giti-toast {
   border-radius: 6px;
   box-shadow: 0 4px 12px alpha(#000000, 0.24);
+}
+box.giti-diff-find {
+  background-color: @theme_base_color;
+  border: 1px solid alpha(#000000, 0.18);
+  border-radius: 6px;
+  box-shadow: 0 3px 10px alpha(#000000, 0.22);
+  padding: 4px;
 }`
 
 type giti struct {
@@ -93,6 +103,7 @@ type giti struct {
 	diffGeneration             uint64
 	historyGeneration          uint64
 	searchGeneration           uint64
+	diffFindGeneration         uint64
 	notificationGeneration     uint64
 	selectionCancel            context.CancelFunc
 	diffCancel                 context.CancelFunc
@@ -135,6 +146,11 @@ type giti struct {
 	diffBuffer                 *gtk.TextBuffer
 	diffView                   *gtk.TextView
 	diffScroller               *gtk.ScrolledWindow
+	diffFind                   *gtk.SearchEntry
+	diffFindBox                *gtk.Box
+	diffFindCount              *gtk.Label
+	diffFindPrevious           *gtk.Button
+	diffFindNext               *gtk.Button
 	diffOverview               *gtk.DrawingArea
 	diffOverviewReveal         *gtk.Revealer
 	diffStack                  *gtk.Stack
@@ -149,13 +165,18 @@ type giti struct {
 	notification               *gtk.InfoBar
 	notificationLabel          *gtk.Label
 	overviewMarkers            []overviewMarker
+	diffFindMatches            []diffFindMatch
 	overviewLines              int
+	diffFindIndex              int
+	diffFindLimited            bool
 	fullFileHandler            glib.SignalHandle
 	fullMergeHandler           glib.SignalHandle
 	application                *gtk.Application
 }
 
 type scrollPosition struct{ horizontal, vertical float64 }
+
+type diffFindMatch struct{ start, end int }
 
 func diffKey(row historyRow, file changedFile) string {
 	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s", row.kind, row.revision, file.status, file.oldPath, file.path)
@@ -457,6 +478,8 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.diffBuffer = must(gtk.TextBufferNew(nil))
 	app.diffBuffer.CreateTag("added", map[string]any{"background": "#d7f5dd", "foreground": "#174d22"})
 	app.diffBuffer.CreateTag("removed", map[string]any{"background": "#f9d7d9", "foreground": "#682126"})
+	app.diffBuffer.CreateTag(diffFindTag, map[string]any{"background": "#fff2a8"})
+	app.diffBuffer.CreateTag(diffFindCurrentTag, map[string]any{"background": "#f6bd4f", "foreground": "#2d2100"})
 	app.diffView = must(gtk.TextViewNewWithBuffer(app.diffBuffer))
 	setAccessibility(&app.diffView.Widget, "Commit diff", "Patch for the selected file; additions begin with plus and removals with minus")
 	app.diffView.SetEditable(false)
@@ -524,10 +547,16 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		refresh.Connect("activate", func() { app.loadHistory(true) })
 		application.AddAction(refresh)
 		application.SetAccelsForAction("app.refresh", []string{"F5"})
+		findDiff := glib.SimpleActionNew("find-diff", nil)
+		findDiff.Connect("activate", func() { app.handleDiffFindKey(gdk.KEY_f, gdk.CONTROL_MASK) })
+		application.AddAction(findDiff)
+		application.SetAccelsForAction("app.find-diff", []string{"<Primary>f"})
 		appMenu := glib.MenuNew()
+		appMenu.Append("Find in Diff", "app.find-diff")
 		appMenu.Append("Refresh", "app.refresh")
 		application.SetAppMenu(&appMenu.MenuModel)
 		viewMenu := glib.MenuNew()
+		viewMenu.Append("Find in Diff", "app.find-diff")
 		viewMenu.Append("Refresh", "app.refresh")
 		menubar := glib.MenuNew()
 		menubar.AppendSubmenu("View", &viewMenu.MenuModel)
@@ -554,7 +583,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.referencesPage.SetMarginTop(16)
 	app.referencesPage.SetMarginBottom(16)
 	app.diffStack = must(gtk.StackNew())
-	app.diffStack.AddNamed(diffPage, "diff")
+	app.diffStack.AddNamed(app.buildDiffFind(diffPage), "diff")
 	app.diffStack.AddNamed(scroller(app.referencesPage), "references")
 	diffBox.PackStart(app.diffStack, true, true, 0)
 	app.mainPane = must(gtk.PanedNew(gtk.ORIENTATION_HORIZONTAL))
@@ -632,6 +661,180 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	}
 	gtk.AddProviderForScreen(must(gdk.ScreenGetDefault()), app.styleProvider, uint(gtk.STYLE_PROVIDER_PRIORITY_APPLICATION))
 	app.loadHistory(false)
+}
+
+func (app *giti) buildDiffFind(diffPage gtk.IWidget) *gtk.Overlay {
+	// Keep find controls inside the diff page: the stack naturally hides them
+	// on the references page, while the overlay preserves diff viewport space.
+	app.diffFind = must(gtk.SearchEntryNew())
+	app.diffFind.SetPlaceholderText("Find in diff")
+	app.diffFind.SetWidthChars(24)
+	setAccessibility(&app.diffFind.Widget, "Find in diff", "Case-insensitive search within the displayed diff")
+	app.diffFindCount = must(gtk.LabelNew(""))
+	app.diffFindCount.SetWidthChars(12)
+	setAccessibility(&app.diffFindCount.Widget, "Diff search match count", "Current match and total matches")
+	iconButton := func(icon, name, tooltip string) *gtk.Button {
+		button := must(gtk.ButtonNewFromIconName(icon, gtk.ICON_SIZE_BUTTON))
+		button.SetRelief(gtk.RELIEF_NONE)
+		button.SetTooltipText(tooltip)
+		setAccessibility(&button.Widget, name, tooltip)
+		return button
+	}
+	app.diffFindPrevious = iconButton("go-up-symbolic", "Previous diff match", "Previous match (Shift+Enter)")
+	app.diffFindNext = iconButton("go-down-symbolic", "Next diff match", "Next match (Enter)")
+	closeButton := iconButton("window-close-symbolic", "Close diff search", "Close diff search (Escape)")
+	app.diffFindPrevious.SetSensitive(false)
+	app.diffFindNext.SetSensitive(false)
+
+	app.diffFindBox = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 2))
+	app.diffFindBox.SetHAlign(gtk.ALIGN_END)
+	app.diffFindBox.SetVAlign(gtk.ALIGN_START)
+	app.diffFindBox.SetMarginTop(8)
+	app.diffFindBox.SetMarginEnd(8)
+	findContext, _ := app.diffFindBox.GetStyleContext()
+	findContext.AddClass("giti-diff-find")
+	app.diffFindBox.PackStart(app.diffFind, true, true, 0)
+	app.diffFindBox.PackStart(app.diffFindCount, false, false, 2)
+	app.diffFindBox.PackStart(app.diffFindPrevious, false, false, 0)
+	app.diffFindBox.PackStart(app.diffFindNext, false, false, 0)
+	app.diffFindBox.PackStart(closeButton, false, false, 0)
+	// Keep the children ready to display, but exclude the floating bar itself
+	// from repository-opening window.ShowAll calls until Ctrl+F explicitly opens it.
+	app.diffFindBox.ShowAll()
+	app.diffFindBox.Hide()
+	app.diffFindBox.SetNoShowAll(true)
+
+	// Clear stale highlights immediately, then debounce the potentially large
+	// buffer scan. The generation makes superseded timers harmless.
+	app.diffFind.Connect("changed", func() {
+		app.diffFindGeneration++
+		generation := app.diffFindGeneration
+		app.clearDiffFindMatches()
+		query, _ := app.diffFind.GetText()
+		if query != "" {
+			addMainSource(120*time.Millisecond, func() bool {
+				if generation == app.diffFindGeneration && app.diffFindBox.GetVisible() {
+					app.updateDiffFind()
+				}
+				return false
+			})
+		}
+	})
+	// Route entry and toplevel events through one handler so Ctrl+F works from
+	// any pane while Enter, Shift+Enter, and Escape remain browser-like.
+	app.diffFind.Connect("key-press-event", func(_ *gtk.SearchEntry, event *gdk.Event) bool {
+		key := gdk.EventKeyNewFromEvent(event)
+		return app.handleDiffFindKey(key.KeyVal(), gdk.ModifierType(key.State()))
+	})
+	app.diffFindPrevious.Connect("clicked", func() { app.moveDiffFind(-1) })
+	app.diffFindNext.Connect("clicked", func() { app.moveDiffFind(1) })
+	closeButton.Connect("clicked", app.closeDiffFind)
+	app.diffFind.Connect("stop-search", app.closeDiffFind)
+	app.window.Connect("key-press-event", func(_ any, event *gdk.Event) bool {
+		key := gdk.EventKeyNewFromEvent(event)
+		return app.handleDiffFindKey(key.KeyVal(), gdk.ModifierType(key.State()))
+	})
+	overlay := must(gtk.OverlayNew())
+	overlay.Add(diffPage)
+	overlay.AddOverlay(app.diffFindBox)
+	return overlay
+}
+
+func (app *giti) handleDiffFindKey(key uint, modifiers gdk.ModifierType) bool {
+	switch {
+	case modifiers&gdk.CONTROL_MASK != 0 && (key == gdk.KEY_f || key == gdk.KEY_F):
+		if app.diffStack == nil || app.diffStack.GetVisibleChildName() != "diff" {
+			return false
+		}
+		app.diffFindBox.Show()
+		app.updateDiffFind()
+		app.diffFind.GrabFocus()
+		app.diffFind.SelectRegion(0, -1)
+	case (key == gdk.KEY_Return || key == gdk.KEY_KP_Enter) && app.diffFind.IsFocus():
+		direction := 1
+		if modifiers&gdk.SHIFT_MASK != 0 {
+			direction = -1
+		}
+		app.moveDiffFind(direction)
+	case key == gdk.KEY_Escape && app.diffFindBox.GetVisible():
+		app.closeDiffFind()
+	default:
+		return false
+	}
+	return true
+}
+
+func (app *giti) clearDiffFindMatches() {
+	start, end := app.diffBuffer.GetBounds()
+	app.diffBuffer.RemoveTagByName(diffFindTag, start, end)
+	app.diffBuffer.RemoveTagByName(diffFindCurrentTag, start, end)
+	app.diffFindMatches, app.diffFindIndex, app.diffFindLimited = app.diffFindMatches[:0], -1, false
+	app.diffFindCount.SetText("")
+	app.diffFindPrevious.SetSensitive(false)
+	app.diffFindNext.SetSensitive(false)
+}
+
+func (app *giti) updateDiffFind() {
+	app.diffFindGeneration++
+	app.clearDiffFindMatches()
+	query, _ := app.diffFind.GetText()
+	if query == "" || !app.diffFindBox.GetVisible() {
+		return
+	}
+	flags := gtk.TEXT_SEARCH_CASE_INSENSITIVE | gtk.TEXT_SEARCH_VISIBLE_ONLY | gtk.TEXT_SEARCH_TEXT_ONLY
+	for cursor := app.diffBuffer.GetStartIter(); ; {
+		matchStart, matchEnd, found := cursor.ForwardSearch(query, flags, nil)
+		if !found {
+			break
+		}
+		if len(app.diffFindMatches) == maxDiffFindMatches {
+			app.diffFindLimited = true
+			break
+		}
+		// Applying millions of tags can freeze GTK for common one-character
+		// queries; report the bounded result as 5000+ and keep navigation usable.
+		app.diffFindMatches = append(app.diffFindMatches, diffFindMatch{matchStart.GetOffset(), matchEnd.GetOffset()})
+		app.diffBuffer.ApplyTagByName(diffFindTag, matchStart, matchEnd)
+		cursor = matchEnd
+	}
+	if len(app.diffFindMatches) == 0 {
+		app.diffFindCount.SetText("0 / 0")
+		return
+	}
+	app.diffFindPrevious.SetSensitive(true)
+	app.diffFindNext.SetSensitive(true)
+	app.selectDiffFindMatch(0)
+}
+
+func (app *giti) selectDiffFindMatch(index int) {
+	if len(app.diffFindMatches) == 0 {
+		return
+	}
+	start, end := app.diffBuffer.GetBounds()
+	app.diffBuffer.RemoveTagByName(diffFindCurrentTag, start, end)
+	app.diffFindIndex = (index%len(app.diffFindMatches) + len(app.diffFindMatches)) % len(app.diffFindMatches)
+	match := app.diffFindMatches[app.diffFindIndex]
+	start, end = app.diffBuffer.GetIterAtOffset(match.start), app.diffBuffer.GetIterAtOffset(match.end)
+	app.diffBuffer.ApplyTagByName(diffFindCurrentTag, start, end)
+	limited := ""
+	if app.diffFindLimited {
+		limited = "+"
+	}
+	app.diffFindCount.SetText(fmt.Sprintf("%d / %d%s", app.diffFindIndex+1, len(app.diffFindMatches), limited))
+	app.diffView.ScrollToIter(start, .2, true, .5, .35)
+}
+
+func (app *giti) moveDiffFind(direction int) {
+	if len(app.diffFindMatches) > 0 {
+		app.selectDiffFindMatch(app.diffFindIndex + direction)
+	}
+}
+
+func (app *giti) closeDiffFind() {
+	app.diffFindGeneration++
+	app.diffFindBox.Hide()
+	app.clearDiffFindMatches()
+	app.diffView.GrabFocus()
 }
 
 func (app *giti) buildDiffOverview() {
@@ -1546,6 +1749,9 @@ func (app *giti) showReferences(branches, tags []string) {
 	if app.diffStack == nil || app.referencesPage == nil {
 		return
 	}
+	if app.diffFindBox.GetVisible() {
+		app.closeDiffFind()
+	}
 	branches, tags = sortedReferences(branches, tags)
 	if children := app.referencesPage.GetChildren(); children != nil {
 		children.Foreach(func(child any) { app.referencesPage.Remove(child.(gtk.IWidget)) })
@@ -1650,7 +1856,7 @@ func (app *giti) onHistorySelected() {
 	app.diffGeneration++
 	app.resetDiffOverview()
 	app.rememberDiffScroll()
-	app.diffBuffer.SetText("")
+	app.clearDiff()
 	app.setCommitHeader(commitDetails{subject: "Loading commit details…"})
 	app.fileSummary.SetText("Loading changed files…")
 	previousPath := ""
@@ -1789,7 +1995,7 @@ func (app *giti) onFileSelected() {
 	app.currentFile = file
 	app.diffLoaded = false
 	app.fullFileToggle.SetSensitive(false)
-	app.diffBuffer.SetText("")
+	app.clearDiff()
 	app.resetDiffOverview()
 	app.diffScroller.GetHAdjustment().SetValue(0)
 	app.diffScroller.GetVAdjustment().SetValue(0)
@@ -1863,6 +2069,12 @@ func (app *giti) setDiff(patch string) {
 	}
 	app.diffOverviewReveal.SetRevealChild(app.fullFileToggle.GetActive() && len(app.overviewMarkers) > 0)
 	app.diffOverview.QueueDraw()
+	app.updateDiffFind()
+}
+
+func (app *giti) clearDiff() {
+	app.diffBuffer.SetText("")
+	app.updateDiffFind()
 }
 
 type overviewMarker struct {
@@ -1977,7 +2189,9 @@ func (app *giti) clearRepositoryView() {
 	app.fileSummary.SetText("Select a history entry to see changed files")
 	app.fileSummary.SetTooltipText("")
 	app.setCommitHeader(commitDetails{})
-	app.diffBuffer.SetText("")
+	app.closeDiffFind()
+	app.diffFind.SetText("")
+	app.clearDiff()
 	app.fullFilePreferred = false
 	app.fullFileToggle.HandlerBlock(app.fullFileHandler)
 	app.fullFileToggle.SetActive(false)

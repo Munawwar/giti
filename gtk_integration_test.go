@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -105,9 +106,13 @@ func TestGTKApplicationMenu(t *testing.T) {
 	}()
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil })
 	refresh := application.LookupAction("refresh")
-	if application.GetAppMenu() == nil || application.GetMenubar() == nil || application.GetMenubar().GetNItems() != 1 || refresh == nil || !refresh.GetEnabled() {
-		t.Fatal("refresh menu or enabled action was not installed")
+	findDiff := application.LookupAction("find-diff")
+	if application.GetAppMenu() == nil || application.GetAppMenu().GetNItems() != 2 || application.GetMenubar() == nil || application.GetMenubar().GetNItems() != 1 || refresh == nil || !refresh.GetEnabled() || findDiff == nil || !findDiff.GetEnabled() {
+		t.Fatal("refresh and find menu actions were not installed")
 	}
+	findDiff.Activate(nil)
+	iterateGTKUntil(t, time.Second, func() bool { return app.diffFindBox.GetVisible() && app.diffFind.IsFocus() })
+	app.closeDiffFind()
 	if err = os.WriteFile(filepath.Join(path, "refresh.txt"), []byte("refresh\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -366,6 +371,69 @@ func TestGTKGraphRenderingAndReferences(t *testing.T) {
 	themeName, isThemeName := theme.(string)
 	if themeErr != nil || !isThemeName || strings.HasSuffix(themeName, "-dark") {
 		t.Fatalf("Giti did not force a light GTK theme: theme=%q err=%v", theme, themeErr)
+	}
+}
+
+func TestGTKDiffFindShortcutNavigationAndFileSwitch(t *testing.T) {
+	_, app := newGTKIntegrationApp(t)
+	iterateGTKUntil(t, 3*time.Second, func() bool {
+		return app.diffLoaded && app.currentFile != nil && app.currentFile.path == "first.txt"
+	})
+	app.window.ShowAll()
+	if app.diffFindBox.GetVisible() {
+		t.Fatal("repository-opening ShowAll revealed the diff search")
+	}
+	app.diffView.GrabFocus()
+	if !app.handleDiffFindKey(gdk.KEY_f, gdk.CONTROL_MASK) {
+		t.Fatal("Ctrl+F was not handled in the diff")
+	}
+	iterateGTKUntil(t, time.Second, func() bool { return app.diffFindBox.GetVisible() && app.diffFind.IsFocus() })
+	app.diffFind.SetText("MORE")
+	iterateGTKUntil(t, 2*time.Second, func() bool { return len(app.diffFindMatches) > 1 })
+	count, _ := app.diffFindCount.GetText()
+	if app.diffFindIndex != 0 || count != fmt.Sprintf("1 / %d", len(app.diffFindMatches)) {
+		t.Fatalf("initial diff match was not selected: index=%d count=%q", app.diffFindIndex, count)
+	}
+	currentTag := must(must(app.diffBuffer.GetTagTable()).Lookup(diffFindCurrentTag))
+	if !app.diffBuffer.GetIterAtOffset(app.diffFindMatches[0].start).HasTag(currentTag) {
+		t.Fatal("current diff match was not highlighted")
+	}
+	app.diffFindNext.Clicked()
+	if app.diffFindIndex != 1 {
+		t.Fatalf("next diff match selected index %d", app.diffFindIndex)
+	}
+	if !app.handleDiffFindKey(gdk.KEY_Return, gdk.SHIFT_MASK) || app.diffFindIndex != 0 {
+		t.Fatalf("Shift+Enter did not select the previous diff match: index=%d", app.diffFindIndex)
+	}
+	app.diffFindPrevious.Clicked()
+	if app.diffFindIndex != len(app.diffFindMatches)-1 {
+		t.Fatalf("previous diff match did not wrap: index=%d", app.diffFindIndex)
+	}
+	app.diffFindNext.Clicked()
+
+	app.diffFind.SetText("second")
+	iterateGTKUntil(t, time.Second, func() bool {
+		count, _ = app.diffFindCount.GetText()
+		return count == "0 / 0"
+	})
+	if app.diffFindNext.GetSensitive() || app.diffFindPrevious.GetSensitive() {
+		t.Fatal("navigation remained enabled without diff matches")
+	}
+	selection, _ := app.fileView.GetSelection()
+	selection.SelectPath(must(gtk.TreePathNewFromIndicesv([]int{1})))
+	iterateGTKUntil(t, 3*time.Second, func() bool {
+		return app.diffLoaded && app.currentFile != nil && app.currentFile.path == "second.txt" && len(app.diffFindMatches) == 1
+	})
+	query, _ := app.diffFind.GetText()
+	if !app.diffFindBox.GetVisible() || query != "second" || app.diffFindIndex != 0 {
+		t.Fatalf("file switch did not rerun the open diff search: visible=%v query=%q index=%d", app.diffFindBox.GetVisible(), query, app.diffFindIndex)
+	}
+	if !app.handleDiffFindKey(gdk.KEY_Escape, 0) {
+		t.Fatal("Escape was not handled by the diff search")
+	}
+	iterateGTKUntil(t, time.Second, func() bool { return !app.diffFindBox.GetVisible() })
+	if len(app.diffFindMatches) != 0 {
+		t.Fatalf("closing diff search retained %d matches", len(app.diffFindMatches))
 	}
 }
 
