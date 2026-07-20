@@ -220,9 +220,9 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	longBranch := "feature/" + strings.Repeat("copyable-reference-", 8)
 	details := commitDetails{sha: strings.Repeat("a", 40), subject: "subject", branches: []string{longBranch}, additions: 12, deletions: 3, untracked: 4, statistics: true}
 	app.setCommitHeader(details)
-	children := app.commitHeader.GetChildren()
-	compactHeader := children.Length()
-	children.Free()
+	detailChildren := app.headerDetails.GetChildren()
+	compactDetails := detailChildren.Length()
+	detailChildren.Free()
 	referenceButton := app.headerReferenceButtons[0]
 	referenceWidget, referenceErr := referenceButton.GetChild()
 	referenceLabel, labelOK := referenceWidget.(*gtk.Label)
@@ -239,17 +239,13 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	copyNotification, notificationErr := app.notificationLabel.GetText()
 	details.body = "A longer description\n\nwith multiple lines."
 	app.setCommitHeader(details)
-	children = app.commitHeader.GetChildren()
-	expandedHeader := children.Length()
-	headerRowWidget := children.NthData(0).(*gtk.Widget)
-	headerRowValue, headerRowErr := headerRowWidget.Cast()
-	headerRow, headerRowOK := headerRowValue.(*gtk.Box)
-	if headerRowErr != nil || !headerRowOK {
-		t.Fatalf("commit header title row is not a box: %T %v", headerRowValue, headerRowErr)
-	}
-	headerChildren := headerRow.GetChildren()
+	detailChildren = app.headerDetails.GetChildren()
+	expandedDetails := detailChildren.Length()
+	headerChildren := app.headerTitleRow.GetChildren()
 	headerTitle, titleErr := gtk.WidgetToLabel(headerChildren.NthData(0).(*gtk.Widget))
-	headerMeta, metaErr := gtk.WidgetToLabel(children.NthData(2).(*gtk.Widget))
+	headerMeta, metaErr := gtk.WidgetToLabel(detailChildren.NthData(0).(*gtk.Widget))
+	commitChildren := app.headerCommit.GetChildren()
+	shaLabel, shaErr := gtk.WidgetToLabel(commitChildren.NthData(1).(*gtk.Widget))
 	statLabels := make([]string, 0, 3)
 	for index := uint(1); index < headerChildren.Length(); index++ {
 		label, labelErr := gtk.WidgetToLabel(headerChildren.NthData(index).(*gtk.Widget))
@@ -259,11 +255,17 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 		}
 	}
 	headerChildren.Free()
-	children.Free()
+	commitChildren.Free()
+	detailChildren.Free()
+	fullFileLabel, _ := app.fullFileToggle.GetLabel()
+	whitespaceLabel, _ := app.whitespaceToggle.GetLabel()
+	fullMergeLabel, _ := app.fullMergeToggle.GetLabel()
+	shaTooltip, shaTooltipErr := shaLabel.GetTooltipText()
 	referenceValid := labelOK && textErr == nil && !referenceLabel.GetSelectable() && referenceLabel.GetEllipsize() == pango.ELLIPSIZE_END && strings.Contains(referenceValue, longBranch) && referenceButton.GetCanFocus() && copiedReference == longBranch && copyReferenceErr == nil && app.notification.GetVisible() && copyNotification == "Copied branch to clipboard." && notificationErr == nil && app.mainPane.GetAllocatedWidth() == contentWidth && app.mainPane.GetAllocatedHeight() == contentHeight
 	statisticsValid := strings.Join(statLabels, ",") == "+12,−3,4 untracked"
-	if expandedHeader != compactHeader+1 || titleErr != nil || metaErr != nil || referenceErr != nil || !referenceValid || !statisticsValid || !headerTitle.GetSelectable() || !headerMeta.GetSelectable() {
-		t.Fatalf("commit header copy control is incomplete: compact=%d body=%d title=%v meta=%v reference=%q/%v/%v/%v copied=%q/%v notification=%q/%v content=%dx%d/%dx%d", compactHeader, expandedHeader, titleErr, metaErr, referenceValue, referenceErr, labelOK, textErr, copiedReference, copyReferenceErr, copyNotification, notificationErr, contentWidth, contentHeight, app.mainPane.GetAllocatedWidth(), app.mainPane.GetAllocatedHeight())
+	controlsValid := fullFileLabel == "Show full file" && whitespaceLabel == "Whitespace changes" && fullMergeLabel == "Full merge" && shaErr == nil && shaTooltipErr == nil && shaLabel.GetEllipsize() == pango.ELLIPSIZE_MIDDLE && shaTooltip == details.sha
+	if expandedDetails != compactDetails+1 || titleErr != nil || metaErr != nil || referenceErr != nil || !referenceValid || !statisticsValid || !controlsValid || !headerTitle.GetSelectable() || !headerMeta.GetSelectable() || !shaLabel.GetSelectable() {
+		t.Fatalf("commit header copy control is incomplete: compact=%d body=%d title=%v meta=%v sha=%v controls=%q/%q/%q reference=%q/%v/%v/%v copied=%q/%v notification=%q/%v content=%dx%d/%dx%d", compactDetails, expandedDetails, titleErr, metaErr, shaErr, fullFileLabel, whitespaceLabel, fullMergeLabel, referenceValue, referenceErr, labelOK, textErr, copiedReference, copyReferenceErr, copyNotification, notificationErr, contentWidth, contentHeight, app.mainPane.GetAllocatedWidth(), app.mainPane.GetAllocatedHeight())
 	}
 	syncedDetails := commitDetails{
 		sha:       strings.Repeat("b", 40),

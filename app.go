@@ -144,6 +144,9 @@ type giti struct {
 	searchPlaceholder          *gtk.Label
 	searchLoadButton           *gtk.Button
 	commitHeader               *gtk.Box
+	headerTitleRow             *gtk.Box
+	headerCommit               *gtk.Box
+	headerDetails              *gtk.Box
 	diffBuffer                 *gtk.TextBuffer
 	diffView                   *gtk.TextView
 	diffScroller               *gtk.ScrolledWindow
@@ -507,18 +510,20 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.buildDiffOverview()
 	app.buildDiffGutter()
 
-	app.whitespaceToggle = must(gtk.CheckButtonNewWithLabel("Show whitespace changes"))
-	app.whitespaceToggle.SetTooltipText("Off by default: diffs use git --ignore-all-space")
+	app.whitespaceToggle = must(gtk.CheckButtonNewWithLabel("Whitespace changes"))
+	app.whitespaceToggle.SetTooltipText("Show whitespace-only changes; off by default, diffs use git --ignore-all-space")
 	app.whitespaceToggle.Connect("toggled", app.onWhitespaceToggled)
 	app.fullFileToggle = must(gtk.CheckButtonNewWithLabel("Show full file"))
+	app.fullFileToggle.SetTooltipText("Show unchanged lines from the complete file")
 	app.fullFileHandler = app.fullFileToggle.Connect("toggled", func() {
 		app.fullFilePreferred = app.fullFileToggle.GetActive()
 		if app.currentFile != nil {
 			app.onFileSelected()
 		}
 	})
-	app.fullMergeToggle = must(gtk.CheckButtonNewWithLabel("Show full merge"))
+	app.fullMergeToggle = must(gtk.CheckButtonNewWithLabel("Full merge"))
 	app.fullMergeToggle.SetTooltipText("Off: show the compact combined merge-resolution diff; on: compare the merge with its first parent")
+	app.fullMergeToggle.SetNoShowAll(true)
 	app.fullMergeToggle.SetVisible(false)
 	app.fullMergeHandler = app.fullMergeToggle.Connect("toggled", func() {
 		if app.currentRow != nil && app.currentRow.kind == "commit" && len(app.currentRow.parents) > 1 {
@@ -557,10 +562,6 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	fileBox.PackStart(scroller(app.fileView), true, true, 0)
 	app.repositoryPane.Pack2(fileBox, true, true)
 
-	toolbar := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
-	toolbar.PackEnd(app.whitespaceToggle, false, false, 8)
-	toolbar.PackEnd(app.fullFileToggle, false, false, 0)
-	toolbar.PackEnd(app.fullMergeToggle, false, false, 8)
 	if application != nil {
 		refresh := glib.SimpleActionNew("refresh", nil)
 		refresh.Connect("activate", func() { app.loadHistory(true) })
@@ -586,8 +587,18 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.commitHeader.SetMarginEnd(12)
 	app.commitHeader.SetMarginTop(8)
 	app.commitHeader.SetMarginBottom(8)
+	app.headerTitleRow = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
+	headerActionRow := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
+	app.headerCommit = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
+	app.headerDetails = must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 2))
+	headerActionRow.PackStart(app.headerCommit, false, false, 0)
+	headerActionRow.PackEnd(app.whitespaceToggle, false, false, 8)
+	headerActionRow.PackEnd(app.fullFileToggle, false, false, 0)
+	headerActionRow.PackEnd(app.fullMergeToggle, false, false, 8)
+	app.commitHeader.PackStart(app.headerTitleRow, false, false, 0)
+	app.commitHeader.PackStart(headerActionRow, false, false, 0)
+	app.commitHeader.PackStart(app.headerDetails, false, false, 0)
 	diffBox := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 4))
-	diffBox.PackStart(toolbar, false, false, 4)
 	diffBox.PackStart(app.commitHeader, false, false, 0)
 	app.diffScroller = scroller(app.diffView)
 	app.diffScroller.GetVAdjustment().Connect("value-changed", app.diffGutter.QueueDraw)
@@ -1675,20 +1686,21 @@ func (app *giti) openSearchResult(index int) {
 }
 
 func (app *giti) setCommitHeader(details commitDetails) {
-	// Rebuild the header as one snapshot so controls cannot retain callbacks or
-	// copy targets from the previously selected commit.
+	// The title, commit identity, and detail regions change with selection. The
+	// action row stays mounted so its toggles retain their state and callbacks.
 	app.headerReferenceButtons = nil
-	if children := app.commitHeader.GetChildren(); children != nil {
-		children.Foreach(func(child any) { app.commitHeader.Remove(child.(gtk.IWidget)) })
-		children.Free()
+	for _, box := range []*gtk.Box{app.headerTitleRow, app.headerCommit, app.headerDetails} {
+		if children := box.GetChildren(); children != nil {
+			children.Foreach(func(child any) { box.Remove(child.(gtk.IWidget)) })
+			children.Free()
+		}
 	}
 	title := must(gtk.LabelNew(""))
 	title.SetXAlign(0)
 	title.SetSelectable(true)
 	title.SetEllipsize(pango.ELLIPSIZE_END)
 	title.SetMarkup("<span size=\"large\" weight=\"bold\">" + html.EscapeString(details.subject) + "</span>")
-	titleRow := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
-	titleRow.PackStart(title, true, true, 0)
+	app.headerTitleRow.PackStart(title, true, true, 0)
 	// Keep aggregate statistics outside the ellipsized title so they remain
 	// visible even for unusually long subjects.
 	if details.statistics {
@@ -1698,7 +1710,7 @@ func (app *giti) setCommitHeader(details commitDetails) {
 			context, _ := badge.GetStyleContext()
 			context.AddClass("giti-stat")
 			badge.SetTooltipText("Line totals exclude binary and untracked files")
-			titleRow.PackStart(badge, false, false, 0)
+			app.headerTitleRow.PackStart(badge, false, false, 0)
 		}
 		additionContext, _ := additions.GetStyleContext()
 		additionContext.AddClass("giti-additions")
@@ -1710,28 +1722,30 @@ func (app *giti) setCommitHeader(details commitDetails) {
 			context.AddClass("giti-stat")
 			context.AddClass("giti-untracked")
 			untracked.SetTooltipText("Untracked files have no line counts")
-			titleRow.PackStart(untracked, false, false, 0)
+			app.headerTitleRow.PackStart(untracked, false, false, 0)
 		}
 	}
-	app.commitHeader.PackStart(titleRow, false, false, 0)
 	if details.sha == "" {
 		app.commitHeader.ShowAll()
 		return
 	}
-	commit := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
 	commitLabel := must(gtk.LabelNew(""))
-	commitLabel.SetXAlign(0)
-	commitLabel.SetSelectable(true)
-	commitLabel.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Commit</b> <tt>%s</tt></span>", html.EscapeString(details.sha)))
-	commit.PackStart(commitLabel, false, false, 0)
-	commit.PackStart(app.copySHAButton(details.sha), false, false, 0)
-	app.commitHeader.PackStart(commit, false, false, 0)
+	commitLabel.SetMarkup("<span foreground=\"#4b5563\"><b>Commit</b></span>")
+	shaLabel := must(gtk.LabelNew(""))
+	shaLabel.SetXAlign(0)
+	shaLabel.SetSelectable(true)
+	shaLabel.SetEllipsize(pango.ELLIPSIZE_MIDDLE)
+	shaLabel.SetTooltipText(details.sha)
+	shaLabel.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><tt>%s</tt></span>", html.EscapeString(details.sha)))
+	app.headerCommit.PackStart(commitLabel, false, false, 0)
+	app.headerCommit.PackStart(shaLabel, true, true, 0)
+	app.headerCommit.PackStart(app.copySHAButton(details.sha), false, false, 0)
 	meta := must(gtk.LabelNew(""))
 	meta.SetXAlign(0)
 	meta.SetLineWrap(true)
 	meta.SetSelectable(true)
 	meta.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Author</b> %s &lt;%s&gt;  ·  %s\n<b>Committer</b> %s &lt;%s&gt;  ·  %s</span>", html.EscapeString(details.author), html.EscapeString(details.authorEmail), html.EscapeString(details.authored), html.EscapeString(details.committer), html.EscapeString(details.committerEmail), html.EscapeString(details.committed)))
-	app.commitHeader.PackStart(meta, false, false, 0)
+	app.headerDetails.PackStart(meta, false, false, 0)
 	if len(details.branches) > 0 || len(details.tags) > 0 {
 		refs := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 6))
 		// Reference badges are buttons because their visible text may be shortened;
@@ -1806,7 +1820,7 @@ func (app *giti) setCommitHeader(details commitDetails) {
 			more.Connect("clicked", func() { app.showReferences(details.branches, details.tags) })
 			refs.PackStart(more, false, false, 0)
 		}
-		app.commitHeader.PackStart(refs, false, false, 0)
+		app.headerDetails.PackStart(refs, false, false, 0)
 	}
 	if len(details.parents) > 0 {
 		parents := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 4))
@@ -1824,7 +1838,7 @@ func (app *giti) setCommitHeader(details commitDetails) {
 			})
 			parents.PackStart(button, false, false, 0)
 		}
-		app.commitHeader.PackStart(parents, false, false, 0)
+		app.headerDetails.PackStart(parents, false, false, 0)
 	}
 	if details.body != "" {
 		expander := must(gtk.ExpanderNew("Commit description"))
@@ -1842,7 +1856,7 @@ func (app *giti) setCommitHeader(details commitDetails) {
 		message.SetMaxContentHeight(180)
 		message.SetPropagateNaturalHeight(true)
 		expander.Add(message)
-		app.commitHeader.PackStart(expander, false, false, 4)
+		app.headerDetails.PackStart(expander, false, false, 4)
 	}
 	app.commitHeader.ShowAll()
 }
@@ -2133,7 +2147,7 @@ func (app *giti) onFileSelected() {
 			if !allowed {
 				app.fullFileToggle.SetTooltipText("Disabled for files larger than 2 MiB")
 			} else {
-				app.fullFileToggle.SetTooltipText("")
+				app.fullFileToggle.SetTooltipText("Show unchanged lines from the complete file")
 			}
 			app.fullFileToggle.HandlerUnblock(app.fullFileHandler)
 			app.setDiff(patch)
