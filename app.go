@@ -499,7 +499,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.diffBuffer = must(gtk.TextBufferNew(nil))
 	app.diffBuffer.CreateTag("added", map[string]any{"background": "#d7f5dd", "foreground": "#174d22"})
 	app.diffBuffer.CreateTag("removed", map[string]any{"background": "#f9d7d9", "foreground": "#682126"})
-	app.diffBuffer.CreateTag("hunk", map[string]any{"background": "#eef0f2", "foreground": "#4b5563"})
+	app.diffBuffer.CreateTag("hunk", map[string]any{"paragraph-background": "#eef0f2", "foreground": "#4b5563"})
 	app.diffBuffer.CreateTag(diffFindTag, map[string]any{"background": "#fff2a8"})
 	app.diffBuffer.CreateTag(diffFindCurrentTag, map[string]any{"background": "#f6bd4f", "foreground": "#2d2100"})
 	app.diffView = must(gtk.TextViewNewWithBuffer(app.diffBuffer))
