@@ -2,8 +2,8 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-if pkg-config --exists gtk+-3.0; then
-    echo "System GTK 3 development files are already available."
+if pkg-config --atleast-version=3.24 gtk+-3.0; then
+    echo "System GTK 3.24 or newer development files are already available."
     exit 0
 fi
 
@@ -32,4 +32,8 @@ for pc in "$prefix/lib/x86_64-linux-gnu/pkgconfig"/*.pc; do
     sed -i "s|^prefix=/usr$|prefix=$prefix|" "$pc"
 done
 
+PKG_CONFIG_PATH="$prefix/lib/x86_64-linux-gnu/pkgconfig" pkg-config --atleast-version=3.24 gtk+-3.0 || {
+    echo "Downloaded GTK development files are older than 3.24." >&2
+    exit 1
+}
 PKG_CONFIG_PATH="$prefix/lib/x86_64-linux-gnu/pkgconfig" pkg-config --modversion gtk+-3.0

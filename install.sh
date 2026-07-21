@@ -63,8 +63,8 @@ if [ "$BUILD_FRESH" = false ]; then
     test -x "$GITI_BIN" || { echo "Included binary is missing; rerun with --build." >&2; exit 1; }
 fi
 
-if [ "$SKIP_DEPS" = false ] && [ "$BUILD_FRESH" = true ] && { ! command -v gcc >/dev/null || ! command -v git >/dev/null || ! command -v pkg-config >/dev/null || ! pkg-config --exists gtk+-3.0; }; then
-    command -v apt-get >/dev/null || { echo "Install gcc, git, pkg-config, and GTK 3 development files, then rerun." >&2; exit 1; }
+if [ "$SKIP_DEPS" = false ] && [ "$BUILD_FRESH" = true ] && { ! command -v gcc >/dev/null || ! command -v git >/dev/null || ! command -v pkg-config >/dev/null || ! pkg-config --atleast-version=3.24 gtk+-3.0; }; then
+    command -v apt-get >/dev/null || { echo "Install gcc, git, pkg-config, and GTK 3.24 or newer development files, then rerun." >&2; exit 1; }
     SUDO=
     if [ "$(id -u)" -ne 0 ]; then
         command -v sudo >/dev/null || { echo "sudo is needed to install missing system dependencies." >&2; exit 1; }
@@ -74,8 +74,8 @@ if [ "$SKIP_DEPS" = false ] && [ "$BUILD_FRESH" = true ] && { ! command -v gcc >
     $SUDO apt-get install -y build-essential pkg-config libgtk-3-dev git
 fi
 
-if [ "$SKIP_DEPS" = false ] && [ "$BUILD_FRESH" = false ] && { ! command -v git >/dev/null || ! ldd "$GITI_BIN" 2>/dev/null | grep -q 'libgtk-3.so.0 => /'; }; then
-    command -v apt-get >/dev/null || { echo "Install Git and GTK 3 runtime libraries, then rerun." >&2; exit 1; }
+if [ "$SKIP_DEPS" = false ] && [ "$BUILD_FRESH" = false ] && { ! command -v git >/dev/null || ! "$GITI_BIN" --check-gtk >/dev/null 2>&1; }; then
+    command -v apt-get >/dev/null || { echo "Install Git and GTK 3.24 or newer runtime libraries, then rerun." >&2; exit 1; }
     SUDO=
     if [ "$(id -u)" -ne 0 ]; then
         command -v sudo >/dev/null || { echo "sudo is needed to install missing runtime dependencies." >&2; exit 1; }
@@ -83,6 +83,9 @@ if [ "$SKIP_DEPS" = false ] && [ "$BUILD_FRESH" = false ] && { ! command -v git 
     fi
     $SUDO apt-get update
     $SUDO apt-get install -y libgtk-3-0 git
+fi
+if [ "$BUILD_FRESH" = false ]; then
+    "$GITI_BIN" --check-gtk
 fi
 
 if [ "$BUILD_FRESH" = true ]; then

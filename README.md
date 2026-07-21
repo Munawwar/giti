@@ -25,7 +25,7 @@ giti -1 # force restart resident window
 ## Installation
 
 The Linux x86_64 release binary is included in `bin/`, so most users can install
-without Go or a compiler:
+without Go or a compiler. Giti requires GTK 3.24 or newer (Ubuntu 20.04+):
 
 ```sh
 ./install.sh
@@ -42,9 +42,10 @@ Installation is idempotent: rerunning the installer updates the same files
 without adding anything to your shell startup files.
 
 Choose **Yes** at the prompt, or use `./install.sh --build`, to compile from
-source. That path requires Go 1.24 or newer; install it using the official
-[Go installation instructions](https://go.dev/doc/install). It automatically
-installs missing Ubuntu build dependencies too.
+source. That path requires Go 1.24 or newer and GTK 3.24 or newer development
+files; install Go using the official
+[Go installation instructions](https://go.dev/doc/install). The installer
+automatically installs missing Ubuntu build dependencies too.
 
 For a system-wide `/usr/local` installation, use:
 

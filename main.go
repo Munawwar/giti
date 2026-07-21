@@ -13,6 +13,13 @@ import (
 const applicationID = "io.github.Munawwar.Giti"
 
 func main() {
+	if err := gtk.CheckVersion(3, 24, 0); err != nil {
+		fmt.Fprintln(os.Stderr, "giti: GTK 3.24 or newer is required:", err)
+		os.Exit(1)
+	}
+	if len(os.Args) == 2 && os.Args[1] == "--check-gtk" {
+		return
+	}
 	if len(os.Args) < 2 || os.Args[1] != "--resident" && os.Args[1] != "--ephemeral" {
 		launch(os.Args)
 		return
