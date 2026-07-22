@@ -118,9 +118,10 @@ giti --follow -- README.md
 ```
 
 The search options popover switches between commit-text and file-history modes.
-Text mode can additionally match commit descriptions and references; file mode
-loads the newest 50 matches initially, can load older matches in batches of 100,
-and can follow one file across renames. An optional starting revision and
+Text mode scans the complete commit history in cancellable background batches
+and can additionally match commit descriptions and references. File mode loads
+the newest 50 matches initially, can load older matches in batches of 100, and
+can follow one file across renames. An optional starting revision and
 `-f`/`--foreground` can be combined with these forms. Revision ranges and other
 `git log` flags are not currently accepted.
 

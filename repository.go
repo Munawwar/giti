@@ -385,18 +385,95 @@ func (repo *repository) commitHistoryContext(ctx context.Context, count int, inc
 	// and for reporting whether more history exists.
 	commits, parts, width := make([]historyRow, 0, count+1), strings.Split(output, "\x00"), len(fields)
 	for index := 0; index+width <= len(parts); index += width {
-		values := parts[index : index+width]
-		timestamp, _ := strconv.ParseInt(values[4], 10, 64)
-		body := ""
-		if includeMessages {
-			body = strings.TrimSpace(values[7])
-		}
-		row := historyRow{kind: "commit", revision: values[0], parents: strings.Fields(values[1]), author: values[2], date: values[3], timestamp: timestamp, refs: strings.TrimSpace(values[5]), subject: values[6], body: body, upstreams: upstreams}
-		row.searchSubject, row.searchBody, row.searchRefs = strings.ToLower(row.subject), strings.ToLower(row.body), strings.ToLower(row.refs)
-		commits = append(commits, row)
+		commits = append(commits, historyRowFromLogFields(parts[index:index+width], includeMessages, upstreams))
 	}
 	hasMore := len(commits) > count
 	return commits, hasMore, nil
+}
+
+func historyRowFromLogFields(values []string, includeMessages bool, upstreams map[string]string) historyRow {
+	timestamp, _ := strconv.ParseInt(values[4], 10, 64)
+	body := ""
+	if includeMessages {
+		body = strings.TrimSpace(values[7])
+	}
+	row := historyRow{kind: "commit", revision: values[0], parents: strings.Fields(values[1]), author: values[2], date: values[3], timestamp: timestamp, refs: strings.TrimSpace(values[5]), subject: values[6], body: body, upstreams: upstreams}
+	row.searchSubject, row.searchBody, row.searchRefs = strings.ToLower(row.subject), strings.ToLower(row.body), strings.ToLower(row.refs)
+	return row
+}
+
+func (repo *repository) streamCommitHistoryContext(ctx context.Context, batchSize int, includeMessages bool, revision string, consume func([]historyRow) bool) error {
+	// Keep one git-log process alive for the entire scan. Reissuing log with an
+	// increasing --skip would retraverse all earlier commits for every batch.
+	metadata, err := repo.runContext(ctx, "for-each-ref", "--format=%(refname)%00%(upstream)%00%(HEAD)", "refs/heads/")
+	if err != nil {
+		return err
+	}
+	_, _, upstreams := referenceMetadata(metadata)
+	fields := []string{"%H", "%P", "%an", "%as", "%at", "%D", "%s"}
+	if includeMessages {
+		fields = append(fields, "%b")
+	}
+	command := exec.CommandContext(ctx, "git", "-C", repo.path, "log", "-z", "--topo-order", "--decorate=full", "--format="+strings.Join(fields, "%x00"), revision)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if err = command.Start(); err != nil {
+		return err
+	}
+	// `git log -z` emits the same fixed-width NUL fields documented in
+	// commitHistoryContext; reaching that width completes one commit row.
+	reader := bufio.NewReader(stdout)
+	values, batch := make([]string, 0, len(fields)), make([]historyRow, 0, batchSize)
+	for {
+		field, readErr := reader.ReadString(0)
+		if len(field) > 0 {
+			values = append(values, strings.TrimSuffix(field, "\x00"))
+			if len(values) == len(fields) {
+				batch = append(batch, historyRowFromLogFields(values, includeMessages, upstreams))
+				values = values[:0]
+				if len(batch) == batchSize {
+					if !consume(batch) {
+						_ = command.Process.Kill()
+						_ = command.Wait()
+						return ctx.Err()
+					}
+					batch = make([]historyRow, 0, batchSize)
+				}
+			}
+		}
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				_ = command.Process.Kill()
+				_ = command.Wait()
+				return readErr
+			}
+			break
+		}
+	}
+	if len(values) != 0 {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		return errors.New("incomplete commit metadata from git log")
+	}
+	if len(batch) > 0 && !consume(batch) {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		return ctx.Err()
+	}
+	if err = command.Wait(); ctx.Err() != nil {
+		return ctx.Err()
+	} else if err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return errors.New(message)
+	}
+	return nil
 }
 
 func (repo *repository) commitDetailsContext(ctx context.Context, revision string) (commitDetails, error) {

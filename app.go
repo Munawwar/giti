@@ -24,6 +24,7 @@ const (
 	idleDuration        = 12 * time.Hour
 	initialHistoryLimit = 50
 	maxAutoHistory      = 5000
+	textSearchBatch     = 500
 	maxDiffFindMatches  = 5000
 	diffFindTag         = "find-match"
 	diffFindCurrentTag  = "find-match-current"
@@ -115,6 +116,7 @@ type giti struct {
 	stateSavePending           bool
 	searchViewingResult        bool
 	historyHasMore             bool
+	searchDepths               map[string]int
 	styleProvider              *gtk.CssProvider
 	diffScroll                 map[string]scrollPosition
 	historyRows                []historyRow
@@ -347,12 +349,13 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		}
 		return false
 	})
-	// Text search ranks loaded rows in memory. File search runs a separate path-
-	// limited history query, leaving the regular graph and its topology intact.
+	// Text and file searches query history independently, leaving the regular
+	// graph and its topology intact until the user opens a result.
 	app.historySearch = must(gtk.SearchEntryNew())
 	app.historySearch.SetTooltipText("Case-insensitive: exact phrases rank above separate word matches")
 	app.historySearch.Connect("changed", func() {
 		app.searchViewingResult = false
+		app.searchBack.Hide()
 		app.searchLimit = initialHistoryLimit
 		app.updateGraphSearch()
 	})
@@ -393,11 +396,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.searchSettings.SetPopover(searchPopover)
 	app.searchMessages.Connect("toggled", func() {
 		app.persistUIState()
-		if app.searchTextMode.GetActive() && app.searchMessages.GetActive() {
-			app.loadHistory(false)
-		} else {
-			app.updateGraphSearch()
-		}
+		app.updateGraphSearch()
 	})
 	app.searchReferences.Connect("toggled", func() {
 		app.persistUIState()
@@ -1033,13 +1032,13 @@ func (app *giti) rememberDiffScroll() {
 	}
 }
 
-// File results are independent of graph pagination and selection-driven loads;
+// Search results are independent of graph pagination and selection-driven loads;
 // only an explicit repository refresh needs to query them for new commits.
-func (app *giti) loadHistory(refreshFileSearch bool) {
-	app.loadHistoryTo("", refreshFileSearch)
+func (app *giti) loadHistory(refreshSearch bool) {
+	app.loadHistoryTo("", refreshSearch)
 }
 
-func (app *giti) loadHistoryTo(reveal string, refreshFileSearch bool) {
+func (app *giti) loadHistoryTo(reveal string, refreshSearch bool) {
 	// A history refresh invalidates every downstream selection and diff load.
 	// Generation checks protect GTK from callbacks already queued on the main loop.
 	app.historyGeneration++
@@ -1062,7 +1061,7 @@ func (app *giti) loadHistoryTo(reveal string, refreshFileSearch bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	app.historyCancel = cancel
 	repo, limit := app.repository, app.historyLimit
-	ignoreWhitespace, includeMessages := !app.whitespaceToggle.GetActive(), app.searchMessages.GetActive()
+	ignoreWhitespace := !app.whitespaceToggle.GetActive()
 	app.loadButton.SetSensitive(false)
 	go func() {
 		var rows []historyRow
@@ -1081,7 +1080,7 @@ func (app *giti) loadHistoryTo(reveal string, refreshFileSearch bool) {
 			}
 		}
 		if err == nil {
-			rows, hasMore, err = repo.historyContext(ctx, limit, ignoreWhitespace, includeMessages)
+			rows, hasMore, err = repo.historyContext(ctx, limit, ignoreWhitespace, false)
 			if reveal != "" && found {
 				found = false
 				for _, row := range rows {
@@ -1137,7 +1136,7 @@ func (app *giti) loadHistoryTo(reveal string, refreshFileSearch bool) {
 					app.historyView.GrabFocus()
 				}
 			}
-			if app.searchTextMode.GetActive() || refreshFileSearch {
+			if refreshSearch {
 				app.updateGraphSearch()
 			}
 			addMainSource(0, func() bool {
@@ -1447,6 +1446,9 @@ func searchHistory(rows []historyRow, query string, options searchOptions) []sea
 			score += 2000
 		}
 		if score > 0 {
+			// Results only need the match hints; commit details are loaded on
+			// selection, so do not retain potentially large descriptions.
+			row.body, row.searchSubject, row.searchBody, row.searchRefs = "", "", "", ""
 			match := searchMatch{row: row, score: score, index: index, matchesDescription: descriptionScore > 0, matchesSHA: shaMatch}
 			if options.references {
 				branches, tags := referenceLists(row.refs)
@@ -1476,16 +1478,18 @@ func searchHistory(rows []historyRow, query string, options searchOptions) []sea
 			matches = append(matches, match)
 		}
 	}
-	sort.SliceStable(matches, func(left, right int) bool {
-		if matches[left].score != matches[right].score {
-			return matches[left].score > matches[right].score
-		}
-		if matches[left].row.timestamp != matches[right].row.timestamp {
-			return matches[left].row.timestamp > matches[right].row.timestamp
-		}
-		return matches[left].index < matches[right].index
-	})
+	sort.SliceStable(matches, func(left, right int) bool { return searchMatchBefore(matches[left], matches[right]) })
 	return matches
+}
+
+func searchMatchBefore(left, right searchMatch) bool {
+	if left.score != right.score {
+		return left.score > right.score
+	}
+	if left.row.timestamp != right.row.timestamp {
+		return left.row.timestamp > right.row.timestamp
+	}
+	return left.index < right.index
 }
 
 func isSHAQuery(query string) bool {
@@ -1507,8 +1511,10 @@ func (app *giti) updateGraphSearch() {
 		app.searchCancel()
 		app.searchCancel = nil
 	}
+	app.historySearch.SetProgressFraction(0)
+	app.searchMatches, app.searchDepths = nil, nil
+	app.clearSearchResults()
 	if strings.TrimSpace(query) == "" {
-		app.searchMatches = nil
 		app.searchViewingResult = false
 		app.searchBack.Hide()
 		app.searchLoadButton.Hide()
@@ -1519,9 +1525,11 @@ func (app *giti) updateGraphSearch() {
 	if app.searchFileMode.GetActive() {
 		app.searchPlaceholder.SetText("No commits touch this path.")
 	} else {
-		app.searchPlaceholder.SetText("No loaded commits match this search.")
+		app.searchPlaceholder.SetText("Searching all commits…")
+		app.searchDepths = make(map[string]int)
+		app.historySearch.SetProgressPulseStep(.08)
+		app.historySearch.ProgressPulse()
 	}
-	app.searchMatches = nil
 	generation := app.searchGeneration
 	addMainSource(150*time.Millisecond, func() bool {
 		if generation == app.searchGeneration {
@@ -1571,7 +1579,74 @@ func (app *giti) renderGraphSearch(query string) {
 		return
 	}
 	app.searchLoadButton.Hide()
-	app.showSearchMatches(searchHistory(app.historyRows, query, searchOptions{app.searchMessages.GetActive(), app.searchReferences.GetActive()}))
+	if !app.searchViewingResult {
+		app.historyStack.SetVisibleChildName("search")
+		app.loadButton.Hide()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	app.searchCancel = cancel
+	options := searchOptions{app.searchMessages.GetActive(), app.searchReferences.GetActive()}
+	matches := make([]searchMatch, 0)
+	// Pin the starting revision, then stream bounded batches until Git reaches the
+	// repository root. Waiting for each GTK update prevents an unbounded queue
+	// when Git can produce pages faster than the result list can render them.
+	go func() {
+		defer cancel()
+		revision, err := repo.runContext(ctx, "rev-parse", "--verify", repo.revisionArg+"^{commit}")
+		revision = strings.TrimSpace(revision)
+		offset := 0
+		if err == nil {
+			err = repo.streamCommitHistoryContext(ctx, textSearchBatch, options.messages, revision, func(rows []historyRow) bool {
+				pageMatches := searchHistory(rows, query, options)
+				for index := range pageMatches {
+					pageMatches[index].index += offset
+				}
+				offset += len(rows)
+				applied := make(chan struct{})
+				addMainSource(0, func() bool {
+					defer close(applied)
+					if ctx.Err() != nil || generation != app.searchGeneration || repo != app.repository {
+						return false
+					}
+					for _, match := range pageMatches {
+						position := sort.Search(len(matches), func(index int) bool { return searchMatchBefore(match, matches[index]) })
+						matches = append(matches, searchMatch{})
+						copy(matches[position+1:], matches[position:])
+						matches[position] = match
+						app.searchMatches = append(app.searchMatches, historyRow{})
+						copy(app.searchMatches[position+1:], app.searchMatches[position:])
+						app.searchMatches[position] = match.row
+						app.searchDepths[match.row.revision] = match.index
+						app.searchResults.Insert(app.searchResultRow(match), position)
+					}
+					app.searchResults.ShowAll()
+					app.historySearch.ProgressPulse()
+					return false
+				})
+				select {
+				case <-ctx.Done():
+					return false
+				case <-applied:
+					return ctx.Err() == nil && generation == app.searchGeneration && repo == app.repository
+				}
+			})
+		}
+		if ctx.Err() == nil {
+			addMainSource(0, func() bool {
+				if generation == app.searchGeneration && repo == app.repository {
+					app.searchCancel = nil
+					app.historySearch.SetProgressFraction(0)
+					if err != nil {
+						app.searchPlaceholder.SetText("Could not search: " + err.Error())
+						app.showError(err)
+					} else if len(matches) == 0 {
+						app.searchPlaceholder.SetText("No commits match this search.")
+					}
+				}
+				return false
+			})
+		}
+	}()
 }
 
 func (app *giti) showSearchMatches(matches []searchMatch) {
@@ -1579,24 +1654,28 @@ func (app *giti) showSearchMatches(matches []searchMatch) {
 	app.searchMatches = make([]historyRow, len(matches))
 	for index, match := range matches {
 		app.searchMatches[index] = match.row
-		result := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
-		result.SetMarginStart(8)
-		result.SetMarginEnd(8)
-		result.SetMarginTop(6)
-		result.SetMarginBottom(6)
-		label := must(gtk.LabelNew(""))
-		label.SetXAlign(0)
-		label.SetLineWrap(true)
-		label.SetMarkup(searchResultMarkup(match))
-		result.PackStart(label, true, true, 0)
-		result.PackEnd(app.copySHAButton(match.row.revision), false, false, 0)
-		app.searchResults.Insert(result, -1)
+		app.searchResults.Insert(app.searchResultRow(match), -1)
 	}
 	if !app.searchViewingResult {
 		app.historyStack.SetVisibleChildName("search")
 		app.loadButton.Hide()
 	}
 	app.searchResults.ShowAll()
+}
+
+func (app *giti) searchResultRow(match searchMatch) *gtk.Box {
+	result := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
+	result.SetMarginStart(8)
+	result.SetMarginEnd(8)
+	result.SetMarginTop(6)
+	result.SetMarginBottom(6)
+	label := must(gtk.LabelNew(""))
+	label.SetXAlign(0)
+	label.SetLineWrap(true)
+	label.SetMarkup(searchResultMarkup(match))
+	result.PackStart(label, true, true, 0)
+	result.PackEnd(app.copySHAButton(match.row.revision), false, false, 0)
+	return result
 }
 
 func (app *giti) clearSearchResults() {
@@ -1620,19 +1699,15 @@ func (app *giti) updateSearchMode() {
 		app.searchTextOptions.Hide()
 		app.searchFileOptions.ShowAll()
 	} else {
-		app.historySearch.SetPlaceholderText("Search loaded commits")
+		app.historySearch.SetPlaceholderText("Search commits")
 		app.historySearch.SetTooltipText("Case-insensitive: exact phrases rank above separate word matches")
-		setAccessibility(&app.historySearch.Widget, "Commit text search", "Search the commits currently loaded in the graph")
-		setAccessibility(&app.searchResults.Widget, "Commit text search results", "Loaded commits matching the search text")
-		app.searchPlaceholder.SetText("No loaded commits match this search.")
+		setAccessibility(&app.historySearch.Widget, "Commit text search", "Search commit history in the background")
+		setAccessibility(&app.searchResults.Widget, "Commit text search results", "Commits matching the search text")
+		app.searchPlaceholder.SetText("No commits match this search.")
 		app.searchFileOptions.Hide()
 		app.searchTextOptions.ShowAll()
 	}
-	if !fileMode && app.searchMessages.GetActive() && len(app.historyRows) > 0 {
-		app.loadHistory(false)
-	} else {
-		app.updateGraphSearch()
-	}
+	app.updateGraphSearch()
 }
 
 func searchResultMarkup(match searchMatch) string {
@@ -1678,6 +1753,9 @@ func (app *giti) revealHistoryRevision(revision string) {
 func (app *giti) openSearchResult(index int) {
 	if index >= 0 && index < len(app.searchMatches) {
 		revision := app.searchMatches[index].revision
+		if depth, ok := app.searchDepths[revision]; ok {
+			app.historyLimit = max(app.historyLimit, depth+initialHistoryLimit)
+		}
 		app.searchViewingResult = true
 		app.historyStack.SetVisibleChildName("graph")
 		app.searchBack.Show()
@@ -2354,11 +2432,12 @@ func (app *giti) clearRepositoryView() {
 		app.searchCancel = nil
 	}
 	app.clearSearchResults()
-	app.historyRows, app.files, app.searchMatches = nil, nil, nil
+	app.historyRows, app.files, app.searchMatches, app.searchDepths = nil, nil, nil, nil
 	app.historyHasMore, app.searchLimit = false, initialHistoryLimit
 	app.searchViewingResult = false
 	app.diffScroll = make(map[string]scrollPosition)
 	app.currentRow, app.currentFile, app.diffLoaded = nil, nil, false
+	app.historySearch.SetProgressFraction(0)
 	app.historySearch.SetText("")
 	app.searchBack.Hide()
 	app.searchLoadButton.Hide()

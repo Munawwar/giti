@@ -104,6 +104,33 @@ func TestRevisionFormsAndHistoryLimit(t *testing.T) {
 	}
 }
 
+func TestCommitHistoryStreamsBoundedBatches(t *testing.T) {
+	repo, err := newRepository(testRepository(t), historySpec{Revision: "HEAD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var subjects []string
+	var sizes []int
+	err = repo.streamCommitHistoryContext(context.Background(), 5, false, repo.revision, func(rows []historyRow) bool {
+		sizes = append(sizes, len(rows))
+		for _, row := range rows {
+			subjects = append(subjects, row.subject)
+		}
+		return true
+	})
+	if err != nil || fmt.Sprint(sizes) != "[5 5 2]" || len(subjects) != 12 || subjects[0] != "commit 11" || subjects[5] != "commit 6" || subjects[11] != "commit 0" {
+		t.Fatalf("unexpected streamed history: sizes=%v subjects=%v err=%v", sizes, subjects, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err = repo.streamCommitHistoryContext(ctx, 1, false, repo.revision, func([]historyRow) bool {
+		cancel()
+		return false
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled history stream returned %v", err)
+	}
+}
+
 func TestCommitDetailsIncludesRefsAndMergeParents(t *testing.T) {
 	path := testRepository(t)
 	run := func(args ...string) {

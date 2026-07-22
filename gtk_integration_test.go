@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -593,12 +594,27 @@ func TestGTKDiffInteraction(t *testing.T) {
 
 func TestGTKSearchOptionsAndSelection(t *testing.T) {
 	_, app := newGTKIntegrationApp(t)
+	previousSearch, previousCancel := context.WithCancel(context.Background())
+	app.searchCancel = previousCancel
+	previousGeneration := app.searchGeneration
+	app.historySearch.SetText("superseded query")
+	if previousSearch.Err() != context.Canceled || app.searchGeneration <= previousGeneration {
+		t.Fatal("changing the query did not cancel the previous search")
+	}
+	app.historySearch.SetText("")
+	time.Sleep(200 * time.Millisecond)
+	for gtk.EventsPending() {
+		gtk.MainIteration()
+	}
+	if app.searchCancel != nil || len(app.searchMatches) != 0 || app.historyStack.GetVisibleChildName() != "graph" || app.historySearch.GetProgressFraction() != 0 {
+		t.Fatal("clearing a replacement query allowed stale search work to continue")
+	}
 	app.historySearch.SetText("orbital cache")
 	if len(app.searchMatches) != 0 {
 		t.Fatalf("default search included a long commit message: %#v", app.searchMatches)
 	}
 	app.searchMessages.SetActive(true)
-	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil && len(app.searchMatches) == 1 })
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.searchCancel == nil && len(app.searchMatches) == 1 })
 	if len(app.searchMatches) != 1 || app.searchMatches[0].subject != "commit 11" {
 		t.Fatalf("enabled long-message search missed its commit: %#v", app.searchMatches)
 	}
@@ -607,7 +623,7 @@ func TestGTKSearchOptionsAndSelection(t *testing.T) {
 		t.Fatalf("default reference search included a tag: %#v", app.searchMatches)
 	}
 	app.searchReferences.SetActive(true)
-	iterateGTKUntil(t, time.Second, func() bool { return len(app.searchMatches) == 1 })
+	iterateGTKUntil(t, time.Second, func() bool { return app.searchCancel == nil && len(app.searchMatches) == 1 })
 	if len(app.searchMatches) != 1 || app.searchMatches[0].subject != "commit 11" {
 		t.Fatalf("enabled reference search missed its tag: %#v", app.searchMatches)
 	}
@@ -622,10 +638,14 @@ func TestGTKSearchOptionsAndSelection(t *testing.T) {
 	if state := loadUIState(app.statePath); !state.SearchCommitMessages || !state.SearchReferences {
 		t.Fatalf("search settings were not persisted: %#v", state)
 	}
+	app.historySearch.SetText("")
+	app.historyLimit = 1
+	app.loadHistory(false)
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil })
 	app.historySearch.SetText("CoMmIt 8")
-	iterateGTKUntil(t, time.Second, func() bool { return len(app.searchMatches) > 0 })
-	if app.historyStack.GetVisibleChildName() != "search" || len(app.searchMatches) == 0 || app.searchMatches[0].subject != "commit 8" {
-		t.Fatalf("search did not limit loaded graph rows: stack=%q matches=%#v", app.historyStack.GetVisibleChildName(), app.searchMatches)
+	iterateGTKUntil(t, time.Second, func() bool { return app.searchCancel == nil && len(app.searchMatches) > 0 })
+	if app.historyStack.GetVisibleChildName() != "search" || len(app.searchMatches) == 0 || app.searchMatches[0].subject != "commit 8" || app.historyLimit != 1 || app.historySearch.GetProgressFraction() != 0 {
+		t.Fatalf("background search depended on loaded graph rows: stack=%q limit=%d matches=%#v", app.historyStack.GetVisibleChildName(), app.historyLimit, app.searchMatches)
 	}
 	app.openSearchResult(0)
 	deadline := time.Now().Add(2 * time.Second)
@@ -636,7 +656,7 @@ func TestGTKSearchOptionsAndSelection(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	query, _ := app.historySearch.GetText()
-	if query != "CoMmIt 8" || app.historyStack.GetVisibleChildName() != "graph" || !app.searchBack.GetVisible() || app.currentRow == nil || app.currentRow.subject != "commit 8" || !app.historyView.IsFocus() {
+	if query != "CoMmIt 8" || app.historyStack.GetVisibleChildName() != "graph" || !app.searchBack.GetVisible() || app.currentRow == nil || app.currentRow.subject != "commit 8" || !app.historyView.IsFocus() || app.historyLimit == 1 {
 		t.Fatalf("search result did not preserve the search while revealing its graph row: query=%q stack=%q row=%#v", query, app.historyStack.GetVisibleChildName(), app.currentRow)
 	}
 	app.searchBack.Clicked()
