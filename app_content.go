@@ -185,13 +185,38 @@ func historyLabel(row historyRow) string {
 		refs.WriteString(part.markup)
 		refs.WriteString("  ")
 	}
-	topology := "root commit"
-	if len(row.parents) == 1 {
-		topology = "1 parent"
-	} else if len(row.parents) > 1 {
-		topology = fmt.Sprintf("merge · %d parents", len(row.parents))
+	age, when := time.Since(time.Unix(row.timestamp, 0)), "just now"
+	switch {
+	case age < time.Second:
+	case age < time.Minute:
+		seconds := int(age / time.Second)
+		unit := "sec"
+		if seconds != 1 {
+			unit += "s"
+		}
+		when = fmt.Sprintf("%d %s ago", seconds, unit)
+	case age < time.Hour:
+		minutes := int(age / time.Minute)
+		unit := "min"
+		if minutes != 1 {
+			unit += "s"
+		}
+		when = fmt.Sprintf("%d %s ago", minutes, unit)
+	case age < 24*time.Hour:
+		hours := int(age / time.Hour)
+		plural := ""
+		if hours != 1 {
+			plural = "s"
+		}
+		when = fmt.Sprintf("%d hour%s ago", hours, plural)
+	default:
+		date, err := time.Parse("2006-01-02", row.date)
+		if err != nil {
+			date = time.Unix(row.timestamp, 0)
+		}
+		when = date.Format("Jan 2, 2006")
 	}
-	return fmt.Sprintf("%s<b>%s</b>\n<span foreground=\"#374151\"><tt>%s</tt>  ·  %s  ·  %s</span>", refs.String(), html.EscapeString(row.subject), html.EscapeString(row.revision[:7]), html.EscapeString(row.author), topology)
+	return fmt.Sprintf("%s<b>%s</b>\n<span foreground=\"#374151\"><tt>%s</tt>  ·  %s  ·  %s</span>", refs.String(), html.EscapeString(row.subject), html.EscapeString(row.revision[:7]), html.EscapeString(row.author), when)
 }
 
 type searchMatch struct {
@@ -324,7 +349,6 @@ func (app *giti) updateGraphSearch() {
 		app.searchCancel()
 		app.searchCancel = nil
 	}
-	app.historySearch.SetProgressFraction(0)
 	app.searchMatches, app.searchDepths = nil, nil
 	app.clearSearchResults()
 	if strings.TrimSpace(query) == "" {
@@ -340,8 +364,6 @@ func (app *giti) updateGraphSearch() {
 	} else {
 		app.searchPlaceholder.SetText("Searching all commits…")
 		app.searchDepths = make(map[string]int)
-		app.historySearch.SetProgressPulseStep(.08)
-		app.historySearch.ProgressPulse()
 	}
 	generation := app.searchGeneration
 	addMainSource(150*time.Millisecond, func() bool {
@@ -433,7 +455,6 @@ func (app *giti) renderGraphSearch(query string) {
 						app.searchResults.Insert(app.searchResultRow(match), position)
 					}
 					app.searchResults.ShowAll()
-					app.historySearch.ProgressPulse()
 					return false
 				})
 				select {
@@ -448,7 +469,6 @@ func (app *giti) renderGraphSearch(query string) {
 			addMainSource(0, func() bool {
 				if generation == app.searchGeneration && repo == app.repository {
 					app.searchCancel = nil
-					app.historySearch.SetProgressFraction(0)
 					if err != nil {
 						app.searchPlaceholder.SetText("Could not search: " + err.Error())
 						app.showError(err)

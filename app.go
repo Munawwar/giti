@@ -274,7 +274,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	// History graph and commit metadata share a row so graph geometry remains
 	// aligned with text after GTK applies font and scale settings.
 	app.historyView = must(gtk.TreeViewNewWithModel(app.historyStore))
-	setAccessibility(&app.historyView.Widget, "Commit history", "Git commits ordered from newest to oldest; each row states its parent topology")
+	setAccessibility(&app.historyView.Widget, "Commit history", "Git commits ordered from newest to oldest; each row shows its author and commit time")
 	app.historyView.SetHeadersVisible(false)
 	historyContext, _ := app.historyView.GetStyleContext()
 	historyContext.AddClass("giti-list")
@@ -1234,7 +1234,6 @@ func (app *giti) clearRepositoryView() {
 	app.searchViewingResult = false
 	app.diffScroll = make(map[string]scrollPosition)
 	app.currentRow, app.currentFile, app.diffLoaded = nil, nil, false
-	app.historySearch.SetProgressFraction(0)
 	app.historySearch.SetText("")
 	app.searchBack.Hide()
 	app.searchLoadButton.Hide()

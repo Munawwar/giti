@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDesktopEntryMatchesApplicationID(t *testing.T) {
@@ -124,13 +125,16 @@ func TestSearchHistoryUsesNewestDateToBreakScoreTies(t *testing.T) {
 	}
 }
 
-func TestHistoryLabelDescribesMergeAndEscapesContent(t *testing.T) {
-	row := historyRow{kind: "commit", revision: "123456789", subject: "merge <side>", refs: "HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1<&>, tag: refs/tags/v2, tag: refs/tags/v3, tag: refs/tags/v4, tag: refs/tags/v5", author: "A & B", parents: []string{"one", "two"}, upstreams: map[string]string{"main": remoteRefPrefix + "origin/main"}}
+func TestHistoryLabelShowsTimeAndEscapesContent(t *testing.T) {
+	row := historyRow{kind: "commit", revision: "123456789", subject: "merge <side>", refs: "HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1<&>, tag: refs/tags/v2, tag: refs/tags/v3, tag: refs/tags/v4, tag: refs/tags/v5", author: "A & B", timestamp: time.Now().Add(-3 * time.Hour).Unix(), parents: []string{"one", "two"}, upstreams: map[string]string{"main": remoteRefPrefix + "origin/main"}}
 	label := historyLabel(row)
-	for _, want := range []string{"merge &lt;side&gt;", "A &amp; B", "merge · 2 parents"} {
+	for _, want := range []string{"merge &lt;side&gt;", "A &amp; B", "3 hours ago"} {
 		if !strings.Contains(label, want) {
 			t.Fatalf("history label %q does not contain %q", label, want)
 		}
+	}
+	if strings.Contains(label, "parent") {
+		t.Fatalf("history label wastes space on parent count: %q", label)
 	}
 	refs := label
 	if strings.HasPrefix(label, "  ") {
@@ -157,6 +161,29 @@ func TestHistoryLabelDescribesMergeAndEscapesContent(t *testing.T) {
 	refs = historyLabel(row)
 	if !strings.Contains(refs, "v1") || strings.Contains(refs, "1 tags") || strings.Index(refs, "v1") > strings.Index(refs, "merge") {
 		t.Fatalf("single tags were not shown by name: %q", refs)
+	}
+}
+
+func TestHistoryLabelTimeThresholds(t *testing.T) {
+	now := time.Now()
+	for _, test := range []struct {
+		age  time.Duration
+		date string
+		want string
+	}{
+		{-time.Second, "", "just now"},
+		{time.Second, "", "1 sec ago"},
+		{30 * time.Second, "", "30 secs ago"},
+		{90 * time.Second, "", "1 min ago"},
+		{3 * time.Minute, "", "3 mins ago"},
+		{90 * time.Minute, "", "1 hour ago"},
+		{23 * time.Hour, "", "23 hours ago"},
+		{25 * time.Hour, "2026-07-20", "Jul 20, 2026"},
+	} {
+		row := historyRow{kind: "commit", revision: "123456789", subject: "subject", author: "author", timestamp: now.Add(-test.age).Unix(), date: test.date}
+		if label := historyLabel(row); !strings.Contains(label, test.want) {
+			t.Fatalf("history label %q does not contain %q", label, test.want)
+		}
 	}
 }
 
