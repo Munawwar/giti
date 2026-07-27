@@ -265,7 +265,11 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	referenceValid := labelOK && textErr == nil && !referenceLabel.GetSelectable() && referenceLabel.GetEllipsize() == pango.ELLIPSIZE_END && strings.Contains(referenceValue, longBranch) && referenceButton.GetCanFocus() && copiedReference == longBranch && copyReferenceErr == nil && app.notification.GetVisible() && copyNotification == "Copied branch to clipboard." && notificationErr == nil && app.mainPane.GetAllocatedWidth() == contentWidth && app.mainPane.GetAllocatedHeight() == contentHeight
 	statisticsValid := strings.Join(statLabels, ",") == "+12,−3,4 untracked"
 	controlsValid := fullFileLabel == "Show full file" && whitespaceLabel == "Whitespace changes" && app.whitespaceToggle.GetActive() && fullMergeLabel == "Full merge" && shaErr == nil && shaTooltipErr == nil && shaLabel.GetEllipsize() == pango.ELLIPSIZE_MIDDLE && shaTooltip == details.sha
-	if expandedDetails != compactDetails+1 || titleErr != nil || metaErr != nil || referenceErr != nil || !referenceValid || !statisticsValid || !controlsValid || !headerTitle.GetSelectable() || !headerMeta.GetSelectable() || !shaLabel.GetSelectable() {
+	searchIdle := !app.searchSpinner.GetVisible() && app.historySearch.GetIconStorageType(gtk.ENTRY_ICON_PRIMARY) == gtk.IMAGE_ICON_NAME
+	app.setSearchBusy(true)
+	searchBusy := app.searchSpinner.GetVisible() && app.historySearch.GetIconStorageType(gtk.ENTRY_ICON_PRIMARY) == gtk.IMAGE_PIXBUF
+	app.setSearchBusy(false)
+	if expandedDetails != compactDetails+1 || titleErr != nil || metaErr != nil || referenceErr != nil || !referenceValid || !statisticsValid || !controlsValid || !searchIdle || !searchBusy || !headerTitle.GetSelectable() || !headerMeta.GetSelectable() || !shaLabel.GetSelectable() {
 		t.Fatalf("commit header copy control is incomplete: compact=%d body=%d title=%v meta=%v sha=%v controls=%q/%q/%q reference=%q/%v/%v/%v copied=%q/%v notification=%q/%v content=%dx%d/%dx%d", compactDetails, expandedDetails, titleErr, metaErr, shaErr, fullFileLabel, whitespaceLabel, fullMergeLabel, referenceValue, referenceErr, labelOK, textErr, copiedReference, copyReferenceErr, copyNotification, notificationErr, contentWidth, contentHeight, app.mainPane.GetAllocatedWidth(), app.mainPane.GetAllocatedHeight())
 	}
 	syncedDetails := commitDetails{

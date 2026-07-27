@@ -352,6 +352,7 @@ func (app *giti) updateGraphSearch() {
 	app.searchMatches, app.searchDepths = nil, nil
 	app.clearSearchResults()
 	if strings.TrimSpace(query) == "" {
+		app.setSearchBusy(false)
 		app.searchViewingResult = false
 		app.searchBack.Hide()
 		app.searchLoadButton.Hide()
@@ -359,6 +360,7 @@ func (app *giti) updateGraphSearch() {
 		app.loadButton.SetVisible(app.historyHasMore)
 		return
 	}
+	app.setSearchBusy(true)
 	if app.searchFileMode.GetActive() {
 		app.searchPlaceholder.SetText("No commits touch this path.")
 	} else {
@@ -389,6 +391,7 @@ func (app *giti) renderGraphSearch(query string) {
 					return false
 				}
 				app.searchCancel = nil
+				app.setSearchBusy(false)
 				if err != nil {
 					app.searchPlaceholder.SetText("Could not search: " + err.Error())
 					app.searchLoadButton.Hide()
@@ -469,6 +472,7 @@ func (app *giti) renderGraphSearch(query string) {
 			addMainSource(0, func() bool {
 				if generation == app.searchGeneration && repo == app.repository {
 					app.searchCancel = nil
+					app.setSearchBusy(false)
 					if err != nil {
 						app.searchPlaceholder.SetText("Could not search: " + err.Error())
 						app.showError(err)
@@ -480,6 +484,18 @@ func (app *giti) renderGraphSearch(query string) {
 			})
 		}
 	}()
+}
+
+func (app *giti) setSearchBusy(busy bool) {
+	if busy {
+		app.historySearch.SetIconFromPixbuf(gtk.ENTRY_ICON_PRIMARY, app.searchIconSpacer)
+		app.searchSpinner.Start()
+		app.searchSpinner.Show()
+		return
+	}
+	app.searchSpinner.Stop()
+	app.searchSpinner.Hide()
+	app.historySearch.SetIconFromIconName(gtk.ENTRY_ICON_PRIMARY, "edit-find-symbolic")
 }
 
 func (app *giti) showSearchMatches(matches []searchMatch) {

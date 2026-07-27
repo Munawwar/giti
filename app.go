@@ -130,6 +130,8 @@ type giti struct {
 	graphColumn                *gtk.TreeViewColumn
 	mainPane, repositoryPane   *gtk.Paned
 	historySearch              *gtk.SearchEntry
+	searchSpinner              *gtk.Spinner
+	searchIconSpacer           *gdk.Pixbuf
 	searchSettings             *gtk.MenuButton
 	searchTextMode             *gtk.RadioButton
 	searchFileMode             *gtk.RadioButton
@@ -350,6 +352,19 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	// Text and file searches query history independently, leaving the regular
 	// graph and its topology intact until the user opens a result.
 	app.historySearch = must(gtk.SearchEntryNew())
+	app.searchSpinner = must(gtk.SpinnerNew())
+	app.searchIconSpacer = must(gdk.PixbufNew(gdk.COLORSPACE_RGB, true, 8, 16, 16))
+	app.searchIconSpacer.Fill(0)
+	app.searchSpinner.SetHAlign(gtk.ALIGN_START)
+	app.searchSpinner.SetVAlign(gtk.ALIGN_CENTER)
+	app.searchSpinner.SetMarginStart(8)
+	app.searchSpinner.SetNoShowAll(true)
+	app.searchSpinner.Hide()
+	setAccessibility(&app.searchSpinner.Widget, "Searching history", "Search is still running")
+	searchOverlay := must(gtk.OverlayNew())
+	searchOverlay.Add(app.historySearch)
+	searchOverlay.AddOverlay(app.searchSpinner)
+	searchOverlay.SetOverlayPassThrough(app.searchSpinner, true)
 	app.historySearch.SetTooltipText("Case-insensitive: exact phrases rank above separate word matches")
 	app.historySearch.Connect("changed", func() {
 		app.searchViewingResult = false
@@ -540,7 +555,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	graphBox := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 4))
 	searchBox := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
 	searchBox.PackStart(app.searchBack, false, false, 0)
-	searchBox.PackStart(app.historySearch, true, true, 0)
+	searchBox.PackStart(searchOverlay, true, true, 0)
 	searchBox.PackStart(app.searchSettings, false, false, 0)
 	graphBox.PackStart(searchBox, false, false, 0)
 	graphBox.PackStart(app.historyStack, true, true, 0)
@@ -1234,6 +1249,7 @@ func (app *giti) clearRepositoryView() {
 	app.searchViewingResult = false
 	app.diffScroll = make(map[string]scrollPosition)
 	app.currentRow, app.currentFile, app.diffLoaded = nil, nil, false
+	app.setSearchBusy(false)
 	app.historySearch.SetText("")
 	app.searchBack.Hide()
 	app.searchLoadButton.Hide()
