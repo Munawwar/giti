@@ -524,12 +524,12 @@ func (repo *repository) changedFilesForViewContext(ctx context.Context, row hist
 		}
 	}
 	if mergeResolution && len(row.parents) > 1 {
-		args := []string{"diff-tree", "--no-commit-id", "-r", "--cc", "--name-status", "-z"}
+		args := []string{"diff-tree", "--no-commit-id", "-r", "--cc"}
 		if ignoreWhitespace {
 			args = append(args, "--ignore-all-space")
 		}
-		args = append(args, row.revision)
-		output, err := repo.runContext(ctx, args...)
+		statusArgs := append(append([]string(nil), args...), "--name-status", "-z", row.revision)
+		output, err := repo.runContext(ctx, statusArgs...)
 		if err != nil {
 			return nil, err
 		}
@@ -544,7 +544,31 @@ func (repo *repository) changedFilesForViewContext(ctx context.Context, row hist
 				files = append(files, changedFile{status: parts[index], path: parts[index+1]})
 			}
 		}
-		return files, nil
+		// Raw combined status includes files changed cleanly in separate regions
+		// relative to every parent, even when dense combined patch output has no
+		// hunk for them. Match Gitk's merge list by retaining only paths for which
+		// the identically filtered patch emits a diff header.
+		patchArgs := append(append([]string(nil), args...), "-p", "--no-ext-diff", "--no-color", "--unified=0", row.revision)
+		patch, err := repo.runContext(ctx, patchArgs...)
+		if err != nil {
+			return nil, err
+		}
+		visible := make(map[string]bool)
+		for _, line := range strings.Split(patch, "\n") {
+			if path, ok := strings.CutPrefix(line, "diff --cc "); ok {
+				if unquoted, unquoteErr := strconv.Unquote(path); unquoteErr == nil {
+					path = unquoted
+				}
+				visible[path] = true
+			}
+		}
+		filtered := files[:0]
+		for _, file := range files {
+			if visible[file.path] {
+				filtered = append(filtered, file)
+			}
+		}
+		return filtered, nil
 	}
 	return repo.ordinaryChangedFilesContext(ctx, row, ignoreWhitespace)
 }

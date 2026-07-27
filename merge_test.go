@@ -52,13 +52,15 @@ func mergeTestRow(t *testing.T, rows []historyRow, kind string) historyRow {
 }
 
 func TestMergeResolutionIsDefaultAndFullMergeRemainsAvailable(t *testing.T) {
-	path := mergeTestInit(t, map[string]string{"conflict.txt": "base\n", "clean.txt": "base\n"})
+	path := mergeTestInit(t, map[string]string{"conflict.txt": "base\n", "clean.txt": "base\n", "clean-both.txt": "first\nkeep 1\nkeep 2\nkeep 3\nsecond\n"})
 	mergeTestGit(t, path, "checkout", "-b", "side")
 	mergeTestWrite(t, path, "conflict.txt", "side\n")
 	mergeTestWrite(t, path, "clean.txt", "side\n")
+	mergeTestWrite(t, path, "clean-both.txt", "side\nkeep 1\nkeep 2\nkeep 3\nsecond\n")
 	mergeTestGit(t, path, "commit", "-am", "side")
 	mergeTestGit(t, path, "checkout", "main")
 	mergeTestWrite(t, path, "conflict.txt", "main\n")
+	mergeTestWrite(t, path, "clean-both.txt", "first\nkeep 1\nkeep 2\nkeep 3\nmain\n")
 	mergeTestGit(t, path, "commit", "-am", "main")
 	command := exec.Command("git", "-C", path, "merge", "--no-ff", "side")
 	if output, err := command.CombinedOutput(); err == nil {
@@ -85,7 +87,7 @@ func TestMergeResolutionIsDefaultAndFullMergeRemainsAvailable(t *testing.T) {
 		t.Fatalf("default merge-resolution files = %#v, %v", resolutionFiles, err)
 	}
 	fullFiles, err := repo.changedFilesForViewContext(context.Background(), merge, true, false)
-	if err != nil || len(fullFiles) != 2 {
+	if err != nil || len(fullFiles) != 3 {
 		t.Fatalf("full first-parent files = %#v, %v", fullFiles, err)
 	}
 	resolutionPatch, err := repo.diff(merge, resolutionFiles[0], true, false)
@@ -95,6 +97,38 @@ func TestMergeResolutionIsDefaultAndFullMergeRemainsAvailable(t *testing.T) {
 	fullPatch, err := repo.diffForViewContext(context.Background(), merge, fullFiles[0], true, false, false)
 	if err != nil || strings.Contains(fullPatch, "diff --cc") {
 		t.Fatalf("full first-parent patch = %q, %v", fullPatch, err)
+	}
+}
+
+func TestMergeResolutionWhitespaceFilteringMatchesPatch(t *testing.T) {
+	path := mergeTestInit(t, map[string]string{"conflict.txt": "base\n"})
+	mergeTestGit(t, path, "checkout", "-b", "side")
+	mergeTestWrite(t, path, "conflict.txt", "side")
+	mergeTestGit(t, path, "commit", "-am", "side")
+	mergeTestGit(t, path, "checkout", "main")
+	mergeTestWrite(t, path, "conflict.txt", "main\nlines\n")
+	mergeTestGit(t, path, "commit", "-am", "main")
+	command := exec.Command("git", "-C", path, "merge", "--no-ff", "side")
+	if output, err := command.CombinedOutput(); err == nil {
+		t.Fatalf("merge unexpectedly succeeded: %s", output)
+	}
+	mergeTestWrite(t, path, "conflict.txt", "side\n")
+	mergeTestGit(t, path, "add", "conflict.txt")
+	mergeTestGit(t, path, "commit", "-m", "resolve with newline")
+
+	repo, err := newRepository(path, historySpec{Revision: "HEAD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, _, err := repo.history(1, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	merge := mergeTestRow(t, rows, "commit")
+	shown, shownErr := repo.changedFilesForViewContext(context.Background(), merge, false, true)
+	hidden, hiddenErr := repo.changedFilesForViewContext(context.Background(), merge, true, true)
+	if shownErr != nil || hiddenErr != nil || len(shown) != 1 || shown[0].path != "conflict.txt" || len(hidden) != 0 {
+		t.Fatalf("whitespace-filtered merge files = shown %#v/%v, hidden %#v/%v", shown, shownErr, hidden, hiddenErr)
 	}
 }
 

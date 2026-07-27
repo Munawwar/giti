@@ -1042,6 +1042,9 @@ func (app *giti) onFileSelected() {
 				app.fullFileToggle.SetTooltipText("Show unchanged lines from the complete file")
 			}
 			app.fullFileToggle.HandlerUnblock(app.fullFileHandler)
+			if patch == "" && ignoreWhitespace {
+				patch = "No non-whitespace changes. Turn on “Whitespace changes” to view this diff.\n"
+			}
 			app.setDiff(patch)
 			app.diffLoaded = true
 			addMainSource(0, func() bool {

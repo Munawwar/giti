@@ -509,7 +509,8 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.buildDiffGutter()
 
 	app.whitespaceToggle = must(gtk.CheckButtonNewWithLabel("Whitespace changes"))
-	app.whitespaceToggle.SetTooltipText("Show whitespace-only changes; off by default, diffs use git --ignore-all-space")
+	app.whitespaceToggle.SetTooltipText("Include whitespace-only changes in file lists and diffs")
+	app.whitespaceToggle.SetActive(true)
 	app.whitespaceToggle.Connect("toggled", app.onWhitespaceToggled)
 	app.fullFileToggle = must(gtk.CheckButtonNewWithLabel("Show full file"))
 	app.fullFileToggle.SetTooltipText("Show unchanged lines from the complete file")
@@ -1281,7 +1282,7 @@ func (app *giti) openRepository(path string, history historySpec) bool {
 	app.searchFileMode.SetActive(repo.searchPath != "")
 	app.searchFollow.SetActive(repo.follow)
 	app.historySearch.SetText(repo.searchPath)
-	app.whitespaceToggle.SetActive(false)
+	app.whitespaceToggle.SetActive(true)
 	app.window.SetTitle(repo.windowTitle())
 	app.window.ShowAll()
 	app.notificationGeneration++
