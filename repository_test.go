@@ -39,28 +39,28 @@ func testRepository(t *testing.T) string {
 	return path
 }
 
-func TestSortedReferencesDoesNotMutateSource(t *testing.T) {
-	branches, tags := []string{"zeta", remoteRefPrefix + "origin/HEAD", "main" + headRefSuffix, "alpha"}, []string{"v2", "v1"}
-	sortedBranches, sortedTags := sortedReferences(branches, tags)
-	if strings.Join(sortedBranches, ",") != "main <- HEAD,alpha,zeta,refs/remotes/origin/HEAD" || strings.Join(sortedTags, ",") != "v1,v2" || branches[0] != "zeta" || tags[0] != "v2" {
-		t.Fatalf("references not independently sorted: %v %v from %v %v", sortedBranches, sortedTags, branches, tags)
+func TestReferenceMetadata(t *testing.T) {
+	{
+		branches, tags := []string{"zeta", remoteRefPrefix + "origin/HEAD", "main" + headRefSuffix, "alpha"}, []string{"v2", "v1"}
+		sortedBranches, sortedTags := sortedReferences(branches, tags)
+		if strings.Join(sortedBranches, ",") != "main <- HEAD,alpha,zeta,refs/remotes/origin/HEAD" || strings.Join(sortedTags, ",") != "v1,v2" || branches[0] != "zeta" || tags[0] != "v2" {
+			t.Fatalf("references not independently sorted: %v %v from %v %v", sortedBranches, sortedTags, branches, tags)
+		}
 	}
-}
-
-func TestSortedReferencesKeepsLocalBranchesBeforeRemotes(t *testing.T) {
-	branches := []string{"tsk-2407-products", remoteRefPrefix + "origin/tsk-2407-products", "alpha", remoteRefPrefix + "origin/alpha"}
-	sorted, _ := sortedReferences(branches, nil)
-	want := "alpha,tsk-2407-products,refs/remotes/origin/alpha,refs/remotes/origin/tsk-2407-products"
-	if strings.Join(sorted, ",") != want {
-		t.Fatalf("local and remote branches were not grouped consistently: %v", sorted)
+	{
+		branches := []string{"tsk-2407-products", remoteRefPrefix + "origin/tsk-2407-products", "alpha", remoteRefPrefix + "origin/alpha"}
+		sorted, _ := sortedReferences(branches, nil)
+		want := "alpha,tsk-2407-products,refs/remotes/origin/alpha,refs/remotes/origin/tsk-2407-products"
+		if strings.Join(sorted, ",") != want {
+			t.Fatalf("local and remote branches were not grouped consistently: %v", sorted)
+		}
 	}
-}
-
-func TestReferenceMetadataIncludesHeadAndUpstream(t *testing.T) {
-	output := "refs/heads/main\x00refs/remotes/origin/main\x00*\nrefs/remotes/origin/main\x00\x00 \nrefs/tags/v1\x00\x00 \n"
-	branches, tags, upstreams := referenceMetadata(output)
-	if strings.Join(branches, ",") != "main <- HEAD,refs/remotes/origin/main" || strings.Join(tags, ",") != "v1" || upstreams["main"] != "refs/remotes/origin/main" {
-		t.Fatalf("reference metadata was not parsed: %v %v %v", branches, tags, upstreams)
+	{
+		output := "refs/heads/main\x00refs/remotes/origin/main\x00*\nrefs/remotes/origin/main\x00\x00 \nrefs/tags/v1\x00\x00 \n"
+		branches, tags, upstreams := referenceMetadata(output)
+		if strings.Join(branches, ",") != "main <- HEAD,refs/remotes/origin/main" || strings.Join(tags, ",") != "v1" || upstreams["main"] != "refs/remotes/origin/main" {
+			t.Fatalf("reference metadata was not parsed: %v %v %v", branches, tags, upstreams)
+		}
 	}
 }
 
