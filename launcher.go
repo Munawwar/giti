@@ -154,9 +154,16 @@ func launcherArguments(args []string, path string) (history historySpec, foregro
 				}
 			}
 			history.Revision, paths = candidate, append(paths, positionals[1:]...)
-		} else if pathErr != nil && strings.Contains(candidate, "..") {
-			return history, false, false, errors.New("revision ranges are not supported yet")
 		} else {
+			if pathErr != nil {
+				if strings.Contains(candidate, "..") {
+					return history, false, false, errors.New("revision ranges are not supported yet")
+				}
+				commits, historyErr := exec.Command("git", "-C", path, "log", "-1", "--format=%H", "HEAD", "--", ":(literal)"+candidate).Output()
+				if historyErr != nil || strings.TrimSpace(string(commits)) == "" {
+					return history, false, false, fmt.Errorf("branch, tag, commit, or file %q does not exist in this repository; use -- before a literal file-history path", candidate)
+				}
+			}
 			paths = append(paths, positionals...)
 		}
 	}

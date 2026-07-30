@@ -31,6 +31,7 @@ func TestLauncherArguments(t *testing.T) {
 		{args: []string{"giti", "README.md"}, history: historySpec{Revision: "HEAD", Path: "README.md"}},
 		{args: []string{"giti", "main", "README.md"}, history: historySpec{Revision: "main", Path: "README.md"}},
 		{args: []string{"giti", "--", "README.md"}, history: historySpec{Revision: "HEAD", Path: "README.md"}},
+		{args: []string{"giti", "--", "missing.txt"}, history: historySpec{Revision: "HEAD", Path: "missing.txt"}},
 		{args: []string{"giti", "--follow", "README.md"}, history: historySpec{Revision: "HEAD", Path: "README.md", Follow: true}},
 		{args: []string{"giti", "-f"}, history: historySpec{Revision: "HEAD"}, foreground: true},
 		{args: []string{"giti", "--foreground", "v1"}, history: historySpec{Revision: "v1"}, foreground: true},
@@ -51,6 +52,15 @@ func TestLauncherArguments(t *testing.T) {
 		if historyMismatch || (err != nil) != test.wantError {
 			t.Errorf("launcherArguments(%q) = %#v, %v, %v, %v", test.args, history, foreground, force, err)
 		}
+	}
+	if _, _, _, err := launcherArguments([]string{"giti", "missing-branch"}, path); err == nil || !strings.Contains(err.Error(), `branch, tag, commit, or file "missing-branch" does not exist in this repository`) {
+		t.Fatalf("missing revision returned an unclear error: %v", err)
+	}
+	if err := os.Remove(filepath.Join(path, "history.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if history, _, _, err := launcherArguments([]string{"giti", "history.txt"}, path); err != nil || history.Path != "history.txt" {
+		t.Fatalf("historical path was not recognized: %#v, %v", history, err)
 	}
 	if err := os.WriteFile(filepath.Join(path, "main"), []byte("ambiguous\n"), 0o644); err != nil {
 		t.Fatal(err)
