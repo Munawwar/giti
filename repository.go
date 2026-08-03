@@ -525,9 +525,6 @@ func (repo *repository) changedFilesForViewContext(ctx context.Context, row hist
 	}
 	if mergeResolution && len(row.parents) > 1 {
 		args := []string{"diff-tree", "--no-commit-id", "-r", "--cc"}
-		if ignoreWhitespace {
-			args = append(args, "--ignore-all-space")
-		}
 		statusArgs := append(append([]string(nil), args...), "--name-status", "-z", row.revision)
 		output, err := repo.runContext(ctx, statusArgs...)
 		if err != nil {
@@ -547,7 +544,8 @@ func (repo *repository) changedFilesForViewContext(ctx context.Context, row hist
 		// Raw combined status includes files changed cleanly in separate regions
 		// relative to every parent, even when dense combined patch output has no
 		// hunk for them. Match Gitk's merge list by retaining only paths for which
-		// the identically filtered patch emits a diff header.
+		// the unfiltered patch emits a diff header. Whitespace-only resolutions must
+		// remain selectable even when the current display preference filters them.
 		patchArgs := append(append([]string(nil), args...), "-p", "--no-ext-diff", "--no-color", "--unified=0", row.revision)
 		patch, err := repo.runContext(ctx, patchArgs...)
 		if err != nil {

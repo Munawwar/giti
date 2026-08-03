@@ -168,6 +168,7 @@ type giti struct {
 	fullFileToggle             *gtk.CheckButton
 	fullMergeToggle            *gtk.CheckButton
 	fullFilePreferred          bool
+	whitespacePreferred        bool
 	loadButton                 *gtk.Button
 	notification               *gtk.InfoBar
 	notificationLabel          *gtk.Label
@@ -181,6 +182,7 @@ type giti struct {
 	diffFindLimited            bool
 	fullFileHandler            glib.SignalHandle
 	fullMergeHandler           glib.SignalHandle
+	whitespaceHandler          glib.SignalHandle
 	application                *gtk.Application
 }
 
@@ -525,8 +527,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 
 	app.whitespaceToggle = must(gtk.CheckButtonNewWithLabel("Whitespace changes"))
 	app.whitespaceToggle.SetTooltipText("Include whitespace-only changes in file lists and diffs")
-	app.whitespaceToggle.SetActive(true)
-	app.whitespaceToggle.Connect("toggled", app.onWhitespaceToggled)
+	app.whitespaceHandler = app.whitespaceToggle.Connect("toggled", app.onWhitespaceToggled)
 	app.fullFileToggle = must(gtk.CheckButtonNewWithLabel("Show full file"))
 	app.fullFileToggle.SetTooltipText("Show unchanged lines from the complete file")
 	app.fullFileHandler = app.fullFileToggle.Connect("toggled", func() {
@@ -1297,7 +1298,9 @@ func (app *giti) openRepository(path string, history historySpec) bool {
 	app.searchFileMode.SetActive(repo.searchPath != "")
 	app.searchFollow.SetActive(repo.follow)
 	app.historySearch.SetText(repo.searchPath)
-	app.whitespaceToggle.SetActive(true)
+	app.whitespaceToggle.HandlerBlock(app.whitespaceHandler)
+	app.whitespaceToggle.SetActive(app.whitespacePreferred)
+	app.whitespaceToggle.HandlerUnblock(app.whitespaceHandler)
 	app.window.SetTitle(repo.windowTitle())
 	app.window.ShowAll()
 	app.notificationGeneration++

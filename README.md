@@ -73,7 +73,7 @@ that private copy automatically. It can be deleted after installing
 
 ## Features / Deets
 
-The initial history contains unstaged and staged entries when present, followed by 50 commits. Select a history entry, then a changed file, to view only that file's stacked diff. **Whitespace changes** are shown by default; disable the option to use Git's `--ignore-all-space` filtering.
+The initial history contains unstaged and staged entries when present, followed by 50 commits. Select a history entry, then a changed file, to view only that file's stacked diff. Whitespace changes are ignored by default using Git's `--ignore-all-space` filtering; enable **Whitespace changes** to include them. A whitespace-only merge resolution remains visible and shows its patch automatically so the resolved change is not hidden.
 
 For performance the graph initially shows 50 commits. Use **Load more** when that is not enough. Opening a parent that has not been loaded yet automatically reads older history, up to a safety limit of 5,000 commits.
 

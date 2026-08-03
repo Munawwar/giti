@@ -1059,6 +1059,11 @@ func (app *giti) onFileSelected() {
 		size := repo.fileSizeContext(ctx, row, selectedFile)
 		fullFile := preferFullFile && size <= fullFileLimit
 		patch, loadErr := repo.diffForViewContext(ctx, row, selectedFile, ignoreWhitespace, fullFile, mergeResolution)
+		automaticWhitespace := false
+		if loadErr == nil && patch == "" && ignoreWhitespace && mergeResolution {
+			patch, loadErr = repo.diffForViewContext(ctx, row, selectedFile, false, fullFile, true)
+			automaticWhitespace = loadErr == nil && patch != ""
+		}
 		addMainSource(0, func() bool {
 			if ctx.Err() != nil || generation != app.diffGeneration || selectionGeneration != app.selectionGeneration || repo != app.repository {
 				return false
@@ -1078,7 +1083,9 @@ func (app *giti) onFileSelected() {
 				app.fullFileToggle.SetTooltipText("Show unchanged lines from the complete file")
 			}
 			app.fullFileToggle.HandlerUnblock(app.fullFileHandler)
-			if patch == "" && ignoreWhitespace {
+			if automaticWhitespace {
+				patch = "Whitespace-only merge resolution — shown automatically.\n\n" + patch
+			} else if patch == "" && ignoreWhitespace {
 				patch = "No non-whitespace changes. Turn on “Whitespace changes” to view this diff.\n"
 			}
 			app.setDiff(patch)
@@ -1232,6 +1239,7 @@ func splitAfterLines(text string) []string {
 
 func (app *giti) onWhitespaceToggled() {
 	if app.currentRow != nil {
+		app.whitespacePreferred = app.whitespaceToggle.GetActive()
 		app.loadHistory(false)
 	}
 }

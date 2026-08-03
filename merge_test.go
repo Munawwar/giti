@@ -100,7 +100,7 @@ func TestMergeResolutionIsDefaultAndFullMergeRemainsAvailable(t *testing.T) {
 	}
 }
 
-func TestMergeResolutionWhitespaceFilteringMatchesPatch(t *testing.T) {
+func TestMergeResolutionWhitespaceOnlyFilesRemainSelectable(t *testing.T) {
 	path := mergeTestInit(t, map[string]string{"conflict.txt": "base\n"})
 	mergeTestGit(t, path, "checkout", "-b", "side")
 	mergeTestWrite(t, path, "conflict.txt", "side")
@@ -125,10 +125,14 @@ func TestMergeResolutionWhitespaceFilteringMatchesPatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	merge := mergeTestRow(t, rows, "commit")
-	shown, shownErr := repo.changedFilesForViewContext(context.Background(), merge, false, true)
-	hidden, hiddenErr := repo.changedFilesForViewContext(context.Background(), merge, true, true)
-	if shownErr != nil || hiddenErr != nil || len(shown) != 1 || shown[0].path != "conflict.txt" || len(hidden) != 0 {
-		t.Fatalf("whitespace-filtered merge files = shown %#v/%v, hidden %#v/%v", shown, shownErr, hidden, hiddenErr)
+	files, filesErr := repo.changedFilesForViewContext(context.Background(), merge, true, true)
+	if filesErr != nil || len(files) != 1 || files[0].path != "conflict.txt" {
+		t.Fatalf("whitespace-only merge files = %#v, %v", files, filesErr)
+	}
+	filtered, filteredErr := repo.diffForViewContext(context.Background(), merge, files[0], true, false, true)
+	raw, rawErr := repo.diffForViewContext(context.Background(), merge, files[0], false, false, true)
+	if filteredErr != nil || filtered != "" || rawErr != nil || raw == "" {
+		t.Fatalf("whitespace-only merge patch = filtered %q/%v, raw %q/%v", filtered, filteredErr, raw, rawErr)
 	}
 }
 
