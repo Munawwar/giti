@@ -108,13 +108,14 @@ func TestGTKApplicationMenu(t *testing.T) {
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil })
 	refresh := application.LookupAction("refresh")
 	findDiff := application.LookupAction("find-diff")
-	findFiles := application.LookupAction("find-files")
-	if application.GetAppMenu() == nil || application.GetAppMenu().GetNItems() != 3 || application.GetMenubar() == nil || application.GetMenubar().GetNItems() != 1 || refresh == nil || !refresh.GetEnabled() || findDiff == nil || !findDiff.GetEnabled() || findFiles == nil || !findFiles.GetEnabled() {
-		t.Fatal("refresh and find menu actions were not installed")
+	if application.GetAppMenu() != nil || application.GetMenubar() != nil || app.windowHeader == nil || !app.windowHeader.GetShowCloseButton() || app.windowHeader.GetTitle() != filepath.Base(path) || app.mainMenu == nil || app.mainMenu.GetPopover() == nil || len(app.mainMenuShortcuts) != 2 || refresh == nil || !refresh.GetEnabled() || findDiff == nil || !findDiff.GetEnabled() || application.LookupAction("find-files") != nil {
+		t.Fatal("unexpected menu actions")
 	}
-	findFiles.Activate(nil)
-	iterateGTKUntil(t, time.Second, func() bool { return app.fileSearchReveal.GetRevealChild() && app.fileSearch.IsFocus() })
-	app.fileSearchToggle.SetActive(false)
+	findShortcut, _ := app.mainMenuShortcuts[0].GetText()
+	refreshShortcut, _ := app.mainMenuShortcuts[1].GetText()
+	if findShortcut != "Ctrl+F" || refreshShortcut != "Ctrl+R" {
+		t.Fatalf("unexpected menu shortcuts: %q/%q", findShortcut, refreshShortcut)
+	}
 	findDiff.Activate(nil)
 	iterateGTKUntil(t, time.Second, func() bool { return app.diffFindBox.GetVisible() && app.diffFind.IsFocus() })
 	app.closeDiffFind()
@@ -408,6 +409,9 @@ func TestGTKDiffFindShortcutNavigationAndFileSwitch(t *testing.T) {
 	app.diffView.GrabFocus()
 	if !app.handleDiffFindKey(gdk.KEY_f, gdk.CONTROL_MASK) {
 		t.Fatal("Ctrl+F was not handled in the diff")
+	}
+	if app.handleDiffFindKey(gdk.KEY_F, gdk.CONTROL_MASK|gdk.SHIFT_MASK) {
+		t.Fatal("Ctrl+Shift+F was consumed by diff search")
 	}
 	iterateGTKUntil(t, time.Second, func() bool { return app.diffFindBox.GetVisible() && app.diffFind.IsFocus() })
 	app.diffFind.SetText("MORE")

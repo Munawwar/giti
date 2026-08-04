@@ -89,7 +89,7 @@ button.giti-ref-copy.giti-ref-joined {
 box.giti-load-footer {
   padding: 4px 6px;
 }
-label.giti-load-count {
+label.giti-secondary-label {
   color: #6b7280;
   font-size: smaller;
 }
@@ -189,6 +189,9 @@ type giti struct {
 	currentRow                 *historyRow
 	currentFile                *changedFile
 	window                     *gtk.Window
+	windowHeader               *gtk.HeaderBar
+	mainMenu                   *gtk.MenuButton
+	mainMenuShortcuts          []*gtk.Label
 	historyStore, fileStore    *gtk.ListStore
 	fileTreeStore              *gtk.TreeStore
 	fileModel                  *gtk.TreeModel
@@ -278,7 +281,7 @@ func newLoadFooter(actionLabel, busyLabel, accessibleName, description string) *
 	footer.count.SetEllipsize(pango.ELLIPSIZE_END)
 	setAccessibilityRoleAlert(&footer.count.Widget)
 	countContext, _ := footer.count.GetStyleContext()
-	countContext.AddClass("giti-load-count")
+	countContext.AddClass("giti-secondary-label")
 	footer.button = must(gtk.ButtonNewWithLabel(actionLabel))
 	footer.button.SetRelief(gtk.RELIEF_NONE)
 	setAccessibility(&footer.button.Widget, accessibleName, description)
@@ -422,7 +425,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		app.window = must(gtk.WindowNew(gtk.WINDOW_TOPLEVEL))
 	} else {
 		window := must(gtk.ApplicationWindowNew(application))
-		window.SetShowMenubar(true)
+		window.SetShowMenubar(false)
 		app.window = &window.Window
 	}
 	iconLoader := must(gdk.PixbufLoaderNewWithType("png"))
@@ -739,7 +742,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.fileSearchToggle = must(gtk.ToggleButtonNew())
 	app.fileSearchToggle.SetImage(must(gtk.ImageNewFromIconName("edit-find-symbolic", gtk.ICON_SIZE_BUTTON)))
 	app.fileSearchToggle.SetRelief(gtk.RELIEF_NONE)
-	app.fileSearchToggle.SetTooltipText("Filter changed files (Ctrl+Shift+F)")
+	app.fileSearchToggle.SetTooltipText("Filter changed files")
 	fileSearchToggleContext, _ := app.fileSearchToggle.GetStyleContext()
 	fileSearchToggleContext.AddClass("giti-flat-button")
 	setAccessibility(&app.fileSearchToggle.Widget, "Filter changed files", "Show or hide the changed-file search field")
@@ -868,30 +871,59 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		refresh := glib.SimpleActionNew("refresh", nil)
 		refresh.Connect("activate", func() { app.loadHistory(true) })
 		application.AddAction(refresh)
-		application.SetAccelsForAction("app.refresh", []string{"F5"})
+		application.SetAccelsForAction("app.refresh", []string{"<Primary>r"})
 		findDiff := glib.SimpleActionNew("find-diff", nil)
 		findDiff.Connect("activate", func() { app.handleDiffFindKey(gdk.KEY_f, gdk.CONTROL_MASK) })
 		application.AddAction(findDiff)
 		application.SetAccelsForAction("app.find-diff", []string{"<Primary>f"})
-		findFiles := glib.SimpleActionNew("find-files", nil)
-		findFiles.Connect("activate", func() {
-			app.fileSearchToggle.SetActive(true)
-			app.fileSearch.GrabFocus()
-		})
-		application.AddAction(findFiles)
-		application.SetAccelsForAction("app.find-files", []string{"<Primary><Shift>f"})
-		appMenu := glib.MenuNew()
-		appMenu.Append("Find in Diff", "app.find-diff")
-		appMenu.Append("Filter Changed Files", "app.find-files")
-		appMenu.Append("Refresh", "app.refresh")
-		application.SetAppMenu(&appMenu.MenuModel)
-		viewMenu := glib.MenuNew()
-		viewMenu.Append("Find in Diff", "app.find-diff")
-		viewMenu.Append("Filter Changed Files", "app.find-files")
-		viewMenu.Append("Refresh", "app.refresh")
-		menubar := glib.MenuNew()
-		menubar.AppendSubmenu("View", &viewMenu.MenuModel)
-		application.SetMenubar(&menubar.MenuModel)
+		app.mainMenu = must(gtk.MenuButtonNew())
+		app.mainMenu.SetImage(must(gtk.ImageNewFromIconName("open-menu-symbolic", gtk.ICON_SIZE_BUTTON)))
+		app.mainMenu.SetRelief(gtk.RELIEF_NONE)
+		app.mainMenu.SetTooltipText("Main Menu")
+		setAccessibility(&app.mainMenu.Widget, "Main Menu", "Open application commands")
+		mainMenuContext, _ := app.mainMenu.GetStyleContext()
+		mainMenuContext.AddClass("giti-flat-button")
+		popover := must(gtk.PopoverNew(app.mainMenu))
+		menuBox := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0))
+		for _, command := range []struct {
+			label, shortcut string
+			action          *glib.SimpleAction
+		}{
+			{"Find in Diff", "Ctrl+F", findDiff},
+			{"Refresh", "Ctrl+R", refresh},
+		} {
+			row := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 24))
+			label, shortcut := must(gtk.LabelNew(command.label)), must(gtk.LabelNew(command.shortcut))
+			label.SetXAlign(0)
+			shortcut.SetXAlign(1)
+			shortcutContext, _ := shortcut.GetStyleContext()
+			shortcutContext.AddClass("giti-secondary-label")
+			row.PackStart(label, true, true, 0)
+			row.PackEnd(shortcut, false, false, 0)
+			button := must(gtk.ButtonNew())
+			button.SetRelief(gtk.RELIEF_NONE)
+			button.Add(row)
+			buttonContext, _ := button.GetStyleContext()
+			buttonContext.AddClass("giti-flat-button")
+			setAccessibility(&button.Widget, command.label, command.label+" ("+command.shortcut+")")
+			action := command.action
+			button.Connect("clicked", func() { popover.Popdown(); action.Activate(nil) })
+			menuBox.PackStart(button, false, true, 0)
+			app.mainMenuShortcuts = append(app.mainMenuShortcuts, shortcut)
+		}
+		menuBox.SetMarginStart(6)
+		menuBox.SetMarginEnd(6)
+		menuBox.SetMarginTop(6)
+		menuBox.SetMarginBottom(6)
+		popover.Add(menuBox)
+		menuBox.ShowAll()
+		app.mainMenu.SetPopover(popover)
+		app.windowHeader = must(gtk.HeaderBarNew())
+		app.windowHeader.SetTitle(filepath.Base(app.repository.path))
+		app.windowHeader.SetHasSubtitle(false)
+		app.windowHeader.SetShowCloseButton(true)
+		app.windowHeader.PackEnd(app.mainMenu)
+		app.window.SetTitlebar(app.windowHeader)
 	}
 	app.commitHeader = must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 2))
 	app.commitHeader.SetMarginStart(12)
@@ -1086,7 +1118,7 @@ func (app *giti) buildDiffFind(diffPage gtk.IWidget) *gtk.Overlay {
 
 func (app *giti) handleDiffFindKey(key uint, modifiers gdk.ModifierType) bool {
 	switch {
-	case modifiers&gdk.CONTROL_MASK != 0 && (key == gdk.KEY_f || key == gdk.KEY_F):
+	case modifiers&gdk.CONTROL_MASK != 0 && modifiers&gdk.SHIFT_MASK == 0 && (key == gdk.KEY_f || key == gdk.KEY_F):
 		if app.diffStack == nil || app.diffStack.GetVisibleChildName() != "diff" {
 			return false
 		}
@@ -1623,6 +1655,9 @@ func (app *giti) openRepository(path string, history historySpec) bool {
 	app.whitespaceToggle.SetActive(app.whitespacePreferred)
 	app.whitespaceToggle.HandlerUnblock(app.whitespaceHandler)
 	app.window.SetTitle(repo.windowTitle())
+	if app.windowHeader != nil {
+		app.windowHeader.SetTitle(filepath.Base(repo.path))
+	}
 	app.window.ShowAll()
 	app.notificationGeneration++
 	app.notification.Hide()

@@ -75,11 +75,11 @@ that private copy automatically. It can be deleted after installing
 
 The initial history contains unstaged and staged entries when present, followed by 50 commits. Select a history entry, then a changed file, to view only that file's stacked diff. Whitespace changes are ignored by default using Git's `--ignore-all-space` filtering; enable **Whitespace changes** to include them. A whitespace-only merge resolution remains visible and shows its patch automatically so the resolved change is not hidden.
 
-Use the changed-file toolbar to switch between flat list and hierarchy views. Its search button reveals a live file filter; **Ctrl+Shift+F** opens it directly, and **Escape** clears and closes it. The flat list folds a directory prefix shared by every changed file behind a muted `…/` marker. Tree connector lines trace nested directory relationships, while uninterrupted single-child directory chains are compacted into one row.
+Use the changed-file toolbar to switch between flat list and hierarchy views. Its search button reveals a live file filter, and **Escape** clears and closes it. The flat list folds a directory prefix shared by every changed file behind a muted `…/` marker. Tree connector lines trace nested directory relationships, while uninterrupted single-child directory chains are compacted into one row.
 
 For performance the graph initially shows 50 commits. Use **Load more** when that is not enough. Opening a parent that has not been loaded yet automatically reads older history, up to a safety limit of 5,000 commits.
 
-Use **View → Refresh** or press **F5** to reread the graph and working-tree changes while keeping the current view when possible.
+Use **Refresh** from the main menu or press **Ctrl+R** to reread the graph and working-tree changes while keeping the current view when possible.
 
 Enable **Show full file** to expand the selected diff with the unchanged surrounding lines. The option resets when the selection changes and is disabled for files larger than 2 MiB to avoid accidentally rendering an enormous document.
 
