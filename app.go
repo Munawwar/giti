@@ -22,6 +22,7 @@ import (
 const (
 	idleDuration        = 12 * time.Hour
 	initialHistoryLimit = 50
+	branchResultLimit   = 100
 	maxAutoHistory      = 5000
 	textSearchBatch     = 500
 	maxDiffFindMatches  = 5000
@@ -195,10 +196,12 @@ type giti struct {
 	branchLabel                *gtk.Label
 	branchSearch               *gtk.SearchEntry
 	branchList                 *gtk.ListBox
+	branchLimitLabel           *gtk.Label
 	branchPopover              *gtk.Popover
 	branchRevisions            []string
 	branchLabels               []string
 	branchMarkups              []string
+	branchVisible              []int
 	branchRepositoryPath       string
 	mainMenu                   *gtk.MenuButton
 	mainMenuShortcuts          []*gtk.Label
@@ -880,7 +883,8 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	if application != nil {
 		refresh := glib.SimpleActionNew("refresh", nil)
 		refresh.Connect("activate", func() {
-			app.populateBranchSelector(true)
+			app.branchRepositoryPath = ""
+			app.populateBranchSelector(false)
 			app.loadHistory(true)
 		})
 		application.AddAction(refresh)
@@ -958,35 +962,40 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		app.branchList = must(gtk.ListBoxNew())
 		app.branchList.SetSelectionMode(gtk.SELECTION_SINGLE)
 		app.branchList.SetActivateOnSingleClick(true)
-		app.branchList.SetFilterFunc(func(row *gtk.ListBoxRow) bool {
-			text, _ := app.branchSearch.GetText()
-			query := strings.ToLower(strings.TrimSpace(text))
-			index := row.GetIndex()
-			return query == "" || index >= 0 && index < len(app.branchLabels) && strings.Contains(strings.ToLower(app.branchLabels[index]), query)
-		})
-		app.branchSearch.Connect("search-changed", app.branchList.InvalidateFilter)
+		app.branchSearch.Connect("search-changed", app.renderBranchSelector)
 		app.branchList.Connect("row-activated", func(_ *gtk.ListBox, row *gtk.ListBoxRow) {
 			index := row.GetIndex()
-			if index < 0 || index >= len(app.branchRevisions) || app.branchRevisions[index] == app.repository.revisionArg {
+			if index < 0 || index >= len(app.branchVisible) || app.branchRevisions[app.branchVisible[index]] == app.repository.revisionArg {
 				app.branchPopover.Popdown()
 				return
 			}
-			branch := app.branchRevisions[index]
+			branch := app.branchRevisions[app.branchVisible[index]]
 			app.branchPopover.Popdown()
 			app.openRepository(app.repository.path, historySpec{Revision: branch, Path: app.repository.searchPath, Follow: app.repository.follow})
 		})
 		branchScroll := scroller(app.branchList)
 		branchScroll.SetPolicy(gtk.POLICY_NEVER, gtk.POLICY_AUTOMATIC)
 		branchScroll.SetSizeRequest(280, 240)
+		app.branchLimitLabel = must(gtk.LabelNew(""))
+		app.branchLimitLabel.SetNoShowAll(true)
+		app.branchLimitLabel.SetXAlign(0)
+		app.branchLimitLabel.SetLineWrap(true)
+		limitContext, _ := app.branchLimitLabel.GetStyleContext()
+		limitContext.AddClass("giti-secondary-label")
+		setAccessibility(&app.branchLimitLabel.Widget, "Additional branch results", "Search to reveal branches outside the displayed results")
 		branchBox.PackStart(app.branchSearch, false, false, 0)
 		branchBox.PackStart(branchScroll, true, true, 0)
+		branchBox.PackStart(app.branchLimitLabel, false, false, 0)
 		app.branchPopover.Add(branchBox)
 		app.branchPopover.Connect("show", func() {
+			if app.branchRepositoryPath != app.repository.path {
+				app.populateBranchSelector(true)
+			}
 			app.branchSearch.SetText("")
 			app.branchSearch.GrabFocus()
 		})
 		app.branchButton.SetPopover(app.branchPopover)
-		app.populateBranchSelector(true)
+		app.populateBranchSelector(false)
 		branchBox.ShowAll()
 		app.windowHeader.PackStart(app.branchButton)
 		app.windowHeader.PackEnd(app.mainMenu)
@@ -1724,7 +1733,10 @@ func (app *giti) openRepository(path string, history historySpec) bool {
 	app.window.SetTitle(repo.windowTitle())
 	if app.windowHeader != nil {
 		app.windowHeader.SetTitle(filepath.Base(repo.path))
-		app.populateBranchSelector(app.branchRepositoryPath != repo.path)
+		if app.branchRepositoryPath != repo.path {
+			app.branchRepositoryPath = ""
+		}
+		app.populateBranchSelector(false)
 	}
 	app.window.ShowAll()
 	app.notificationGeneration++
@@ -1747,10 +1759,6 @@ func (app *giti) populateBranchSelector(reload bool) {
 		currentMarkup = referenceBadge("HEAD"+headRefSuffix, "branch") + ` <span foreground="#6b7280">` + current + `</span>`
 	}
 	if reload {
-		if children := app.branchList.GetChildren(); children != nil {
-			children.Foreach(func(child any) { app.branchList.Remove(child.(gtk.IWidget)) })
-			children.Free()
-		}
 		app.branchRevisions = []string{"HEAD"}
 		app.branchLabels = []string{"Current — " + current}
 		app.branchMarkups = []string{"Current — " + currentMarkup}
@@ -1789,27 +1797,11 @@ func (app *giti) populateBranchSelector(reload bool) {
 			}
 		}
 		app.branchRepositoryPath = app.repository.path
-		for index, markup := range app.branchMarkups {
-			label := must(gtk.LabelNew(""))
-			label.SetMarkup(markup)
-			label.SetXAlign(0)
-			label.SetMarginStart(8)
-			label.SetMarginEnd(8)
-			label.SetMarginTop(6)
-			label.SetMarginBottom(6)
-			row := must(gtk.ListBoxRowNew())
-			row.Add(label)
-			app.branchList.Add(row)
-			if app.branchRevisions[index] == app.repository.revisionArg {
-				app.branchList.SelectRow(row)
-			}
-		}
-		app.branchList.ShowAll()
-		app.branchList.InvalidateFilter()
+		app.renderBranchSelector()
 	} else {
-		for index, revision := range app.branchRevisions {
-			if revision == app.repository.revisionArg {
-				app.branchList.SelectRow(app.branchList.GetRowAtIndex(index))
+		for row, index := range app.branchVisible {
+			if app.branchRevisions[index] == app.repository.revisionArg {
+				app.branchList.SelectRow(app.branchList.GetRowAtIndex(row))
 				break
 			}
 		}
@@ -1817,12 +1809,58 @@ func (app *giti) populateBranchSelector(reload bool) {
 	viewed := app.repository.revisionArg
 	viewedMarkup := referenceBadge(viewed, "branch")
 	if viewed == "HEAD" {
-		viewed = app.branchLabels[0]
+		viewed = "Current — " + current
 		viewedMarkup = "Current — " + currentMarkup
 	}
 	app.branchLabel.SetMarkup(viewedMarkup)
 	app.branchButton.SetTooltipText("Browse history from " + viewed)
 	setAccessibility(&app.branchButton.Widget, "History branch: "+viewed, "Choose a branch to browse without changing the working tree")
+}
+
+func (app *giti) renderBranchSelector() {
+	app.branchList.UnselectAll()
+	if children := app.branchList.GetChildren(); children != nil {
+		children.Foreach(func(child any) { app.branchList.Remove(child.(gtk.IWidget)) })
+		children.Free()
+	}
+	text, _ := app.branchSearch.GetText()
+	query, matches := strings.ToLower(strings.TrimSpace(text)), 0
+	app.branchVisible = nil
+	for index, name := range app.branchLabels {
+		if query != "" && !strings.Contains(strings.ToLower(name), query) {
+			continue
+		}
+		matches++
+		if len(app.branchVisible) >= branchResultLimit {
+			continue
+		}
+		app.branchVisible = append(app.branchVisible, index)
+		label := must(gtk.LabelNew(""))
+		label.SetMarkup(app.branchMarkups[index])
+		label.SetXAlign(0)
+		label.SetMarginStart(8)
+		label.SetMarginEnd(8)
+		label.SetMarginTop(6)
+		label.SetMarginBottom(6)
+		row := must(gtk.ListBoxRowNew())
+		row.Add(label)
+		app.branchList.Add(row)
+		if app.branchRevisions[index] == app.repository.revisionArg {
+			app.branchList.SelectRow(row)
+		}
+	}
+	app.branchList.ShowAll()
+	remaining := matches - len(app.branchVisible)
+	if remaining == 0 {
+		app.branchLimitLabel.Hide()
+		return
+	}
+	message := fmt.Sprintf("… %d more branches. Search to show them.", remaining)
+	if query != "" {
+		message = fmt.Sprintf("… %d more matches. Refine your search to show them.", remaining)
+	}
+	app.branchLimitLabel.SetText(message)
+	app.branchLimitLabel.Show()
 }
 
 func (app *giti) expireIfIdle() bool {

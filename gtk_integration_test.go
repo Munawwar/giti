@@ -127,11 +127,22 @@ func TestGTKApplicationMenu(t *testing.T) {
 		t.Fatalf("unexpected menu shortcuts: %q/%q", findShortcut, refreshShortcut)
 	}
 	branchLabel, _ := app.branchLabel.GetText()
+	if app.branchButton == nil || app.branchButton.GetPopover() == nil || strings.Join(strings.Fields(branchLabel), " ") != "Current — main" || app.branchRevisions != nil || app.branchLabels != nil || app.branchMarkups != nil {
+		t.Fatalf("branch selector was not lazy: label=%q revisions=%v labels=%v", branchLabel, app.branchRevisions, app.branchLabels)
+	}
+	app.openRepository(path, historySpec{Revision: "HEAD"})
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil })
+	if app.branchRevisions != nil || app.branchRepositoryPath != "" {
+		t.Fatalf("repository reopen populated lazy branches: %v", app.branchRevisions)
+	}
+	app.branchPopover.Popup()
+	iterateGTKUntil(t, time.Second, func() bool { return len(app.branchRevisions) > 0 })
 	if app.branchButton == nil || app.branchButton.GetPopover() == nil || strings.Join(strings.Fields(branchLabel), " ") != "Current — main" || fmt.Sprint(app.branchRevisions) != "[HEAD alpha Beta main older refs/remotes/origin/main]" || fmt.Sprint(app.branchLabels) != "[Current — main alpha Beta main older origin/main]" || !strings.Contains(app.branchMarkups[1], "#d8f0dd") || strings.Contains(app.branchMarkups[1], "refs/heads/") || !strings.Contains(app.branchMarkups[5], "#dce8f8") {
 		t.Fatalf("unexpected branch selector: label=%q revisions=%v labels=%v", branchLabel, app.branchRevisions, app.branchLabels)
 	}
 	app.branchSearch.SetText("old")
-	app.branchList.GetRowAtIndex(4).Activate()
+	iterateGTKUntil(t, time.Second, func() bool { return len(app.branchVisible) == 1 && app.branchLabels[app.branchVisible[0]] == "older" })
+	app.branchList.GetRowAtIndex(0).Activate()
 	iterateGTKUntil(t, 3*time.Second, func() bool {
 		return app.historyCancel == nil && app.repository.revisionArg == "older" && len(app.historyRows) > 0
 	})
@@ -139,6 +150,28 @@ func TestGTKApplicationMenu(t *testing.T) {
 	checkedOut, checkoutErr := exec.Command("git", "-C", path, "symbolic-ref", "--short", "HEAD").Output()
 	if checkoutErr != nil || strings.TrimSpace(string(checkedOut)) != "main" || strings.TrimSpace(branchLabel) != "older" || app.historyRows[0].subject != "commit 6" {
 		t.Fatalf("branch browsing changed checkout or loaded the wrong history: checkout=%q label=%q subject=%q err=%v", checkedOut, branchLabel, app.historyRows[0].subject, checkoutErr)
+	}
+	for index := range 105 {
+		name := fmt.Sprintf("cap-%03d", index)
+		app.branchRevisions = append(app.branchRevisions, name)
+		app.branchLabels = append(app.branchLabels, name)
+		app.branchMarkups = append(app.branchMarkups, referenceBadge(name, "branch"))
+	}
+	app.branchSearch.SetText("cap-")
+	iterateGTKUntil(t, time.Second, func() bool { return len(app.branchVisible) == branchResultLimit })
+	children := app.branchList.GetChildren()
+	visible, limitText := children.Length(), must(app.branchLimitLabel.GetText())
+	children.Free()
+	if visible != branchResultLimit || !app.branchLimitLabel.GetVisible() || limitText != "… 5 more matches. Refine your search to show them." {
+		t.Fatalf("branch results were not capped: visible=%d footer=%q", visible, limitText)
+	}
+	app.branchSearch.SetText("cap-104")
+	iterateGTKUntil(t, time.Second, func() bool { return len(app.branchVisible) == 1 && app.branchLabels[app.branchVisible[0]] == "cap-104" })
+	children = app.branchList.GetChildren()
+	visible = children.Length()
+	children.Free()
+	if visible != 1 || app.branchLimitLabel.GetVisible() {
+		t.Fatalf("specific branch search remained capped: visible=%d footer=%v", visible, app.branchLimitLabel.GetVisible())
 	}
 	findDiff.Activate(nil)
 	iterateGTKUntil(t, time.Second, func() bool { return app.diffFindBox.GetVisible() && app.diffFind.IsFocus() })
