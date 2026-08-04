@@ -108,9 +108,13 @@ func TestGTKApplicationMenu(t *testing.T) {
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil })
 	refresh := application.LookupAction("refresh")
 	findDiff := application.LookupAction("find-diff")
-	if application.GetAppMenu() == nil || application.GetAppMenu().GetNItems() != 2 || application.GetMenubar() == nil || application.GetMenubar().GetNItems() != 1 || refresh == nil || !refresh.GetEnabled() || findDiff == nil || !findDiff.GetEnabled() {
+	findFiles := application.LookupAction("find-files")
+	if application.GetAppMenu() == nil || application.GetAppMenu().GetNItems() != 3 || application.GetMenubar() == nil || application.GetMenubar().GetNItems() != 1 || refresh == nil || !refresh.GetEnabled() || findDiff == nil || !findDiff.GetEnabled() || findFiles == nil || !findFiles.GetEnabled() {
 		t.Fatal("refresh and find menu actions were not installed")
 	}
+	findFiles.Activate(nil)
+	iterateGTKUntil(t, time.Second, func() bool { return app.fileSearchReveal.GetRevealChild() && app.fileSearch.IsFocus() })
+	app.fileSearchToggle.SetActive(false)
 	findDiff.Activate(nil)
 	iterateGTKUntil(t, time.Second, func() bool { return app.diffFindBox.GetVisible() && app.diffFind.IsFocus() })
 	app.closeDiffFind()
@@ -205,7 +209,7 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	splitHeight, splitPosition := app.repositoryPane.GetAllocatedHeight(), app.repositoryPane.GetPosition()
 	messageOption, _ := app.searchMessages.GetLabel()
 	referenceOption, _ := app.searchReferences.GetLabel()
-	if app.historyLimit != initialHistoryLimit || !app.mainPane.GetWideHandle() || !app.repositoryPane.GetWideHandle() || app.loadButton.GetVisible() || app.fileView.GetTooltipColumn() != 0 || splitHeight <= 1 || splitPosition*2 < splitHeight-2 || splitPosition*2 > splitHeight+2 || app.searchSettings.GetPopover() == nil || !app.searchMessages.GetVisible() || !app.searchReferences.GetVisible() || app.searchMessages.GetActive() || app.searchReferences.GetActive() {
+	if app.historyLimit != initialHistoryLimit || !app.mainPane.GetWideHandle() || !app.repositoryPane.GetWideHandle() || app.loadButton.GetVisible() || app.fileView.GetTooltipColumn() != fileTooltipColumn || splitHeight <= 1 || splitPosition*2 < splitHeight-2 || splitPosition*2 > splitHeight+2 || app.searchSettings.GetPopover() == nil || !app.searchMessages.GetVisible() || !app.searchReferences.GetVisible() || app.searchMessages.GetActive() || app.searchReferences.GetActive() {
 		t.Fatalf("bad initial graph layout: limit=%d dividers=%v/%v load-more=%v tooltip=%d split=%d/%d", app.historyLimit, app.mainPane.GetWideHandle(), app.repositoryPane.GetWideHandle(), app.loadButton.GetVisible(), app.fileView.GetTooltipColumn(), splitPosition, splitHeight)
 	}
 	if messageOption != "Also match commit description" || referenceOption != "Also match branches and tags" {
@@ -593,6 +597,111 @@ func TestGTKDiffInteraction(t *testing.T) {
 		if copyErr != nil || messageErr != nil || copiedPath != action.text || message != action.message {
 			t.Fatalf("file copy action %q copied %q/%v and notified %q/%v", action.label, copiedPath, copyErr, message, messageErr)
 		}
+	}
+}
+
+func TestGTKChangedFileSearchAndTreeView(t *testing.T) {
+	_, app := newGTKIntegrationApp(t)
+	iterateGTKUntil(t, 2*time.Second, func() bool { return app.currentFile != nil && app.diffLoaded })
+	app.selectionGeneration++
+	app.diffGeneration++
+	if app.selectionCancel != nil {
+		app.selectionCancel()
+	}
+	if app.diffCancel != nil {
+		app.diffCancel()
+	}
+	app.currentRow, app.currentFile = nil, nil
+	app.files = []changedFile{
+		{status: "M", path: "src/main.go", additions: 3, deletions: 1},
+		{status: "A", path: "docs/README.md", additions: 8},
+		{status: "R", path: "src/ui/view.go", oldPath: "src/ui/list.go", additions: 2, deletions: 2},
+		{status: "A", path: "src/main/java/com/acme/billing/invoice/InvoiceService.java", additions: 20},
+	}
+	app.refreshFileView("")
+	listImage, listImageErr := app.fileListToggle.GetImage()
+	treeImage, treeImageErr := app.fileTreeToggle.GetImage()
+	_, listIcon := listImage.(*gtk.Image)
+	_, treeIcon := treeImage.(*gtk.Image)
+	if !app.fileListToggle.GetActive() || app.fileTreeToggle.GetActive() || app.fileSearchToggle.GetActive() || app.fileSearchReveal.GetRevealChild() || app.fileStore.IterNChildren(nil) != 4 || listImageErr != nil || treeImageErr != nil || !listIcon || !treeIcon {
+		t.Fatalf("changed files did not start in the compact icon list view: list/tree/search=%v/%v/%v reveal=%v rows=%d icons=%v/%v errors=%v/%v", app.fileListToggle.GetActive(), app.fileTreeToggle.GetActive(), app.fileSearchToggle.GetActive(), app.fileSearchReveal.GetRevealChild(), app.fileStore.IterNChildren(nil), listIcon, treeIcon, listImageErr, treeImageErr)
+	}
+	first, _ := app.fileStore.GetIterFirst()
+	firstLabel, _ := app.fileStore.GetValue(first, fileLabelColumn)
+	firstTooltip, _ := app.fileStore.GetValue(first, fileTooltipColumn)
+	label, _ := firstLabel.GetString()
+	tooltip, _ := firstTooltip.GetString()
+	if !strings.Contains(label, `size="small"`) || strings.Contains(label, "M    ") || tooltip != "Modified src/main.go" {
+		t.Fatalf("file status spacing or full-path tooltip is wrong: label=%q tooltip=%q", label, tooltip)
+	}
+
+	app.fileSearchToggle.SetActive(true)
+	app.fileSearch.SetText("DOCS readme")
+	iter, found := app.fileStore.GetIterFirst()
+	if !found || app.fileStore.IterNChildren(nil) != 1 {
+		t.Fatalf("file search did not filter case-insensitively: found=%v rows=%d", found, app.fileStore.IterNChildren(nil))
+	}
+	value, err := app.fileStore.GetValue(iter, fileIndexColumn)
+	fileIndex, valueErr := value.GoValue()
+	if err != nil || valueErr != nil || fileIndex != 1 {
+		t.Fatalf("filtered row lost its source file: index=%v errors=%v/%v", fileIndex, err, valueErr)
+	}
+
+	app.fileTreeToggle.SetActive(true)
+	if app.fileListToggle.GetActive() || !app.fileView.GetEnableTreeLines() {
+		t.Fatal("tree view did not deactivate the list button or enable hierarchy guide lines")
+	}
+	root, found := app.fileTreeStore.GetIterFirst()
+	child := new(gtk.TreeIter)
+	rootValue, rootErr := app.fileTreeStore.GetValue(root, fileLabelColumn)
+	rootLabel, labelErr := rootValue.GetString()
+	if !found || rootErr != nil || labelErr != nil || rootLabel != "docs" || app.fileTreeStore.IterNChildren(nil) != 1 || !app.fileTreeStore.IterChildren(root, child) {
+		t.Fatalf("tree view did not retain the matching file hierarchy: found=%v root=%q errors=%v/%v", found, rootLabel, rootErr, labelErr)
+	}
+	rootPath := must(gtk.TreePathNewFromIndicesv([]int{0}))
+	app.toggleFileDirectory(rootPath)
+	if app.fileView.RowExpanded(rootPath) {
+		t.Fatal("directory row toggle did not collapse it")
+	}
+	app.toggleFileDirectory(rootPath)
+	if !app.fileView.RowExpanded(rootPath) {
+		t.Fatal("directory row toggle did not expand it")
+	}
+	childValue, err := app.fileTreeStore.GetValue(child, fileIndexColumn)
+	childIndex, childErr := childValue.GoValue()
+	selection, _ := app.fileView.GetSelection()
+	selection.UnselectAll()
+	selection.SelectPath(rootPath)
+	_, _, directorySelected := selection.GetSelected()
+	if err != nil || childErr != nil || childIndex != 1 || directorySelected {
+		t.Fatalf("tree file mapping or folder selection is wrong: index=%v selected=%v errors=%v/%v", childIndex, directorySelected, err, childErr)
+	}
+	app.fileSearch.SetText("InvoiceService")
+	compactRoot, compactFound := app.fileTreeStore.GetIterFirst()
+	compactLabel, compactLabelErr := app.fileTreeStore.GetValue(compactRoot, fileLabelColumn)
+	compactPath, compactTextErr := compactLabel.GetString()
+	if !compactFound || compactLabelErr != nil || compactTextErr != nil || compactPath != "src/main/java/com/acme/billing/invoice" || app.fileTreeStore.IterNChildren(nil) != 1 || app.fileTreeStore.IterNChildren(compactRoot) != 1 {
+		t.Fatalf("single-child Java package directories were not compacted: found=%v label=%q children=%d errors=%v/%v", compactFound, compactPath, app.fileTreeStore.IterNChildren(compactRoot), compactLabelErr, compactTextErr)
+	}
+
+	app.fileSearchToggle.SetActive(false)
+	app.fileListToggle.SetActive(true)
+	query, queryErr := app.fileSearch.GetText()
+	if app.fileTreeToggle.GetActive() || app.fileView.GetEnableTreeLines() || app.fileSearchReveal.GetRevealChild() || queryErr != nil || query != "" || app.fileStore.IterNChildren(nil) != 4 {
+		t.Fatalf("returning to list view did not restore all files: %d", app.fileStore.IterNChildren(nil))
+	}
+	app.files = []changedFile{
+		{status: "M", path: "packages/dashboard/src/components/cx-templates/ElementTranslation.jsx"},
+		{status: "M", path: "packages/dashboard/src/pages/Overview.jsx"},
+	}
+	app.refreshFileView("")
+	commonIter, _ := app.fileStore.GetIterFirst()
+	commonLabel, _ := app.fileStore.GetValue(commonIter, fileLabelColumn)
+	commonTooltip, _ := app.fileStore.GetValue(commonIter, fileTooltipColumn)
+	commonText, _ := commonLabel.GetString()
+	commonTip, _ := commonTooltip.GetString()
+	if strings.Contains(commonText, "packages/dashboard/src") || !strings.Contains(commonText, `…/</span>components/cx-templates/ElementTranslation.jsx`) || commonTip != "Modified packages/dashboard/src/components/cx-templates/ElementTranslation.jsx" {
+		t.Fatalf("shared list prefix was not folded without changing its tooltip: label=%q tooltip=%q", commonText, commonTip)
 	}
 }
 

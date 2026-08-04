@@ -915,6 +915,7 @@ func (app *giti) onHistorySelected() {
 	}
 	app.currentRow, app.currentFile, app.files, app.diffLoaded = &app.historyRows[index], nil, nil, false
 	app.fileStore.Clear()
+	app.fileTreeStore.Clear()
 	ctx, cancel := context.WithCancel(context.Background())
 	app.selectionCancel = cancel
 	repo, row := app.repository, *app.currentRow
@@ -985,37 +986,203 @@ func (app *giti) onHistorySelected() {
 			// Replace the model only after its summary and header agree with the same
 			// result, then restore the previous path when it is still present.
 			app.files = files
-			target := 0
-			for fileIndex, file := range files {
-				iter := app.fileStore.Append()
-				stat := fmt.Sprintf("<span foreground=\"#2e8c47\">+%d</span>  <span foreground=\"#c7404d\">−%d</span>", file.additions, file.deletions)
-				if file.status == "??" {
-					stat = "<span foreground=\"#6b7280\">Untracked</span>"
-				} else if file.conflict != "" {
-					color := "#c7404d"
-					if file.status == "✓" {
-						color = "#2e8c47"
-					}
-					stat = fmt.Sprintf("<span foreground=\"%s\">%s</span>", color, html.EscapeString(file.conflict))
-				} else if mergeResolution {
-					stat = "<span foreground=\"#6b7280\">Combined</span>"
-				} else if file.binary {
-					stat = "<span foreground=\"#6b7280\">Binary</span>"
-				}
-				app.fileStore.Set(iter, []int{0, 1}, []any{file.label(), stat})
-				if file.path == previousPath {
-					target = fileIndex
-				}
-			}
 			if len(files) == 0 {
 				return false
 			}
-			path := must(gtk.TreePathNewFromIndicesv([]int{target}))
-			selection, _ := app.fileView.GetSelection()
-			selection.SelectPath(path)
+			app.refreshFileView(previousPath)
 			return false
 		})
 	}()
+}
+
+func (app *giti) refreshFileView(preferredPath string) {
+	if preferredPath == "" && app.currentFile != nil {
+		preferredPath = app.currentFile.path
+	}
+	query, _ := app.fileSearch.GetText()
+	terms := strings.Fields(strings.ToLower(query))
+	treeMode := app.fileTreeToggle.GetActive()
+	commonPrefix := ""
+	if !treeMode && len(app.files) > 1 {
+		parts := strings.Split(app.files[0].path, "/")
+		commonParts := len(parts) - 1
+		for _, file := range app.files[1:] {
+			candidate := strings.Split(file.path, "/")
+			commonParts = min(commonParts, len(candidate)-1)
+			for index := 0; index < commonParts; index++ {
+				if parts[index] != candidate[index] {
+					commonParts = index
+					break
+				}
+			}
+		}
+		if commonParts > 0 {
+			commonPrefix = strings.Join(parts[:commonParts], "/") + "/"
+		}
+	}
+	app.fileStore.Clear()
+	app.fileTreeStore.Clear()
+	if treeMode {
+		app.fileModel = &app.fileTreeStore.TreeModel
+		app.fileView.SetModel(app.fileTreeStore)
+	} else {
+		app.fileModel = &app.fileStore.TreeModel
+		app.fileView.SetModel(app.fileStore)
+	}
+	app.fileView.SetEnableTreeLines(treeMode)
+
+	var targetPath, firstPath *gtk.TreePath
+	visibleFiles := make([]int, 0, len(app.files))
+	directories, directoryFiles := make(map[string]*gtk.TreeIter), make(map[string]int)
+	directoryChildren := make(map[string]map[string]bool)
+	for fileIndex, file := range app.files {
+		haystack := strings.ToLower(strings.Join([]string{file.status, file.path, file.oldPath, file.conflict}, " "))
+		matches := true
+		for _, term := range terms {
+			if !strings.Contains(haystack, term) {
+				matches = false
+				break
+			}
+		}
+		if !matches {
+			continue
+		}
+		visibleFiles = append(visibleFiles, fileIndex)
+		if treeMode {
+			parts, parent := strings.Split(file.path, "/"), ""
+			for _, directory := range parts[:len(parts)-1] {
+				current := directory
+				if parent != "" {
+					current = parent + "/" + directory
+				}
+				if directoryChildren[parent] == nil {
+					directoryChildren[parent] = make(map[string]bool)
+				}
+				directoryChildren[parent][current] = true
+				parent = current
+			}
+			directoryFiles[parent]++
+		}
+	}
+
+	mergeResolution := app.currentRow != nil && app.currentRow.kind == "commit" && len(app.currentRow.parents) > 1 && !app.fullMergeToggle.GetActive()
+	for _, fileIndex := range visibleFiles {
+		file := app.files[fileIndex]
+		stat := fmt.Sprintf("<span foreground=\"#2e8c47\">+%d</span>  <span foreground=\"#c7404d\">−%d</span>", file.additions, file.deletions)
+		switch {
+		case file.status == "??":
+			stat = "<span foreground=\"#6b7280\">Untracked</span>"
+		case file.conflict != "":
+			color := "#c7404d"
+			if file.status == "✓" {
+				color = "#2e8c47"
+			}
+			stat = fmt.Sprintf("<span foreground=\"%s\">%s</span>", color, html.EscapeString(file.conflict))
+		case mergeResolution:
+			stat = "<span foreground=\"#6b7280\">Combined</span>"
+		case file.binary:
+			stat = "<span foreground=\"#6b7280\">Binary</span>"
+		}
+		sourcePath, tooltip := "", file.status+" "+file.path
+		switch {
+		case file.status == "??":
+			tooltip = "Untracked " + file.path
+		case file.status == "✓":
+			tooltip = "Resolution applied to " + file.path
+		case file.conflict != "":
+			tooltip = file.conflict + ": " + file.path
+		case strings.HasPrefix(file.status, "A"):
+			tooltip = "Added " + file.path
+		case strings.HasPrefix(file.status, "D"):
+			tooltip = "Deleted " + file.path
+		case strings.HasPrefix(file.status, "R"):
+			sourcePath, tooltip = file.oldPath, "Renamed "+file.oldPath+" to "+file.path
+		case strings.HasPrefix(file.status, "C"):
+			sourcePath, tooltip = file.oldPath, "Copied "+file.oldPath+" to "+file.path
+		case strings.Contains(file.status, "M"):
+			tooltip = "Modified " + file.path
+		case strings.Contains(file.status, "U"):
+			tooltip = "Unmerged " + file.path
+		case strings.Contains(file.status, "T"):
+			tooltip = "Type changed " + file.path
+		}
+		status := fmt.Sprintf("<span size=\"small\" foreground=\"#6b7280\">%s</span>", html.EscapeString(file.status))
+		displayPath := html.EscapeString(file.path)
+		if commonPrefix != "" && strings.HasPrefix(file.path, commonPrefix) {
+			displayPath = `<span foreground="#9ca3af">…/</span>` + html.EscapeString(strings.TrimPrefix(file.path, commonPrefix))
+		}
+		if sourcePath != "" {
+			displaySource := html.EscapeString(sourcePath)
+			if commonPrefix != "" && strings.HasPrefix(sourcePath, commonPrefix) {
+				displaySource = `<span foreground="#9ca3af">…/</span>` + html.EscapeString(strings.TrimPrefix(sourcePath, commonPrefix))
+			}
+			displayPath = displaySource + " → " + displayPath
+		}
+		label, tooltip := status+" "+displayPath, html.EscapeString(tooltip)
+
+		var path *gtk.TreePath
+		if !treeMode {
+			iter := app.fileStore.Append()
+			app.fileStore.Set(iter, []int{fileLabelColumn, fileStatColumn, fileIndexColumn, fileTooltipColumn}, []any{label, stat, fileIndex, tooltip})
+			path, _ = app.fileStore.GetPath(iter)
+		} else {
+			parts, parent, directoryPath := strings.Split(file.path, "/"), (*gtk.TreeIter)(nil), ""
+			for directoryIndex := 0; directoryIndex < len(parts)-1; directoryIndex++ {
+				if directoryPath != "" {
+					directoryPath += "/"
+				}
+				directoryPath += parts[directoryIndex]
+				labelParts := []string{parts[directoryIndex]}
+				for directoryFiles[directoryPath] == 0 && len(directoryChildren[directoryPath]) == 1 {
+					nextPath := ""
+					for child := range directoryChildren[directoryPath] {
+						nextPath = child
+					}
+					labelParts = append(labelParts, strings.TrimPrefix(nextPath, directoryPath+"/"))
+					directoryPath = nextPath
+					directoryIndex++
+				}
+				iter := directories[directoryPath]
+				if iter == nil {
+					iter = app.fileTreeStore.Append(parent)
+					app.fileTreeStore.SetValue(iter, fileLabelColumn, html.EscapeString(strings.Join(labelParts, "/")))
+					app.fileTreeStore.SetValue(iter, fileStatColumn, "")
+					app.fileTreeStore.SetValue(iter, fileIndexColumn, -1)
+					app.fileTreeStore.SetValue(iter, fileTooltipColumn, html.EscapeString("Directory "+directoryPath))
+					directories[directoryPath] = iter
+				}
+				parent = iter
+			}
+			name := parts[len(parts)-1]
+			if file.oldPath != "" {
+				oldParts := strings.Split(file.oldPath, "/")
+				name = oldParts[len(oldParts)-1] + " → " + name
+			}
+			iter := app.fileTreeStore.Append(parent)
+			app.fileTreeStore.SetValue(iter, fileLabelColumn, status+" "+html.EscapeString(name))
+			app.fileTreeStore.SetValue(iter, fileStatColumn, stat)
+			app.fileTreeStore.SetValue(iter, fileIndexColumn, fileIndex)
+			app.fileTreeStore.SetValue(iter, fileTooltipColumn, tooltip)
+			path, _ = app.fileTreeStore.GetPath(iter)
+		}
+		if firstPath == nil {
+			firstPath = path
+		}
+		if file.path == preferredPath {
+			targetPath = path
+		}
+	}
+	if targetPath == nil {
+		targetPath = firstPath
+	}
+	if treeMode {
+		app.fileView.ExpandAll()
+	}
+	if targetPath != nil {
+		selection, _ := app.fileView.GetSelection()
+		selection.SelectPath(targetPath)
+		app.fileView.ScrollToCell(targetPath, nil, false, 0, 0)
+	}
 }
 
 func (app *giti) onFileSelected() {
@@ -1025,12 +1192,13 @@ func (app *giti) onFileSelected() {
 	if !ok || app.currentRow == nil {
 		return
 	}
-	path, err := app.fileStore.GetPath(iter)
-	if err != nil || len(path.GetIndices()) == 0 {
+	value, err := app.fileModel.GetValue(iter, fileIndexColumn)
+	if err != nil {
 		return
 	}
-	index := path.GetIndices()[0]
-	if index >= len(app.files) {
+	rawIndex, err := value.GoValue()
+	index, valid := rawIndex.(int)
+	if err != nil || !valid || index < 0 || index >= len(app.files) {
 		return
 	}
 	// File loads are independently cancelable from history loads; both generation

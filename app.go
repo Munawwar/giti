@@ -28,8 +28,18 @@ const (
 	diffFindCurrentTag  = "find-match-current"
 )
 
+const (
+	fileLabelColumn = iota
+	fileStatColumn
+	fileIndexColumn
+	fileTooltipColumn
+)
+
 //go:embed logo/giti-logo.png
 var appIconPNG []byte
+
+//go:embed logo/file-tree-symbolic.svg
+var fileTreeIconSVG []byte
 
 const appCSS = `
 treeview.giti-list.view {
@@ -56,6 +66,55 @@ button.giti-ref-copy {
 button.giti-ref-copy.giti-ref-joined {
   border-width: 0;
   margin: 0;
+}
+.giti-flat-button {
+  background-color: transparent;
+  background-image: none;
+  border-color: transparent;
+  border-radius: 6px;
+  box-shadow: none;
+  min-height: 18px;
+  min-width: 18px;
+  padding: 5px;
+}
+.giti-flat-button:hover {
+  background-color: alpha(#6b7280, 0.12);
+}
+.giti-flat-button:checked {
+  background-color: #eef0f2;
+}
+.giti-flat-button:focus {
+  box-shadow: 0 0 0 1px alpha(@theme_selected_bg_color, 0.55);
+}
+.giti-view-switcher {
+  background-color: #e5e7eb;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+}
+.giti-view-option {
+  background-color: transparent;
+  background-image: none;
+  border-width: 0;
+  border-radius: 0;
+  box-shadow: none;
+  min-height: 20px;
+  min-width: 24px;
+  padding: 4px 8px;
+}
+.giti-view-option:hover {
+  background-color: alpha(#ffffff, 0.45);
+}
+.giti-view-option:checked {
+  background-color: #ffffff;
+}
+.giti-view-list {
+  border-radius: 5px 0 0 5px;
+}
+.giti-view-tree {
+  border-left-color: #d1d5db;
+  border-left-style: solid;
+  border-left-width: 1px;
+  border-radius: 0 5px 5px 0;
 }
 label.giti-stat {
   border-radius: 4px;
@@ -124,9 +183,16 @@ type giti struct {
 	currentFile                *changedFile
 	window                     *gtk.Window
 	historyStore, fileStore    *gtk.ListStore
+	fileTreeStore              *gtk.TreeStore
+	fileModel                  *gtk.TreeModel
 	historyView, fileView      *gtk.TreeView
 	historyScroller            *gtk.ScrolledWindow
 	fileSummary                *gtk.Label
+	fileSearch                 *gtk.SearchEntry
+	fileSearchReveal           *gtk.Revealer
+	fileSearchToggle           *gtk.ToggleButton
+	fileListToggle             *gtk.RadioButton
+	fileTreeToggle             *gtk.RadioButton
 	graphColumn                *gtk.TreeViewColumn
 	mainPane, repositoryPane   *gtk.Paned
 	historySearch              *gtk.SearchEntry
@@ -207,6 +273,14 @@ func diffKey(row historyRow, file changedFile) string {
 	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s", row.kind, row.revision, file.status, file.oldPath, file.path)
 }
 
+func (app *giti) toggleFileDirectory(path *gtk.TreePath) {
+	if app.fileView.RowExpanded(path) {
+		app.fileView.CollapseRow(path)
+	} else {
+		app.fileView.ExpandRow(path, false)
+	}
+}
+
 func must[T any](value T, err error) T {
 	if err != nil {
 		panic(err)
@@ -241,7 +315,9 @@ func newGiti(repo *repository, resident bool, applications ...*gtk.Application) 
 		}
 	}
 	app.historyStore = must(gtk.ListStoreNew(gdk.PixbufGetType(), glib.TYPE_STRING, glib.TYPE_STRING))
-	app.fileStore = must(gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING))
+	app.fileStore = must(gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_INT, glib.TYPE_STRING))
+	app.fileTreeStore = must(gtk.TreeStoreNew(glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_INT, glib.TYPE_STRING))
+	app.fileModel = &app.fileStore.TreeModel
 	app.buildWindow(application)
 	if resident {
 		addMainSource(time.Minute, app.expireIfIdle)
@@ -405,6 +481,8 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.searchSettings.SetImage(must(gtk.ImageNewFromIconName("preferences-system-symbolic", gtk.ICON_SIZE_BUTTON)))
 	app.searchSettings.SetTooltipText("Search options")
 	app.searchSettings.SetRelief(gtk.RELIEF_NONE)
+	searchSettingsContext, _ := app.searchSettings.GetStyleContext()
+	searchSettingsContext.AddClass("giti-flat-button")
 	searchPopover := must(gtk.PopoverNew(app.searchSettings))
 	searchPopover.Add(searchOptions)
 	searchOptions.ShowAll()
@@ -437,6 +515,9 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	searchPage := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 4))
 	searchPage.PackStart(scroller(app.searchResults), true, true, 0)
 	app.searchLoadButton = must(gtk.ButtonNewWithLabel("Load more search results"))
+	app.searchLoadButton.SetRelief(gtk.RELIEF_NONE)
+	searchLoadButtonContext, _ := app.searchLoadButton.GetStyleContext()
+	searchLoadButtonContext.AddClass("giti-flat-button")
 	app.searchLoadButton.Connect("clicked", func() {
 		app.searchLimit += 100
 		app.updateGraphSearch()
@@ -447,6 +528,8 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	setAccessibility(&app.searchBack.Widget, "Back to search results", "Return from the selected commit to the current search results")
 	app.searchBack.SetTooltipText("Back to search results")
 	app.searchBack.SetRelief(gtk.RELIEF_NONE)
+	searchBackContext, _ := app.searchBack.GetStyleContext()
+	searchBackContext.AddClass("giti-flat-button")
 	app.searchBack.Connect("clicked", func() {
 		app.searchViewingResult = false
 		app.historyStack.SetVisibleChildName("search")
@@ -466,39 +549,77 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.fileView.AddEvents(int(gdk.BUTTON_PRESS_MASK))
 	app.fileView.Connect("button-press-event", func(_ *gtk.TreeView, event *gdk.Event) bool {
 		button := gdk.EventButtonNewFromEvent(event)
-		if button.Button() != gdk.BUTTON_SECONDARY {
+		if button.Type() != gdk.EVENT_BUTTON_PRESS || button.Button() != gdk.BUTTON_PRIMARY && button.Button() != gdk.BUTTON_SECONDARY {
 			return false
 		}
 		path, _, _, _, ok := app.fileView.GetPathAtPos(int(button.X()), int(button.Y()))
-		if !ok || app.repository == nil {
+		if !ok && button.Button() == gdk.BUTTON_PRIMARY {
 			return false
 		}
-		selection, _ := app.fileView.GetSelection()
-		selection.SelectPath(path)
-		indices := path.GetIndices()
-		if len(indices) == 0 || indices[0] >= len(app.files) {
+		index := -1
+		if ok {
+			iter, err := app.fileModel.GetIter(path)
+			if err != nil {
+				return false
+			}
+			value, err := app.fileModel.GetValue(iter, fileIndexColumn)
+			if err != nil {
+				return false
+			}
+			rawIndex, err := value.GoValue()
+			var valid bool
+			index, valid = rawIndex.(int)
+			if err != nil || !valid {
+				return false
+			}
+		}
+		if button.Button() == gdk.BUTTON_PRIMARY {
+			if index >= 0 {
+				return false
+			}
+			app.fileView.GrabFocus()
+			app.toggleFileDirectory(path)
+			return true
+		}
+		treeMode := app.fileTreeToggle.GetActive()
+		fileActions := app.repository != nil && index >= 0 && index < len(app.files)
+		if !treeMode && !fileActions {
 			return false
 		}
-		relativePath := app.files[indices[0]].path
 		menu := must(gtk.MenuNew())
-		for _, action := range fileCopyActions(app.repository.path, relativePath) {
-			action := action
-			item := must(gtk.MenuItemNewWithLabel(action.label))
-			item.Connect("activate", func() { app.copyToClipboard(action.text, action.message) })
-			menu.Append(item)
+		if fileActions {
+			selection, _ := app.fileView.GetSelection()
+			selection.SelectPath(path)
+			for _, action := range fileCopyActions(app.repository.path, app.files[index].path) {
+				action := action
+				item := must(gtk.MenuItemNewWithLabel(action.label))
+				item.Connect("activate", func() { app.copyToClipboard(action.text, action.message) })
+				menu.Append(item)
+			}
+		}
+		if treeMode {
+			if fileActions {
+				menu.Append(must(gtk.SeparatorMenuItemNew()))
+			}
+			collapseAll := must(gtk.MenuItemNewWithLabel("Collapse All Nodes"))
+			collapseAll.Connect("activate", app.fileView.CollapseAll)
+			menu.Append(collapseAll)
+			expandAll := must(gtk.MenuItemNewWithLabel("Expand All Nodes"))
+			expandAll.Connect("activate", app.fileView.ExpandAll)
+			menu.Append(expandAll)
 		}
 		menu.Connect("selection-done", menu.Destroy)
 		menu.ShowAll()
 		menu.PopupAtPointer(event)
 		return true
 	})
-	app.fileView.SetTooltipColumn(0)
+	app.fileView.SetTooltipColumn(fileTooltipColumn)
 	fileContext, _ := app.fileView.GetStyleContext()
 	fileContext.AddClass("giti-list")
 	fileRenderer := must(gtk.CellRendererTextNew())
 	fileRenderer.SetProperty("family", "monospace")
 	fileRenderer.SetProperty("ellipsize", pango.ELLIPSIZE_MIDDLE)
-	fileColumn := must(gtk.TreeViewColumnNewWithAttribute("Files", fileRenderer, "text", 0))
+	fileColumn := must(gtk.TreeViewColumnNewWithAttribute("Files", fileRenderer, "markup", fileLabelColumn))
 	fileColumn.SetExpand(true)
 	app.fileView.AppendColumn(fileColumn)
 	statRenderer := must(gtk.CellRendererTextNew())
@@ -506,7 +627,60 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	statColumn := must(gtk.TreeViewColumnNewWithAttribute("Changes", statRenderer, "markup", 1))
 	app.fileView.AppendColumn(statColumn)
 	fileSelection, _ := app.fileView.GetSelection()
+	fileSelection.SetSelectFunction(func(_ *gtk.TreeSelection, model *gtk.TreeModel, path *gtk.TreePath, _ bool) bool {
+		iter, err := model.GetIter(path)
+		if err != nil {
+			return false
+		}
+		value, err := model.GetValue(iter, fileIndexColumn)
+		if err != nil {
+			return false
+		}
+		index, err := value.GoValue()
+		fileIndex, valid := index.(int)
+		return err == nil && valid && fileIndex >= 0
+	})
 	fileSelection.Connect("changed", app.onFileSelected)
+	app.fileSearch = must(gtk.SearchEntryNew())
+	app.fileSearch.SetPlaceholderText("Search changed files")
+	app.fileSearch.SetTooltipText("Filter changed files by path, status, or conflict")
+	setAccessibility(&app.fileSearch.Widget, "Search changed files", "Filter the files changed by the selected history entry")
+	app.fileSearch.Connect("changed", func() { app.refreshFileView("") })
+	app.fileSearch.Connect("stop-search", func() { app.fileSearchToggle.SetActive(false) })
+	app.fileSearchToggle = must(gtk.ToggleButtonNew())
+	app.fileSearchToggle.SetImage(must(gtk.ImageNewFromIconName("edit-find-symbolic", gtk.ICON_SIZE_BUTTON)))
+	app.fileSearchToggle.SetRelief(gtk.RELIEF_NONE)
+	app.fileSearchToggle.SetTooltipText("Filter changed files (Ctrl+Shift+F)")
+	fileSearchToggleContext, _ := app.fileSearchToggle.GetStyleContext()
+	fileSearchToggleContext.AddClass("giti-flat-button")
+	setAccessibility(&app.fileSearchToggle.Widget, "Filter changed files", "Show or hide the changed-file search field")
+	app.fileSearchToggle.Connect("toggled", func() {
+		visible := app.fileSearchToggle.GetActive()
+		app.fileSearchReveal.SetRevealChild(visible)
+		if visible {
+			app.fileSearch.GrabFocus()
+		} else {
+			app.fileSearch.SetText("")
+		}
+	})
+	app.fileListToggle = must(gtk.RadioButtonNew(nil))
+	app.fileTreeToggle = must(gtk.RadioButtonNewFromWidget(app.fileListToggle))
+	app.fileListToggle.SetMode(false)
+	app.fileTreeToggle.SetMode(false)
+	fileListToggleContext, _ := app.fileListToggle.GetStyleContext()
+	fileListToggleContext.AddClass("giti-view-option")
+	fileListToggleContext.AddClass("giti-view-list")
+	fileTreeToggleContext, _ := app.fileTreeToggle.GetStyleContext()
+	fileTreeToggleContext.AddClass("giti-view-option")
+	fileTreeToggleContext.AddClass("giti-view-tree")
+	app.fileListToggle.SetImage(must(gtk.ImageNewFromIconName("view-list-symbolic", gtk.ICON_SIZE_BUTTON)))
+	fileTreeIconLoader := must(gdk.PixbufLoaderNewWithType("svg"))
+	app.fileTreeToggle.SetImage(must(gtk.ImageNewFromPixbuf(must(fileTreeIconLoader.WriteAndReturnPixbuf(fileTreeIconSVG)))))
+	app.fileListToggle.SetTooltipText("List view")
+	app.fileTreeToggle.SetTooltipText("Group changed files into collapsible folders")
+	setAccessibility(&app.fileListToggle.Widget, "List view", "Show changed files in the original flat list")
+	setAccessibility(&app.fileTreeToggle.Widget, "Tree view", "Toggle between the unchanged file list and a folder tree")
+	app.fileTreeToggle.Connect("toggled", func() { app.refreshFileView("") })
 
 	// The diff pane owns both the text rendering and the optional full-file
 	// overview; selection changes update them as a single unit.
@@ -546,6 +720,9 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		}
 	})
 	app.loadButton = must(gtk.ButtonNewWithLabel("Load more"))
+	app.loadButton.SetRelief(gtk.RELIEF_NONE)
+	loadButtonContext, _ := app.loadButton.GetStyleContext()
+	loadButtonContext.AddClass("giti-flat-button")
 	app.loadButton.Connect("clicked", func() {
 		app.historyLimit += 100
 		app.loadHistory(false)
@@ -573,7 +750,29 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.fileSummary.SetMarginBottom(4)
 	setAccessibility(&app.fileSummary.Widget, "Changed file summary", "Numbers of added, deleted, updated, and untracked files")
 	fileBox := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0))
-	fileBox.PackStart(app.fileSummary, false, false, 0)
+	fileHeader := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 4))
+	fileHeader.SetMarginTop(2)
+	fileHeader.SetMarginBottom(2)
+	fileHeader.PackStart(app.fileSummary, true, true, 0)
+	fileViewButtons := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
+	fileViewButtonsContext, _ := fileViewButtons.GetStyleContext()
+	fileViewButtonsContext.AddClass("giti-view-switcher")
+	fileViewButtons.PackStart(app.fileListToggle, false, false, 0)
+	fileViewButtons.PackStart(app.fileTreeToggle, false, false, 0)
+	fileHeader.PackEnd(fileViewButtons, false, false, 8)
+	fileHeader.PackEnd(app.fileSearchToggle, false, false, 0)
+	fileBox.PackStart(fileHeader, false, false, 0)
+	app.fileSearchReveal = must(gtk.RevealerNew())
+	app.fileSearchReveal.SetTransitionType(gtk.REVEALER_TRANSITION_TYPE_SLIDE_DOWN)
+	app.fileSearchReveal.SetTransitionDuration(120)
+	fileSearchBox := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
+	fileSearchBox.SetMarginStart(8)
+	fileSearchBox.SetMarginEnd(8)
+	fileSearchBox.SetMarginTop(6)
+	fileSearchBox.SetMarginBottom(6)
+	fileSearchBox.PackStart(app.fileSearch, true, true, 0)
+	app.fileSearchReveal.Add(fileSearchBox)
+	fileBox.PackStart(app.fileSearchReveal, false, false, 0)
 	fileBox.PackStart(scroller(app.fileView), true, true, 0)
 	app.repositoryPane.Pack2(fileBox, true, true)
 
@@ -586,12 +785,21 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		findDiff.Connect("activate", func() { app.handleDiffFindKey(gdk.KEY_f, gdk.CONTROL_MASK) })
 		application.AddAction(findDiff)
 		application.SetAccelsForAction("app.find-diff", []string{"<Primary>f"})
+		findFiles := glib.SimpleActionNew("find-files", nil)
+		findFiles.Connect("activate", func() {
+			app.fileSearchToggle.SetActive(true)
+			app.fileSearch.GrabFocus()
+		})
+		application.AddAction(findFiles)
+		application.SetAccelsForAction("app.find-files", []string{"<Primary><Shift>f"})
 		appMenu := glib.MenuNew()
 		appMenu.Append("Find in Diff", "app.find-diff")
+		appMenu.Append("Filter Changed Files", "app.find-files")
 		appMenu.Append("Refresh", "app.refresh")
 		application.SetAppMenu(&appMenu.MenuModel)
 		viewMenu := glib.MenuNew()
 		viewMenu.Append("Find in Diff", "app.find-diff")
+		viewMenu.Append("Filter Changed Files", "app.find-files")
 		viewMenu.Append("Refresh", "app.refresh")
 		menubar := glib.MenuNew()
 		menubar.AppendSubmenu("View", &viewMenu.MenuModel)
@@ -1034,6 +1242,9 @@ func scroller(child gtk.IWidget) *gtk.ScrolledWindow {
 func (app *giti) copySHAButton(sha string) *gtk.Button {
 	button := must(gtk.ButtonNewFromIconName("edit-copy-symbolic", gtk.ICON_SIZE_BUTTON))
 	setAccessibility(&button.Widget, "Copy commit SHA", "Copy "+sha+" to the clipboard")
+	button.SetRelief(gtk.RELIEF_NONE)
+	context, _ := button.GetStyleContext()
+	context.AddClass("giti-flat-button")
 	button.SetTooltipText("Copy SHA: " + sha)
 	button.Connect("clicked", func() {
 		app.copyToClipboard(sha, "Copied commit ID to clipboard.")
@@ -1256,6 +1467,10 @@ func (app *giti) clearRepositoryView() {
 	app.searchLoadButton.Hide()
 	app.historyStore.Clear()
 	app.fileStore.Clear()
+	app.fileTreeStore.Clear()
+	app.fileSearch.SetText("")
+	app.fileSearchToggle.SetActive(false)
+	app.fileListToggle.SetActive(true)
 	app.fileSummary.SetText("Select a history entry to see changed files")
 	app.fileSummary.SetTooltipText("")
 	app.setCommitHeader(commitDetails{})

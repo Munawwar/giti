@@ -105,14 +105,6 @@ func referenceMetadata(output string) (branches, tags []string, upstreams map[st
 	return
 }
 
-func (file changedFile) label() string {
-	prefix := ""
-	if file.oldPath != "" {
-		prefix = file.oldPath + " → "
-	}
-	return fmt.Sprintf("%-4s %s%s", file.status, prefix, file.path)
-}
-
 type repository struct {
 	path, revision, revisionArg, searchPath string
 	follow                                  bool
