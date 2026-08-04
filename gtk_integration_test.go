@@ -79,6 +79,16 @@ func TestGTKApplicationMenu(t *testing.T) {
 	defer runtime.UnlockOSThread()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	path := testRepository(t)
+	for _, args := range [][]string{
+		{"update-ref", "refs/heads/Beta", "HEAD"},
+		{"update-ref", "refs/heads/alpha", "HEAD"},
+		{"update-ref", "refs/remotes/origin/main", "HEAD"},
+		{"symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"},
+	} {
+		if output, commandErr := exec.Command("git", append([]string{"-C", path}, args...)...).CombinedOutput(); commandErr != nil {
+			t.Fatalf("git %v: %v: %s", args, commandErr, output)
+		}
+	}
 	repo, err := newRepository(path, historySpec{Revision: "HEAD"})
 	if err != nil {
 		t.Fatal(err)
@@ -115,6 +125,20 @@ func TestGTKApplicationMenu(t *testing.T) {
 	refreshShortcut, _ := app.mainMenuShortcuts[1].GetText()
 	if findShortcut != "Ctrl+F" || refreshShortcut != "Ctrl+R" {
 		t.Fatalf("unexpected menu shortcuts: %q/%q", findShortcut, refreshShortcut)
+	}
+	branchLabel, _ := app.branchLabel.GetText()
+	if app.branchButton == nil || app.branchButton.GetPopover() == nil || strings.Join(strings.Fields(branchLabel), " ") != "Current — main" || fmt.Sprint(app.branchRevisions) != "[HEAD alpha Beta main older refs/remotes/origin/main]" || fmt.Sprint(app.branchLabels) != "[Current — main alpha Beta main older origin/main]" || !strings.Contains(app.branchMarkups[1], "#d8f0dd") || strings.Contains(app.branchMarkups[1], "refs/heads/") || !strings.Contains(app.branchMarkups[5], "#dce8f8") {
+		t.Fatalf("unexpected branch selector: label=%q revisions=%v labels=%v", branchLabel, app.branchRevisions, app.branchLabels)
+	}
+	app.branchSearch.SetText("old")
+	app.branchList.GetRowAtIndex(4).Activate()
+	iterateGTKUntil(t, 3*time.Second, func() bool {
+		return app.historyCancel == nil && app.repository.revisionArg == "older" && len(app.historyRows) > 0
+	})
+	branchLabel, _ = app.branchLabel.GetText()
+	checkedOut, checkoutErr := exec.Command("git", "-C", path, "symbolic-ref", "--short", "HEAD").Output()
+	if checkoutErr != nil || strings.TrimSpace(string(checkedOut)) != "main" || strings.TrimSpace(branchLabel) != "older" || app.historyRows[0].subject != "commit 6" {
+		t.Fatalf("branch browsing changed checkout or loaded the wrong history: checkout=%q label=%q subject=%q err=%v", checkedOut, branchLabel, app.historyRows[0].subject, checkoutErr)
 	}
 	findDiff.Activate(nil)
 	iterateGTKUntil(t, time.Second, func() bool { return app.diffFindBox.GetVisible() && app.diffFind.IsFocus() })
