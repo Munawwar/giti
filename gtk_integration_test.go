@@ -157,6 +157,17 @@ func TestGTKParentNavigationLoadsAndRevealsOlderCommit(t *testing.T) {
 	app.historyLimit = 1
 	app.loadHistory(false)
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil && len(app.historyRows) == 1 })
+	loadCount, _ := app.loadFooter.count.GetText()
+	if !app.loadFooter.box.GetVisible() || loadCount != "1 commit loaded" {
+		t.Fatalf("unexpected history load footer: visible=%v count=%q", app.loadFooter.box.GetVisible(), loadCount)
+	}
+	app.loadFooter.update(10123, "commit", true)
+	compactCount, _ := app.loadFooter.count.GetText()
+	compactTooltip, _ := app.loadFooter.count.GetTooltipText()
+	if compactCount != "10.1k commits loaded" || compactTooltip != "10123 commits loaded" {
+		t.Fatalf("unexpected compact history count: label=%q tooltip=%q", compactCount, compactTooltip)
+	}
+	app.loadFooter.update(1, "commit", true)
 	target, err := repo.run("rev-parse", "HEAD~11")
 	if err != nil {
 		t.Fatal(err)
@@ -800,11 +811,18 @@ func TestGTKSearchOptionsAndSelection(t *testing.T) {
 	iterateGTKUntil(t, 3*time.Second, func() bool {
 		return app.searchCancel == nil && len(app.searchMatches) == 1 && app.searchLoadButton.GetVisible()
 	})
+	searchLoadCount, _ := app.searchLoadFooter.count.GetText()
+	if !app.searchLoadFooter.box.GetVisible() || searchLoadCount != "1 result loaded" {
+		t.Fatalf("unexpected search load footer: visible=%v count=%q", app.searchLoadFooter.box.GetVisible(), searchLoadCount)
+	}
 	app.searchLoadButton.GrabFocus()
 	app.searchLoadButton.Clicked()
 	iterateGTKUntil(t, 3*time.Second, func() bool {
 		return app.searchCancel == nil && len(app.searchMatches) == 12 && !app.searchLoadButton.GetVisible() && app.searchResults.GetRowAtIndex(0).IsFocus()
 	})
+	if app.searchLoadFooter.box.GetVisible() {
+		t.Fatal("search load footer remained visible after the final page")
+	}
 	app.openSearchResult(7)
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.currentRow != nil && app.currentRow.revision == app.searchMatches[7].revision })
 	query, _ = app.historySearch.GetText()

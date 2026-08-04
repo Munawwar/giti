@@ -351,13 +351,16 @@ func (app *giti) updateGraphSearch() {
 	}
 	app.searchMatches, app.searchDepths = nil, nil
 	app.clearSearchResults()
+	if !app.searchLoadFooter.busy {
+		app.searchLoadFooter.setVisible(false)
+	}
 	if strings.TrimSpace(query) == "" {
 		app.setSearchBusy(false)
+		app.searchLoadFooter.setBusy(false)
 		app.searchViewingResult = false
 		app.searchBack.Hide()
-		app.searchLoadButton.Hide()
 		app.historyStack.SetVisibleChildName("graph")
-		app.loadButton.SetVisible(app.historyHasMore)
+		app.loadFooter.setVisible(app.historyHasMore)
 		return
 	}
 	app.setSearchBusy(true)
@@ -392,10 +395,14 @@ func (app *giti) renderGraphSearch(query string) {
 				}
 				app.searchCancel = nil
 				app.setSearchBusy(false)
+				restoreFocus := app.searchLoadFooter.takeFocus()
+				app.searchLoadFooter.setBusy(false)
 				if err != nil {
 					app.searchPlaceholder.SetText("Could not search: " + err.Error())
-					app.searchLoadButton.Hide()
 					app.showSearchMatches(nil)
+					if restoreFocus {
+						app.historySearch.GrabFocus()
+					}
 					return false
 				}
 				matches := make([]searchMatch, len(rows))
@@ -403,11 +410,12 @@ func (app *giti) renderGraphSearch(query string) {
 					branches, tags := referenceLists(row.refs)
 					matches[index] = searchMatch{row: row, index: index, branches: branches, tags: tags}
 				}
-				restoreFocus := !hasMore && app.searchLoadButton.IsFocus()
-				app.searchLoadButton.SetVisible(hasMore)
+				app.searchLoadFooter.update(len(matches), "result", hasMore)
 				app.showSearchMatches(matches)
 				if restoreFocus {
-					if result := app.searchResults.GetRowAtIndex(0); result != nil {
+					if hasMore {
+						app.searchLoadButton.GrabFocus()
+					} else if result := app.searchResults.GetRowAtIndex(0); result != nil {
 						result.GrabFocus()
 					}
 				}
@@ -416,10 +424,11 @@ func (app *giti) renderGraphSearch(query string) {
 		}()
 		return
 	}
-	app.searchLoadButton.Hide()
+	app.searchLoadFooter.setBusy(false)
+	app.searchLoadFooter.setVisible(false)
 	if !app.searchViewingResult {
 		app.historyStack.SetVisibleChildName("search")
-		app.loadButton.Hide()
+		app.loadFooter.setVisible(false)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	app.searchCancel = cancel
@@ -507,7 +516,7 @@ func (app *giti) showSearchMatches(matches []searchMatch) {
 	}
 	if !app.searchViewingResult {
 		app.historyStack.SetVisibleChildName("search")
-		app.loadButton.Hide()
+		app.loadFooter.setVisible(false)
 	}
 	app.searchResults.ShowAll()
 }
@@ -537,6 +546,7 @@ func (app *giti) clearSearchResults() {
 func (app *giti) updateSearchMode() {
 	fileMode := app.searchFileMode.GetActive()
 	app.searchLimit = initialHistoryLimit
+	app.searchLoadFooter.setBusy(false)
 	app.searchViewingResult = false
 	app.searchBack.Hide()
 	if fileMode {
@@ -608,7 +618,7 @@ func (app *giti) openSearchResult(index int) {
 		app.searchViewingResult = true
 		app.historyStack.SetVisibleChildName("graph")
 		app.searchBack.Show()
-		app.loadButton.SetVisible(app.historyHasMore)
+		app.loadFooter.setVisible(app.historyHasMore)
 		app.revealHistoryRevision(revision)
 	}
 }
@@ -760,6 +770,9 @@ func (app *giti) setCommitHeader(details commitDetails) {
 			button := must(gtk.ButtonNewWithLabel("↖ " + parent[:7]))
 			button.SetRelief(gtk.RELIEF_NONE)
 			button.SetTooltipText("Open parent " + parent)
+			setAccessibility(&button.Widget, "Open parent commit "+parent, "Navigate to the parent commit")
+			context, _ := button.GetStyleContext()
+			context.AddClass("giti-flat-button")
 			button.Connect("clicked", func() {
 				app.historySearch.SetText("")
 				app.revealHistoryRevision(parent)

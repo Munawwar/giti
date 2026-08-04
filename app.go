@@ -86,6 +86,13 @@ button.giti-ref-copy.giti-ref-joined {
 .giti-flat-button:focus {
   box-shadow: 0 0 0 1px alpha(@theme_selected_bg_color, 0.55);
 }
+box.giti-load-footer {
+  padding: 4px 6px;
+}
+label.giti-load-count {
+  color: #6b7280;
+  font-size: smaller;
+}
 .giti-view-switcher {
   background-color: #e5e7eb;
   border: 1px solid #d1d5db;
@@ -211,6 +218,7 @@ type giti struct {
 	searchResults              *gtk.ListBox
 	searchPlaceholder          *gtk.Label
 	searchLoadButton           *gtk.Button
+	searchLoadFooter           *loadFooter
 	commitHeader               *gtk.Box
 	headerTitleRow             *gtk.Box
 	headerCommit               *gtk.Box
@@ -236,6 +244,7 @@ type giti struct {
 	fullFilePreferred          bool
 	whitespacePreferred        bool
 	loadButton                 *gtk.Button
+	loadFooter                 *loadFooter
 	notification               *gtk.InfoBar
 	notificationLabel          *gtk.Label
 	overviewMarkers            []overviewMarker
@@ -250,6 +259,86 @@ type giti struct {
 	fullMergeHandler           glib.SignalHandle
 	whitespaceHandler          glib.SignalHandle
 	application                *gtk.Application
+}
+
+type loadFooter struct {
+	box                    *gtk.Box
+	count                  *gtk.Label
+	button                 *gtk.Button
+	actionLabel, busyLabel string
+	busy, restoreFocus     bool
+}
+
+func newLoadFooter(actionLabel, busyLabel, accessibleName, description string) *loadFooter {
+	footer := &loadFooter{actionLabel: actionLabel, busyLabel: busyLabel}
+	footer.box = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
+	footer.box.SetNoShowAll(true)
+	footer.count = must(gtk.LabelNew(""))
+	footer.count.SetXAlign(0)
+	footer.count.SetEllipsize(pango.ELLIPSIZE_END)
+	setAccessibilityRoleAlert(&footer.count.Widget)
+	countContext, _ := footer.count.GetStyleContext()
+	countContext.AddClass("giti-load-count")
+	footer.button = must(gtk.ButtonNewWithLabel(actionLabel))
+	footer.button.SetRelief(gtk.RELIEF_NONE)
+	setAccessibility(&footer.button.Widget, accessibleName, description)
+	buttonContext, _ := footer.button.GetStyleContext()
+	buttonContext.AddClass("giti-flat-button")
+	boxContext, _ := footer.box.GetStyleContext()
+	boxContext.AddClass("giti-load-footer")
+	footer.box.PackStart(footer.count, true, true, 0)
+	footer.box.PackEnd(footer.button, false, false, 0)
+	return footer
+}
+
+func (footer *loadFooter) update(count int, noun string, visible bool) {
+	if count != 1 {
+		noun += "s"
+	}
+	exact, compact := strconv.Itoa(count), strconv.Itoa(count)
+	if count >= 10000 {
+		value, suffix := float64(count)/1000, "k"
+		if count >= 1000000000 {
+			value, suffix = float64(count)/1000000000, "B"
+		} else if count >= 1000000 {
+			value, suffix = float64(count)/1000000, "M"
+		}
+		precision := 1
+		if value >= 100 {
+			precision = 0
+		}
+		compact = strings.TrimSuffix(strconv.FormatFloat(value, 'f', precision, 64), ".0") + suffix
+	}
+	fullCount := fmt.Sprintf("%s %s loaded", exact, noun)
+	footer.count.SetText(fmt.Sprintf("%s %s loaded", compact, noun))
+	footer.count.SetTooltipText(fullCount)
+	setAccessibility(&footer.count.Widget, fullCount, "Pagination status")
+	footer.setVisible(visible)
+}
+
+func (footer *loadFooter) setVisible(visible bool) {
+	footer.count.SetVisible(visible)
+	footer.button.SetVisible(visible)
+	footer.box.SetVisible(visible)
+}
+
+func (footer *loadFooter) setBusy(busy bool) {
+	if busy && !footer.busy {
+		footer.restoreFocus = footer.button.IsFocus()
+	}
+	footer.busy = busy
+	footer.button.SetSensitive(!busy)
+	if busy {
+		footer.button.SetLabel(footer.busyLabel)
+	} else {
+		footer.button.SetLabel(footer.actionLabel)
+	}
+}
+
+func (footer *loadFooter) takeFocus() bool {
+	restore := footer.restoreFocus
+	footer.restoreFocus = false
+	return restore
 }
 
 type scrollPosition struct{ horizontal, vertical float64 }
@@ -448,6 +537,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		app.searchViewingResult = false
 		app.searchBack.Hide()
 		app.searchLimit = initialHistoryLimit
+		app.searchLoadFooter.setBusy(false)
 		app.updateGraphSearch()
 	})
 	app.searchTextMode = must(gtk.RadioButtonNewWithLabel(nil, "Search commit text"))
@@ -514,15 +604,14 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.historyStack.AddNamed(app.historyScroller, "graph")
 	searchPage := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 4))
 	searchPage.PackStart(scroller(app.searchResults), true, true, 0)
-	app.searchLoadButton = must(gtk.ButtonNewWithLabel("Load more search results"))
-	app.searchLoadButton.SetRelief(gtk.RELIEF_NONE)
-	searchLoadButtonContext, _ := app.searchLoadButton.GetStyleContext()
-	searchLoadButtonContext.AddClass("giti-flat-button")
+	app.searchLoadFooter = newLoadFooter("Load 100 more results", "Loading more results…", "Load more search results", "Load the next 100 file history search results")
+	app.searchLoadButton = app.searchLoadFooter.button
 	app.searchLoadButton.Connect("clicked", func() {
+		app.searchLoadFooter.setBusy(true)
 		app.searchLimit += 100
 		app.updateGraphSearch()
 	})
-	searchPage.PackStart(app.searchLoadButton, false, false, 0)
+	searchPage.PackStart(app.searchLoadFooter.box, false, false, 0)
 	app.historyStack.AddNamed(searchPage, "search")
 	app.searchBack = must(gtk.ButtonNewFromIconName("go-previous-symbolic", gtk.ICON_SIZE_BUTTON))
 	setAccessibility(&app.searchBack.Widget, "Back to search results", "Return from the selected commit to the current search results")
@@ -534,7 +623,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		app.searchViewingResult = false
 		app.historyStack.SetVisibleChildName("search")
 		app.searchBack.Hide()
-		app.loadButton.Hide()
+		app.loadFooter.setVisible(false)
 		if result := app.searchResults.GetSelectedRow(); result != nil {
 			result.GrabFocus()
 		} else if result = app.searchResults.GetRowAtIndex(0); result != nil {
@@ -719,11 +808,10 @@ func (app *giti) buildWindow(application *gtk.Application) {
 			app.onHistorySelected()
 		}
 	})
-	app.loadButton = must(gtk.ButtonNewWithLabel("Load more"))
-	app.loadButton.SetRelief(gtk.RELIEF_NONE)
-	loadButtonContext, _ := app.loadButton.GetStyleContext()
-	loadButtonContext.AddClass("giti-flat-button")
+	app.loadFooter = newLoadFooter("Load 100 more commits", "Loading older commits…", "Load more commits", "Load the next 100 older commits")
+	app.loadButton = app.loadFooter.button
 	app.loadButton.Connect("clicked", func() {
+		app.loadFooter.setBusy(true)
 		app.historyLimit += 100
 		app.loadHistory(false)
 	})
@@ -737,7 +825,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	searchBox.PackStart(app.searchSettings, false, false, 0)
 	graphBox.PackStart(searchBox, false, false, 0)
 	graphBox.PackStart(app.historyStack, true, true, 0)
-	graphBox.PackStart(app.loadButton, false, false, 0)
+	graphBox.PackStart(app.loadFooter.box, false, false, 0)
 	app.repositoryPane = must(gtk.PanedNew(gtk.ORIENTATION_VERTICAL))
 	app.repositoryPane.SetWideHandle(true)
 	app.repositoryPane.Pack1(graphBox, false, true)
@@ -1288,7 +1376,7 @@ func (app *giti) loadHistoryTo(reveal string, refreshSearch bool) {
 	app.historyCancel = cancel
 	repo, limit := app.repository, app.historyLimit
 	ignoreWhitespace := !app.whitespaceToggle.GetActive()
-	app.loadButton.SetSensitive(false)
+	app.loadFooter.setBusy(true)
 	go func() {
 		var rows []historyRow
 		var graphs []*gdk.Pixbuf
@@ -1327,16 +1415,26 @@ func (app *giti) loadHistoryTo(reveal string, refreshSearch bool) {
 			if ctx.Err() != nil || historyGeneration != app.historyGeneration || repo != app.repository {
 				return false
 			}
-			app.loadButton.SetSensitive(true)
+			restoreFocus := app.loadFooter.takeFocus()
+			app.loadFooter.setBusy(false)
 			if err != nil {
 				app.historyCancel = nil
 				app.showError(err)
+				if restoreFocus {
+					app.loadButton.GrabFocus()
+				}
 				return false
 			}
 			// Commit the result to GTK only after the stale-work guard above; all
 			// model selection and follow-up measurement stays on the main thread.
 			app.historyLimit, app.graphWidth, app.historyRows, app.historyHasMore = limit, graphWidth, rows, hasMore
-			app.loadButton.SetVisible(hasMore && (app.historyStack.GetVisibleChildName() == "graph" || app.searchViewingResult))
+			commitCount := 0
+			for _, row := range rows {
+				if row.kind == "commit" {
+					commitCount++
+				}
+			}
+			app.loadFooter.update(commitCount, "commit", hasMore && (app.historyStack.GetVisibleChildName() == "graph" || app.searchViewingResult))
 			app.graphColumn.SetFixedWidth(graphWidth)
 			app.historyStore.Clear()
 			target := -1
@@ -1359,6 +1457,13 @@ func (app *giti) loadHistoryTo(reveal string, refreshSearch bool) {
 				selection.SelectPath(path)
 				if reveal != "" {
 					app.historyView.ScrollToCell(path, nil, true, 0, .5)
+					app.historyView.GrabFocus()
+				}
+			}
+			if restoreFocus {
+				if hasMore && app.loadFooter.box.GetVisible() {
+					app.loadButton.GrabFocus()
+				} else {
 					app.historyView.GrabFocus()
 				}
 			}
@@ -1464,7 +1569,8 @@ func (app *giti) clearRepositoryView() {
 	app.setSearchBusy(false)
 	app.historySearch.SetText("")
 	app.searchBack.Hide()
-	app.searchLoadButton.Hide()
+	app.searchLoadFooter.setVisible(false)
+	app.loadFooter.setVisible(false)
 	app.historyStore.Clear()
 	app.fileStore.Clear()
 	app.fileTreeStore.Clear()
