@@ -140,6 +140,15 @@ func TestGTKApplicationMenu(t *testing.T) {
 	if app.branchButton == nil || app.branchButton.GetPopover() == nil || strings.Join(strings.Fields(branchLabel), " ") != "Current — main" || fmt.Sprint(app.branchRevisions) != "[HEAD alpha Beta main older refs/remotes/origin/main]" || fmt.Sprint(app.branchLabels) != "[Current — main alpha Beta main older origin/main]" || !strings.Contains(app.branchMarkups[1], "#d8f0dd") || strings.Contains(app.branchMarkups[1], "refs/heads/") || !strings.Contains(app.branchMarkups[5], "#dce8f8") {
 		t.Fatalf("unexpected branch selector: label=%q revisions=%v labels=%v", branchLabel, app.branchRevisions, app.branchLabels)
 	}
+	for gtk.EventsPending() {
+		gtk.MainIteration()
+	}
+	rowContext, _ := app.branchList.GetRowAtIndex(0).GetStyleContext()
+	selected, styleErr := rowContext.GetProperty("background-color", gtk.STATE_FLAG_SELECTED)
+	selectedColor, colorOK := selected.(*gdk.RGBA)
+	if !colorOK || styleErr != nil || int(selectedColor.GetRed()*255+.5) != 255 || int(selectedColor.GetGreen()*255+.5) != 240 || int(selectedColor.GetBlue()*255+.5) != 232 {
+		t.Fatalf("unexpected list selection color: %T %v err=%v", selected, selected, styleErr)
+	}
 	app.branchSearch.SetText("old")
 	iterateGTKUntil(t, time.Second, func() bool { return len(app.branchVisible) == 1 && app.branchLabels[app.branchVisible[0]] == "older" })
 	app.branchList.GetRowAtIndex(0).Activate()

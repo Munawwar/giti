@@ -521,7 +521,7 @@ func (app *giti) showSearchMatches(matches []searchMatch) {
 	app.searchResults.ShowAll()
 }
 
-func (app *giti) searchResultRow(match searchMatch) *gtk.Box {
+func (app *giti) searchResultRow(match searchMatch) *gtk.ListBoxRow {
 	result := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
 	result.SetMarginStart(8)
 	result.SetMarginEnd(8)
@@ -533,7 +533,11 @@ func (app *giti) searchResultRow(match searchMatch) *gtk.Box {
 	label.SetMarkup(searchResultMarkup(match))
 	result.PackStart(label, true, true, 0)
 	result.PackEnd(app.copySHAButton(match.row.revision), false, false, 0)
-	return result
+	row := must(gtk.ListBoxRowNew())
+	rowContext, _ := row.GetStyleContext()
+	rowContext.AddClass("giti-selection-row")
+	row.Add(result)
+	return row
 }
 
 func (app *giti) clearSearchResults() {

@@ -56,6 +56,17 @@ treeview.giti-list.view:selected:backdrop {
   background-color: #fff7f2;
   color: #2d1b12;
 }
+row.giti-selection-row:selected,
+row.giti-selection-row:selected:focus {
+  background-color: #fff0e8;
+  background-image: none;
+  color: #2d1b12;
+}
+row.giti-selection-row:selected:backdrop {
+  background-color: #fff7f2;
+  background-image: none;
+  color: #2d1b12;
+}
 label selection {
   background-color: @theme_selected_bg_color;
   color: @theme_selected_fg_color;
@@ -1843,6 +1854,8 @@ func (app *giti) renderBranchSelector() {
 		label.SetMarginTop(6)
 		label.SetMarginBottom(6)
 		row := must(gtk.ListBoxRowNew())
+		rowContext, _ := row.GetStyleContext()
+		rowContext.AddClass("giti-selection-row")
 		row.Add(label)
 		app.branchList.Add(row)
 		if app.branchRevisions[index] == app.repository.revisionArg {
