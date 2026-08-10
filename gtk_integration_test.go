@@ -252,6 +252,59 @@ func TestGTKParentNavigationLoadsAndRevealsOlderCommit(t *testing.T) {
 	}
 }
 
+func TestGTKLoadMorePreservesHistoryPosition(t *testing.T) {
+	_, app := newGTKIntegrationApp(t)
+	app.historyLimit = 5
+	app.loadHistory(false)
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil && len(app.historyRows) == 6 })
+	app.repositoryPane.SetPosition(100)
+	iterateGTKUntil(t, time.Second, func() bool {
+		adjustment := app.historyScroller.GetVAdjustment()
+		return adjustment.GetUpper() > adjustment.GetPageSize()
+	})
+
+	selection, _ := app.historyView.GetSelection()
+	selection.SelectPath(must(gtk.TreePathNewFromIndicesv([]int{3})))
+	iterateGTKUntil(t, 2*time.Second, func() bool {
+		return app.currentRow != nil && app.currentRow == &app.historyRows[3] && app.selectionCancel == nil && app.diffCancel == nil
+	})
+	adjustment := app.historyScroller.GetVAdjustment()
+	adjustment.SetValue((adjustment.GetUpper() - adjustment.GetPageSize()) / 2)
+	selectionCanceled, diffCanceled := false, false
+	app.selectionCancel = func() { selectionCanceled = true }
+	app.diffCancel = func() { diffCanceled = true }
+	selectionGeneration, diffGeneration := app.selectionGeneration, app.diffGeneration
+
+	app.loadButton.Clicked()
+	if app.selectionGeneration != selectionGeneration || app.diffGeneration != diffGeneration || selectionCanceled || diffCanceled {
+		t.Fatalf("load more canceled downstream work: generations=%d/%d want=%d/%d canceled=%v/%v", app.selectionGeneration, app.diffGeneration, selectionGeneration, diffGeneration, selectionCanceled, diffCanceled)
+	}
+	app.selectionCancel, app.diffCancel = nil, nil
+	selection.SelectPath(must(gtk.TreePathNewFromIndicesv([]int{4})))
+	revision, selectionGeneration := app.currentRow.revision, app.selectionGeneration
+	adjustment.SetValue((adjustment.GetUpper() - adjustment.GetPageSize()) * .75)
+	scroll := adjustment.GetValue()
+	iterateGTKUntil(t, 3*time.Second, func() bool {
+		return app.historyCancel == nil && app.selectionCancel == nil && len(app.historyRows) == 13
+	})
+	idleDone := false
+	addMainSource(0, func() bool { idleDone = true; return false })
+	iterateGTKUntil(t, time.Second, func() bool { return idleDone })
+	distance := app.historyScroller.GetVAdjustment().GetValue() - scroll
+	if app.currentRow == nil || app.currentRow.revision != revision || app.selectionGeneration != selectionGeneration || distance < -3 || distance > 3 {
+		t.Fatalf("load more reset history state: row=%#v want=%s generation=%d want=%d scroll=%v want=%v", app.currentRow, revision, app.selectionGeneration, selectionGeneration, app.historyScroller.GetVAdjustment().GetValue(), scroll)
+	}
+
+	selectionCanceled, diffCanceled = false, false
+	app.selectionCancel = func() { selectionCanceled = true }
+	app.diffCancel = func() { diffCanceled = true }
+	app.whitespaceToggle.SetActive(!app.whitespaceToggle.GetActive())
+	if !selectionCanceled || !diffCanceled {
+		t.Fatal("whitespace reload preserved stale selection work")
+	}
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil && app.selectionCancel == nil })
+}
+
 func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	_, app := newGTKIntegrationApp(t)
 	nestedRuns := 0

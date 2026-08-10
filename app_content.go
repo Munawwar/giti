@@ -609,7 +609,7 @@ func (app *giti) selectHistoryRevision(revision string) bool {
 
 func (app *giti) revealHistoryRevision(revision string) {
 	if !app.selectHistoryRevision(revision) {
-		app.loadHistoryTo(revision, false)
+		app.loadHistoryTo(revision, false, false)
 	}
 }
 

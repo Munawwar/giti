@@ -285,6 +285,7 @@ type giti struct {
 	fullFileHandler            glib.SignalHandle
 	fullMergeHandler           glib.SignalHandle
 	whitespaceHandler          glib.SignalHandle
+	historySelectionHandler    glib.SignalHandle
 	application                *gtk.Application
 }
 
@@ -497,7 +498,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		kind, _ := value.GetString()
 		return kind != ""
 	})
-	historySelection.Connect("changed", app.onHistorySelected)
+	app.historySelectionHandler = historySelection.Connect("changed", app.onHistorySelected)
 	app.historyView.Connect("button-release-event", func(_ *gtk.TreeView, event *gdk.Event) bool {
 		button := gdk.EventButtonNewFromEvent(event)
 		if button.Button() != gdk.BUTTON_PRIMARY {
@@ -840,7 +841,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.loadButton.Connect("clicked", func() {
 		app.loadFooter.setBusy(true)
 		app.historyLimit += 100
-		app.loadHistory(false)
+		app.loadHistoryTo("", false, true)
 	})
 
 	// Compose the three principal regions only after their controls and signal
@@ -1468,28 +1469,27 @@ func (app *giti) rememberDiffScroll() {
 // Search results are independent of graph pagination and selection-driven loads;
 // only an explicit repository refresh needs to query them for new commits.
 func (app *giti) loadHistory(refreshSearch bool) {
-	app.loadHistoryTo("", refreshSearch)
+	app.loadHistoryTo("", refreshSearch, false)
 }
 
-func (app *giti) loadHistoryTo(reveal string, refreshSearch bool) {
-	// A history refresh invalidates every downstream selection and diff load.
+func (app *giti) loadHistoryTo(reveal string, refreshSearch, preserveView bool) {
 	// Generation checks protect GTK from callbacks already queued on the main loop.
+	// Pagination retains downstream work because existing rows remain unchanged.
 	app.historyGeneration++
 	if app.historyCancel != nil {
 		app.historyCancel()
 	}
-	app.selectionGeneration++
-	app.diffGeneration++
-	if app.selectionCancel != nil {
-		app.selectionCancel()
-	}
-	if app.diffCancel != nil {
-		app.diffCancel()
-	}
 	historyGeneration := app.historyGeneration
-	preferredKind, preferredRevision := "", ""
-	if app.currentRow != nil {
-		preferredKind, preferredRevision = app.currentRow.kind, app.currentRow.revision
+	preserveWork := preserveView && app.currentRow != nil && reveal == ""
+	if !preserveWork {
+		app.selectionGeneration++
+		app.diffGeneration++
+		if app.selectionCancel != nil {
+			app.selectionCancel()
+		}
+		if app.diffCancel != nil {
+			app.diffCancel()
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	app.historyCancel = cancel
@@ -1555,8 +1555,18 @@ func (app *giti) loadHistoryTo(reveal string, refreshSearch bool) {
 			}
 			app.loadFooter.update(commitCount, "commit", hasMore && (app.historyStack.GetVisibleChildName() == "graph" || app.searchViewingResult))
 			app.graphColumn.SetFixedWidth(graphWidth)
+			selection, _ := app.historyView.GetSelection()
+			historyScroll := app.historyScroller.GetVAdjustment().GetValue()
+			preferredKind, preferredRevision := "", ""
+			if app.currentRow != nil {
+				preferredKind, preferredRevision = app.currentRow.kind, app.currentRow.revision
+			}
+			preserveSelection := preserveView && preferredKind != "" && reveal == ""
+			if preserveSelection {
+				selection.HandlerBlock(app.historySelectionHandler)
+			}
 			app.historyStore.Clear()
-			target := -1
+			target, preferredFound := -1, false
 			for index, row := range rows {
 				iter := app.historyStore.Append()
 				app.historyStore.Set(iter, []int{0, 1, 2}, []any{graphs[index], historyLabel(row), row.kind})
@@ -1564,7 +1574,7 @@ func (app *giti) loadHistoryTo(reveal string, refreshSearch bool) {
 					target = index
 				}
 				if row.kind == preferredKind && (preferredRevision == "" || preferredRevision == row.revision) {
-					target, preferredKind = index, ""
+					target, preferredFound = index, true
 				}
 				if reveal != "" && row.revision == reveal {
 					target = index
@@ -1572,11 +1582,18 @@ func (app *giti) loadHistoryTo(reveal string, refreshSearch bool) {
 			}
 			if target >= 0 {
 				path := must(gtk.TreePathNewFromIndicesv([]int{target}))
-				selection, _ := app.historyView.GetSelection()
 				selection.SelectPath(path)
 				if reveal != "" {
 					app.historyView.ScrollToCell(path, nil, true, 0, .5)
 					app.historyView.GrabFocus()
+				}
+			}
+			if preserveSelection {
+				selection.HandlerUnblock(app.historySelectionHandler)
+				if preferredFound {
+					app.currentRow = &app.historyRows[target]
+				} else if target >= 0 {
+					app.onHistorySelected()
 				}
 			}
 			if restoreFocus {
@@ -1594,6 +1611,9 @@ func (app *giti) loadHistoryTo(reveal string, refreshSearch bool) {
 					app.fitGraphRows(ctx, historyGeneration, repo)
 					if reveal != "" {
 						app.selectHistoryRevision(reveal)
+					} else if preserveSelection {
+						adjustment := app.historyScroller.GetVAdjustment()
+						adjustment.SetValue(min(historyScroll, max(adjustment.GetLower(), adjustment.GetUpper()-adjustment.GetPageSize())))
 					}
 				}
 				return false
