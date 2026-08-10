@@ -1,5 +1,13 @@
 package main
 
+/*
+#cgo pkg-config: gdk-x11-3.0
+#include <stdint.h>
+typedef struct _GdkWindow GdkWindow;
+uint32_t gdk_x11_get_server_time(GdkWindow *window);
+*/
+import "C"
+
 import (
 	"context"
 	_ "embed"
@@ -11,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/gotk3/gotk3/cairo"
 	"github.com/gotk3/gotk3/gdk"
@@ -1773,7 +1782,12 @@ func (app *giti) openRepository(path string, history historySpec) bool {
 	app.notificationGeneration++
 	app.notification.Hide()
 	app.window.Maximize()
-	app.window.Present()
+	window, windowErr := app.window.GetWindow()
+	if windowErr == nil && window.IsA(glib.TypeFromName("GdkX11Window")) {
+		app.window.PresentWithTime(uint32(C.gdk_x11_get_server_time((*C.GdkWindow)(unsafe.Pointer(window.Native())))))
+	} else {
+		app.window.Present()
+	}
 	app.loadHistory(false)
 	return false
 }
