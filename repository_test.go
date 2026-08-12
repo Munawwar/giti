@@ -64,6 +64,23 @@ func TestReferenceMetadata(t *testing.T) {
 	}
 }
 
+func TestConflictMarkerDetection(t *testing.T) {
+	path := t.TempDir()
+	repo := &repository{path: path}
+	for name, content := range map[string]string{
+		"resolved.txt":   "heading\n=======\nordinary content\n",
+		"conflict.txt":   "<<<<<<< HEAD\nours\n||||||| base\nbase\n=======\ntheirs\n>>>>>>> topic\n",
+		"incomplete.txt": "<<<<<<< HEAD\nours\n",
+	} {
+		if err := os.WriteFile(filepath.Join(path, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if repo.hasConflictMarkers("resolved.txt") || !repo.hasConflictMarkers("conflict.txt") || !repo.hasConflictMarkers("incomplete.txt") {
+		t.Fatal("conflict-marker lines were not distinguished from ordinary separators")
+	}
+}
+
 func TestRevisionFormsAndHistoryLimit(t *testing.T) {
 	path := testRepository(t)
 	sha, _ := exec.Command("git", "-C", path, "rev-parse", "HEAD").Output()

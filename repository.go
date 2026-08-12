@@ -803,6 +803,32 @@ func (repo *repository) workingChangesContext(ctx context.Context, ignoreWhitesp
 	return changes, nil
 }
 
+func (repo *repository) hasConflictMarkers(path string) bool {
+	content, err := os.ReadFile(filepath.Join(repo.path, filepath.FromSlash(path)))
+	if err != nil || bytes.IndexByte(content, 0) >= 0 {
+		return false
+	}
+	ours, base, separator, found := 0, 0, 0, false
+	for _, line := range bytes.Split(content, []byte{'\n'}) {
+		line = bytes.TrimSuffix(line, []byte{'\r'})
+		switch {
+		case bytes.HasPrefix(line, []byte("<<<<<<< ")):
+			ours, found = ours+1, true
+		case ours > separator && bytes.HasPrefix(line, []byte("||||||| ")):
+			base++
+		case ours > separator && bytes.Equal(line, []byte("=======")):
+			separator++
+		case separator > 0 && bytes.HasPrefix(line, []byte(">>>>>>> ")):
+			separator--
+			ours--
+			if base > 0 {
+				base--
+			}
+		}
+	}
+	return found || ours > 0 || separator > 0
+}
+
 func (repo *repository) diff(row historyRow, file changedFile, ignoreWhitespace, fullFile bool) (string, error) {
 	return repo.diffContext(context.Background(), row, file, ignoreWhitespace, fullFile)
 }

@@ -340,7 +340,7 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	splitHeight, splitPosition := app.repositoryPane.GetAllocatedHeight(), app.repositoryPane.GetPosition()
 	messageOption, _ := app.searchMessages.GetLabel()
 	referenceOption, _ := app.searchReferences.GetLabel()
-	if app.historyLimit != initialHistoryLimit || !app.mainPane.GetWideHandle() || !app.repositoryPane.GetWideHandle() || app.loadButton.GetVisible() || app.fileView.GetTooltipColumn() != fileTooltipColumn || splitHeight <= 1 || splitPosition*2 < splitHeight-2 || splitPosition*2 > splitHeight+2 || app.searchSettings.GetPopover() == nil || !app.searchMessages.GetVisible() || !app.searchReferences.GetVisible() || app.searchMessages.GetActive() || app.searchReferences.GetActive() {
+	if app.historyLimit != initialHistoryLimit || !app.mainPane.GetWideHandle() || !app.repositoryPane.GetWideHandle() || app.loadButton.GetVisible() || app.fileView.GetTooltipColumn() != -1 || splitHeight <= 1 || splitPosition*2 < splitHeight-2 || splitPosition*2 > splitHeight+2 || app.searchSettings.GetPopover() == nil || !app.searchMessages.GetVisible() || !app.searchReferences.GetVisible() || app.searchMessages.GetActive() || app.searchReferences.GetActive() {
 		t.Fatalf("bad initial graph layout: limit=%d dividers=%v/%v load-more=%v tooltip=%d split=%d/%d", app.historyLimit, app.mainPane.GetWideHandle(), app.repositoryPane.GetWideHandle(), app.loadButton.GetVisible(), app.fileView.GetTooltipColumn(), splitPosition, splitHeight)
 	}
 	if messageOption != "Also match commit description" || referenceOption != "Also match branches and tags" {
@@ -354,7 +354,7 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 		t.Fatalf("pane positions were not persisted: %#v", savedState)
 	}
 	longBranch := "feature/" + strings.Repeat("copyable-reference-", 8)
-	details := commitDetails{sha: strings.Repeat("a", 40), subject: "subject", branches: []string{longBranch}, additions: 12, deletions: 3, untracked: 4, statistics: true}
+	details := commitDetails{sha: strings.Repeat("a", 40), subject: "subject", branches: []string{longBranch}, author: "Alice", authorEmail: "alice@example.com", authored: "2026-08-08T23:26:45+05:30", committer: "Bob", committerEmail: "bob@example.com", committed: "2026-08-08T17:56:45Z", additions: 12, deletions: 3, untracked: 4, statistics: true}
 	app.setCommitHeader(details)
 	detailChildren := app.headerDetails.GetChildren()
 	compactDetails := detailChildren.Length()
@@ -397,15 +397,30 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	whitespaceLabel, _ := app.whitespaceToggle.GetLabel()
 	fullMergeLabel, _ := app.fullMergeToggle.GetLabel()
 	shaTooltip, shaTooltipErr := shaLabel.GetTooltipText()
+	metaText, metaTextErr := headerMeta.GetText()
+	metaTooltip, metaTooltipErr := headerMeta.GetTooltipText()
 	referenceValid := labelOK && textErr == nil && !referenceLabel.GetSelectable() && referenceLabel.GetEllipsize() == pango.ELLIPSIZE_END && strings.Contains(referenceValue, longBranch) && referenceButton.GetCanFocus() && copiedReference == longBranch && copyReferenceErr == nil && app.notification.GetVisible() && copyNotification == "Copied branch to clipboard." && notificationErr == nil && app.mainPane.GetAllocatedWidth() == contentWidth && app.mainPane.GetAllocatedHeight() == contentHeight
 	statisticsValid := strings.Join(statLabels, ",") == "+12,−3,4 untracked"
-	controlsValid := fullFileLabel == "Show full file" && whitespaceLabel == "Whitespace changes" && !app.whitespaceToggle.GetActive() && fullMergeLabel == "Full merge" && shaErr == nil && shaTooltipErr == nil && shaLabel.GetEllipsize() == pango.ELLIPSIZE_MIDDLE && shaTooltip == details.sha
+	controlsValid := fullFileLabel == "Show full file" && whitespaceLabel == "Whitespace changes" && !app.whitespaceToggle.GetActive() && fullMergeLabel == "Full merge" && shaErr == nil && shaTooltipErr == nil && shaLabel.GetEllipsize() == pango.ELLIPSIZE_MIDDLE && shaTooltip == details.sha && metaTextErr == nil && metaTooltipErr == nil && strings.Count(metaText, formatCommitTime(details.authored, time.Local, "2 Jan 2006, 15:04 MST")) == 2 && metaTooltip == "Author: "+formatCommitTime(details.authored, time.UTC, time.RFC3339)+"\nCommitter: "+formatCommitTime(details.committed, time.UTC, time.RFC3339)
 	searchIdle := !app.searchSpinner.GetVisible() && app.historySearch.GetIconStorageType(gtk.ENTRY_ICON_PRIMARY) == gtk.IMAGE_ICON_NAME
 	app.setSearchBusy(true)
 	searchBusy := app.searchSpinner.GetVisible() && app.historySearch.GetIconStorageType(gtk.ENTRY_ICON_PRIMARY) == gtk.IMAGE_PIXBUF
 	app.setSearchBusy(false)
 	if expandedDetails != compactDetails+1 || titleErr != nil || metaErr != nil || referenceErr != nil || !referenceValid || !statisticsValid || !controlsValid || !searchIdle || !searchBusy || !headerTitle.GetSelectable() || !headerMeta.GetSelectable() || !shaLabel.GetSelectable() {
 		t.Fatalf("commit header copy control is incomplete: compact=%d body=%d title=%v meta=%v sha=%v controls=%q/%q/%q reference=%q/%v/%v/%v copied=%q/%v notification=%q/%v content=%dx%d/%dx%d", compactDetails, expandedDetails, titleErr, metaErr, shaErr, fullFileLabel, whitespaceLabel, fullMergeLabel, referenceValue, referenceErr, labelOK, textErr, copiedReference, copyReferenceErr, copyNotification, notificationErr, contentWidth, contentHeight, app.mainPane.GetAllocatedWidth(), app.mainPane.GetAllocatedHeight())
+	}
+	details.committer, details.committerEmail, details.committed = details.author, details.authorEmail, details.authored
+	app.setCommitHeader(details)
+	collapsedChildren := app.headerDetails.GetChildren()
+	collapsedMeta, collapsedErr := gtk.WidgetToLabel(collapsedChildren.NthData(0).(*gtk.Widget))
+	collapsedText, collapsedTooltip := "", ""
+	if collapsedErr == nil {
+		collapsedText, _ = collapsedMeta.GetText()
+		collapsedTooltip, _ = collapsedMeta.GetTooltipText()
+	}
+	collapsedChildren.Free()
+	if collapsedErr != nil || strings.Count(collapsedText, "Author & committer") != 1 || strings.Contains(collapsedText, "\n") || collapsedTooltip != "Author & committer: "+formatCommitTime(details.authored, time.UTC, time.RFC3339) {
+		t.Fatalf("identical author and committer were not collapsed: text=%q tooltip=%q err=%v", collapsedText, collapsedTooltip, collapsedErr)
 	}
 	syncedDetails := commitDetails{
 		sha:       strings.Repeat("b", 40),
@@ -735,7 +750,7 @@ func TestGTKDiffInteraction(t *testing.T) {
 }
 
 func TestGTKChangedFileSearchAndTreeView(t *testing.T) {
-	_, app := newGTKIntegrationApp(t)
+	path, app := newGTKIntegrationApp(t)
 	iterateGTKUntil(t, 2*time.Second, func() bool { return app.currentFile != nil && app.diffLoaded })
 	app.selectionGeneration++
 	app.diffGeneration++
@@ -757,7 +772,7 @@ func TestGTKChangedFileSearchAndTreeView(t *testing.T) {
 	treeImage, treeImageErr := app.fileTreeToggle.GetImage()
 	_, listIcon := listImage.(*gtk.Image)
 	_, treeIcon := treeImage.(*gtk.Image)
-	if !app.fileListToggle.GetActive() || app.fileTreeToggle.GetActive() || app.fileSearchToggle.GetActive() || app.fileSearchReveal.GetRevealChild() || app.fileStore.IterNChildren(nil) != 4 || listImageErr != nil || treeImageErr != nil || !listIcon || !treeIcon {
+	if !app.fileListToggle.GetActive() || app.fileTreeToggle.GetActive() || app.fileSearchToggle.GetActive() || app.fileSearchReveal.GetRevealChild() || app.fileStageColumn.GetVisible() || app.fileUndoColumn.GetVisible() || app.fileStore.IterNChildren(nil) != 4 || listImageErr != nil || treeImageErr != nil || !listIcon || !treeIcon {
 		t.Fatalf("changed files did not start in the compact icon list view: list/tree/search=%v/%v/%v reveal=%v rows=%d icons=%v/%v errors=%v/%v", app.fileListToggle.GetActive(), app.fileTreeToggle.GetActive(), app.fileSearchToggle.GetActive(), app.fileSearchReveal.GetRevealChild(), app.fileStore.IterNChildren(nil), listIcon, treeIcon, listImageErr, treeImageErr)
 	}
 	first, _ := app.fileStore.GetIterFirst()
@@ -836,6 +851,116 @@ func TestGTKChangedFileSearchAndTreeView(t *testing.T) {
 	commonTip, _ := commonTooltip.GetString()
 	if strings.Contains(commonText, "packages/dashboard/src") || !strings.Contains(commonText, `…/</span>components/cx-templates/ElementTranslation.jsx`) || commonTip != "Modified packages/dashboard/src/components/cx-templates/ElementTranslation.jsx" {
 		t.Fatalf("shared list prefix was not folded without changing its tooltip: label=%q tooltip=%q", commonText, commonTip)
+	}
+	conflictPath := "conflict.txt"
+	if err := os.WriteFile(filepath.Join(path, conflictPath), []byte("<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> topic\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app.currentRow, app.files = &historyRow{kind: "conflict"}, []changedFile{{status: "!", path: conflictPath, conflict: "Both modified"}}
+	app.refreshFileView("")
+	conflictIter, _ := app.fileStore.GetIterFirst()
+	warningValue, _ := app.fileStore.GetValue(conflictIter, fileStageIconColumn)
+	warningIcon, _ := warningValue.GetString()
+	if warningIcon != "dialog-warning-symbolic" {
+		t.Fatalf("conflict markers did not replace Stage with a warning: %q", warningIcon)
+	}
+	if err := os.WriteFile(filepath.Join(path, conflictPath), []byte("resolved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app.refreshFileView("")
+	resolvedIter, _ := app.fileStore.GetIterFirst()
+	stageValue, _ := app.fileStore.GetValue(resolvedIter, fileStageIconColumn)
+	stageIcon, _ := stageValue.GetString()
+	if stageIcon != "list-add-symbolic" {
+		t.Fatalf("resolved conflict did not expose Stage: %q", stageIcon)
+	}
+}
+
+func TestGTKWorkingFileStageActions(t *testing.T) {
+	path, app := newGTKIntegrationApp(t)
+	iterateGTKUntil(t, 2*time.Second, func() bool {
+		return app.currentRow != nil && app.currentRow.kind == "unstaged" && app.currentFile != nil && app.selectionCancel == nil
+	})
+	app.fileSearch.SetText(".txt")
+	if len(app.fileVisible) < 2 {
+		t.Fatalf("test needs adjacent visible files: %#v", app.files)
+	}
+	position := len(app.fileVisible) - 1
+	index, previousIndex := app.fileVisible[position], app.fileVisible[position-1]
+	stagedPath, nextPath := app.files[index].path, app.files[previousIndex].path
+	lastPath := must(gtk.TreePathNewFromIndicesv([]int{position}))
+	selection, _ := app.fileView.GetSelection()
+	selection.SelectPath(lastPath)
+	iterateGTKUntil(t, time.Second, func() bool { return app.currentFile != nil && app.currentFile.path == stagedPath })
+	iter, found := app.fileStore.GetIterFirst()
+	stageValue, stageErr := app.fileStore.GetValue(iter, fileStageIconColumn)
+	undoValue, undoErr := app.fileStore.GetValue(iter, fileUndoIconColumn)
+	stageIcon, _ := stageValue.GetString()
+	undoIcon, _ := undoValue.GetString()
+	app.fileView.SetCursorOnCell(lastPath, app.fileStageColumn, &app.fileStageRenderer.CellRenderer, false)
+	app.fileView.GrabFocus()
+	for gtk.EventsPending() {
+		gtk.MainIteration()
+	}
+	_, focusedColumn := app.fileView.GetCursor()
+	focusedTitle := ""
+	if focusedColumn != nil {
+		focusedTitle = focusedColumn.GetTitle()
+	}
+	if !found || stageErr != nil || undoErr != nil || stageIcon != "list-add-symbolic" || undoIcon != "edit-undo-symbolic" || !app.fileStageRenderer.IsActivatable() || !app.fileUndoRenderer.IsActivatable() || focusedTitle != "Stage or Unstage" {
+		t.Fatalf("unstaged row actions are incomplete: found=%v index=%d icons=%q/%q activatable=%v/%v focused=%q errors=%v/%v", found, index, stageIcon, undoIcon, app.fileStageRenderer.IsActivatable(), app.fileUndoRenderer.IsActivatable(), focusedTitle, stageErr, undoErr)
+	}
+
+	app.changeWorkingFile(index, false)
+	iterateGTKUntil(t, 3*time.Second, func() bool {
+		return app.historyCancel == nil && app.selectionCancel == nil && app.currentRow != nil && app.currentRow.kind == "unstaged" && app.currentFile != nil && app.currentFile.path == nextPath && app.fileView.IsFocus()
+	})
+	cached, err := exec.Command("git", "-C", path, "diff", "--cached", "--name-only").Output()
+	if err != nil || !strings.Contains(string(cached), stagedPath) {
+		t.Fatalf("Stage action did not update the index: %q err=%v", cached, err)
+	}
+	for rowIndex, row := range app.historyRows {
+		if row.kind == "staged" {
+			selection, _ := app.historyView.GetSelection()
+			selection.SelectPath(must(gtk.TreePathNewFromIndicesv([]int{rowIndex})))
+			break
+		}
+	}
+	iterateGTKUntil(t, 2*time.Second, func() bool {
+		return app.selectionCancel == nil && app.currentRow != nil && app.currentRow.kind == "staged" && len(app.files) == 1
+	})
+	if !app.fileStageColumn.GetVisible() || app.fileUndoColumn.GetVisible() {
+		t.Fatal("Staged file list retained an empty Undo column")
+	}
+	historyGeneration := app.historyGeneration
+	app.changeWorkingFile(0, false)
+	iterateGTKUntil(t, 3*time.Second, func() bool {
+		return app.historyGeneration > historyGeneration && app.historyCancel == nil && app.selectionCancel == nil
+	})
+	cached, err = exec.Command("git", "-C", path, "diff", "--cached", "--name-only").Output()
+	if err != nil || strings.Contains(string(cached), stagedPath) {
+		t.Fatalf("Unstage action did not update the index: %q err=%v", cached, err)
+	}
+	iterateGTKUntil(t, 2*time.Second, func() bool {
+		return app.currentRow != nil && app.currentRow.kind == "unstaged" && app.selectionCancel == nil
+	})
+	undoIndex := 0
+	before, err := os.ReadFile(filepath.Join(path, app.files[undoIndex].path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dialogShown := false
+	addMainSource(20*time.Millisecond, func() bool {
+		if app.workingDialog != nil {
+			dialogShown = true
+			app.workingDialog.Response(gtk.RESPONSE_CANCEL)
+		}
+		return false
+	})
+	app.changeWorkingFile(undoIndex, true)
+	after, err := os.ReadFile(filepath.Join(path, app.files[undoIndex].path))
+	if err != nil || !dialogShown || string(after) != string(before) {
+		t.Fatalf("Undo did not require cancelable confirmation: shown=%v changed=%v err=%v", dialogShown, string(after) != string(before), err)
 	}
 }
 

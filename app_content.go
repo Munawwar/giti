@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -217,6 +219,14 @@ func historyLabel(row historyRow) string {
 		when = date.Format("Jan 2, 2006")
 	}
 	return fmt.Sprintf("%s<b>%s</b>\n<span foreground=\"#374151\"><tt>%s</tt>  ·  %s  ·  %s</span>", refs.String(), html.EscapeString(row.subject), html.EscapeString(row.revision[:7]), html.EscapeString(row.author), when)
+}
+
+func formatCommitTime(value string, location *time.Location, layout string) string {
+	date, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return value
+	}
+	return date.In(location).Format(layout)
 }
 
 type searchMatch struct {
@@ -686,7 +696,17 @@ func (app *giti) setCommitHeader(details commitDetails) {
 	meta.SetXAlign(0)
 	meta.SetLineWrap(true)
 	meta.SetSelectable(true)
-	meta.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Author</b> %s &lt;%s&gt;  ·  %s\n<b>Committer</b> %s &lt;%s&gt;  ·  %s</span>", html.EscapeString(details.author), html.EscapeString(details.authorEmail), html.EscapeString(details.authored), html.EscapeString(details.committer), html.EscapeString(details.committerEmail), html.EscapeString(details.committed)))
+	authored := formatCommitTime(details.authored, time.Local, "2 Jan 2006, 15:04 MST")
+	committed := formatCommitTime(details.committed, time.Local, "2 Jan 2006, 15:04 MST")
+	authoredUTC := formatCommitTime(details.authored, time.UTC, time.RFC3339)
+	committedUTC := formatCommitTime(details.committed, time.UTC, time.RFC3339)
+	if details.author == details.committer && details.authorEmail == details.committerEmail && details.authored == details.committed {
+		meta.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Author &amp; committer</b> %s &lt;%s&gt;  ·  %s</span>", html.EscapeString(details.author), html.EscapeString(details.authorEmail), html.EscapeString(authored)))
+		meta.SetTooltipText("Author & committer: " + authoredUTC)
+	} else {
+		meta.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Author</b> %s &lt;%s&gt;  ·  %s\n<b>Committer</b> %s &lt;%s&gt;  ·  %s</span>", html.EscapeString(details.author), html.EscapeString(details.authorEmail), html.EscapeString(authored), html.EscapeString(details.committer), html.EscapeString(details.committerEmail), html.EscapeString(committed)))
+		meta.SetTooltipText(fmt.Sprintf("Author: %s\nCommitter: %s", authoredUTC, committedUTC))
+	}
 	app.headerDetails.PackStart(meta, false, false, 0)
 	if len(details.branches) > 0 || len(details.tags) > 0 {
 		refs := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 6))
@@ -927,7 +947,10 @@ func (app *giti) onHistorySelected() {
 	app.setCommitHeader(commitDetails{subject: "Loading commit details…"})
 	app.fileSummary.SetText("Loading changed files…")
 	previousPath := ""
-	if app.currentFile != nil {
+	focusFile := app.fileTargetPath != ""
+	if focusFile {
+		previousPath, app.fileTargetPath = app.fileTargetPath, ""
+	} else if app.currentFile != nil {
 		previousPath = app.currentFile.path
 	}
 	app.currentRow, app.currentFile, app.files, app.diffLoaded = &app.historyRows[index], nil, nil, false
@@ -1007,6 +1030,9 @@ func (app *giti) onHistorySelected() {
 				return false
 			}
 			app.refreshFileView(previousPath)
+			if focusFile {
+				app.fileView.GrabFocus()
+			}
 			return false
 		})
 	}()
@@ -1019,6 +1045,12 @@ func (app *giti) refreshFileView(preferredPath string) {
 	query, _ := app.fileSearch.GetText()
 	terms := strings.Fields(strings.ToLower(query))
 	treeMode := app.fileTreeToggle.GetActive()
+	kind := ""
+	if app.currentRow != nil {
+		kind = app.currentRow.kind
+	}
+	app.fileStageColumn.SetVisible(kind == "unstaged" || kind == "staged" || kind == "conflict" || kind == "resolved")
+	app.fileUndoColumn.SetVisible(kind == "unstaged")
 	commonPrefix := ""
 	if !treeMode && len(app.files) > 1 {
 		parts := strings.Split(app.files[0].path, "/")
@@ -1081,10 +1113,12 @@ func (app *giti) refreshFileView(preferredPath string) {
 			directoryFiles[parent]++
 		}
 	}
+	app.fileVisible = append(app.fileVisible[:0], visibleFiles...)
 
 	mergeResolution := app.currentRow != nil && app.currentRow.kind == "commit" && len(app.currentRow.parents) > 1 && !app.fullMergeToggle.GetActive()
 	for _, fileIndex := range visibleFiles {
 		file := app.files[fileIndex]
+		stageIcon, undoIcon, _ := app.workingFileAction(kind, file)
 		stat := fmt.Sprintf("<span foreground=\"#2e8c47\">+%d</span>  <span foreground=\"#c7404d\">−%d</span>", file.additions, file.deletions)
 		switch {
 		case file.status == "??":
@@ -1135,12 +1169,12 @@ func (app *giti) refreshFileView(preferredPath string) {
 			}
 			displayPath = displaySource + " → " + displayPath
 		}
-		label, tooltip := status+" "+displayPath, html.EscapeString(tooltip)
+		label := status + " " + displayPath
 
 		var path *gtk.TreePath
 		if !treeMode {
 			iter := app.fileStore.Append()
-			app.fileStore.Set(iter, []int{fileLabelColumn, fileStatColumn, fileIndexColumn, fileTooltipColumn}, []any{label, stat, fileIndex, tooltip})
+			app.fileStore.Set(iter, []int{fileLabelColumn, fileStatColumn, fileIndexColumn, fileTooltipColumn, fileStageIconColumn, fileUndoIconColumn}, []any{label, stat, fileIndex, tooltip, stageIcon, undoIcon})
 			path, _ = app.fileStore.GetPath(iter)
 		} else {
 			parts, parent, directoryPath := strings.Split(file.path, "/"), (*gtk.TreeIter)(nil), ""
@@ -1165,7 +1199,7 @@ func (app *giti) refreshFileView(preferredPath string) {
 					app.fileTreeStore.SetValue(iter, fileLabelColumn, html.EscapeString(strings.Join(labelParts, "/")))
 					app.fileTreeStore.SetValue(iter, fileStatColumn, "")
 					app.fileTreeStore.SetValue(iter, fileIndexColumn, -1)
-					app.fileTreeStore.SetValue(iter, fileTooltipColumn, html.EscapeString("Directory "+directoryPath))
+					app.fileTreeStore.SetValue(iter, fileTooltipColumn, "Directory "+directoryPath)
 					directories[directoryPath] = iter
 				}
 				parent = iter
@@ -1180,6 +1214,8 @@ func (app *giti) refreshFileView(preferredPath string) {
 			app.fileTreeStore.SetValue(iter, fileStatColumn, stat)
 			app.fileTreeStore.SetValue(iter, fileIndexColumn, fileIndex)
 			app.fileTreeStore.SetValue(iter, fileTooltipColumn, tooltip)
+			app.fileTreeStore.SetValue(iter, fileStageIconColumn, stageIcon)
+			app.fileTreeStore.SetValue(iter, fileUndoIconColumn, undoIcon)
 			path, _ = app.fileTreeStore.GetPath(iter)
 		}
 		if firstPath == nil {
@@ -1200,6 +1236,110 @@ func (app *giti) refreshFileView(preferredPath string) {
 		selection.SelectPath(targetPath)
 		app.fileView.ScrollToCell(targetPath, nil, false, 0, 0)
 	}
+}
+
+func (app *giti) workingFileAction(kind string, file changedFile) (stageIcon, undoIcon, action string) {
+	switch kind {
+	case "unstaged":
+		return "list-add-symbolic", "edit-undo-symbolic", "stage"
+	case "staged":
+		return "list-remove-symbolic", "", "unstage"
+	case "conflict":
+		if app.repository.hasConflictMarkers(file.path) {
+			return "dialog-warning-symbolic", "", "stage-warning"
+		}
+		return "list-add-symbolic", "", "stage"
+	case "resolved":
+		if file.staged {
+			return "list-remove-symbolic", "", "unstage"
+		}
+		return "list-add-symbolic", "", "stage"
+	}
+	return "", "", ""
+}
+
+func (app *giti) changeWorkingFile(index int, undo bool) {
+	if app.repository == nil || app.currentRow == nil || index < 0 || index >= len(app.files) || app.currentRow.kind == "commit" {
+		return
+	}
+	file, kind, action := app.files[index], app.currentRow.kind, ""
+	targetPath := ""
+	for position, visibleIndex := range app.fileVisible {
+		if visibleIndex == index && len(app.fileVisible) > 1 {
+			target := min(position+1, len(app.fileVisible)-1)
+			if target == position {
+				target--
+			}
+			targetPath = app.files[app.fileVisible[target]].path
+			break
+		}
+	}
+	if undo {
+		if kind != "unstaged" {
+			return
+		}
+		action = "undo"
+	} else {
+		_, _, action = app.workingFileAction(kind, file)
+	}
+	if action == "" {
+		return
+	}
+	if action == "undo" || action == "stage-warning" {
+		primary, secondary, confirm := "Discard changes to this file?", file.path+" cannot be restored after this operation.", "Discard Changes"
+		if file.status == "??" {
+			primary, secondary, confirm = "Delete this untracked file?", file.path+" is not tracked by Git and cannot be restored.", "Delete File"
+		} else if action == "stage-warning" {
+			primary, secondary, confirm = "Stage this unresolved file anyway?", file.path+" still appears to contain conflict markers.", "Stage Anyway"
+		}
+		dialog := gtk.MessageDialogNew(app.window, gtk.DIALOG_MODAL|gtk.DIALOG_DESTROY_WITH_PARENT, gtk.MESSAGE_WARNING, gtk.BUTTONS_CANCEL, "%s", primary)
+		dialog.FormatSecondaryText("%s", secondary)
+		dialog.AddButton(confirm, gtk.RESPONSE_OK)
+		app.workingDialog = dialog
+		response := dialog.Run()
+		app.workingDialog = nil
+		dialog.Destroy()
+		if response != gtk.RESPONSE_OK {
+			return
+		}
+		if action == "stage-warning" {
+			action = "stage"
+		}
+	}
+	repo, path := app.repository, file.path
+	paths := []string{"--", path}
+	if file.oldPath != "" {
+		paths = []string{"--", file.oldPath, path}
+	}
+	app.fileView.SetSensitive(false)
+	go func() {
+		var err error
+		switch action {
+		case "stage":
+			_, err = repo.run(append([]string{"add"}, paths...)...)
+		case "unstage":
+			_, err = repo.run(append([]string{"reset", "-q"}, paths...)...)
+		case "undo":
+			if file.status == "??" {
+				err = os.Remove(filepath.Join(repo.path, filepath.FromSlash(path)))
+			} else {
+				_, err = repo.run(append([]string{"restore", "--worktree"}, paths...)...)
+			}
+		}
+		addMainSource(0, func() bool {
+			app.fileView.SetSensitive(true)
+			if repo != app.repository {
+				return false
+			}
+			if err != nil {
+				app.showError(err)
+				return false
+			}
+			app.historyTargetKind, app.fileTargetPath = kind, targetPath
+			app.loadHistory(false)
+			return false
+		})
+	}()
 }
 
 func (app *giti) onFileSelected() {

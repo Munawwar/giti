@@ -202,6 +202,23 @@ func TestHistoryLabel(t *testing.T) {
 	}
 }
 
+func TestDisplayCommitTime(t *testing.T) {
+	india := time.FixedZone("IST", 5*60*60+30*60)
+	for value, want := range map[string]string{
+		"2026-08-08T23:26:45+05:30": "8 Aug 2026, 23:26 IST",
+		"2026-08-08T17:56:45Z":      "8 Aug 2026, 23:26 IST",
+		"unknown":                   "unknown",
+		"":                          "",
+	} {
+		if got := formatCommitTime(value, india, "2 Jan 2006, 15:04 MST"); got != want {
+			t.Errorf("formatCommitTime(%q) = %q, want %q", value, got, want)
+		}
+	}
+	if got := formatCommitTime("2026-08-08T23:26:45+05:30", time.UTC, time.RFC3339); got != "2026-08-08T17:56:45Z" {
+		t.Errorf("UTC timestamp = %q", got)
+	}
+}
+
 func TestBranchReferenceParts(t *testing.T) {
 	{
 		branches := []string{

@@ -44,6 +44,8 @@ const (
 	fileStatColumn
 	fileIndexColumn
 	fileTooltipColumn
+	fileStageIconColumn
+	fileUndoIconColumn
 )
 
 //go:embed logo/giti-logo.png
@@ -208,8 +210,11 @@ type giti struct {
 	historyRows                []historyRow
 	searchMatches              []historyRow
 	files                      []changedFile
+	fileVisible                []int
 	currentRow                 *historyRow
 	currentFile                *changedFile
+	historyTargetKind          string
+	fileTargetPath             string
 	window                     *gtk.Window
 	windowHeader               *gtk.HeaderBar
 	branchButton               *gtk.MenuButton
@@ -236,7 +241,13 @@ type giti struct {
 	fileSearchToggle           *gtk.ToggleButton
 	fileListToggle             *gtk.RadioButton
 	fileTreeToggle             *gtk.RadioButton
+	workingDialog              *gtk.MessageDialog
 	graphColumn                *gtk.TreeViewColumn
+	fileColumn                 *gtk.TreeViewColumn
+	fileStageColumn            *gtk.TreeViewColumn
+	fileUndoColumn             *gtk.TreeViewColumn
+	fileStageRenderer          *gtk.CellRendererPixbuf
+	fileUndoRenderer           *gtk.CellRendererPixbuf
 	mainPane, repositoryPane   *gtk.Paned
 	historySearch              *gtk.SearchEntry
 	searchSpinner              *gtk.Spinner
@@ -441,8 +452,9 @@ func newGiti(repo *repository, resident bool, applications ...*gtk.Application) 
 		}
 	}
 	app.historyStore = must(gtk.ListStoreNew(gdk.PixbufGetType(), glib.TYPE_STRING, glib.TYPE_STRING))
-	app.fileStore = must(gtk.ListStoreNew(glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_INT, glib.TYPE_STRING))
-	app.fileTreeStore = must(gtk.TreeStoreNew(glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_INT, glib.TYPE_STRING))
+	fileColumns := []glib.Type{glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_INT, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING}
+	app.fileStore = must(gtk.ListStoreNew(fileColumns...))
+	app.fileTreeStore = must(gtk.TreeStoreNew(fileColumns...))
 	app.fileModel = &app.fileStore.TreeModel
 	app.buildWindow(application)
 	if resident {
@@ -670,7 +682,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	// Changed files keep paths and compact statistics in separate renderers so
 	// long paths ellipsize without displacing the right-aligned counts.
 	app.fileView = must(gtk.TreeViewNewWithModel(app.fileStore))
-	setAccessibility(&app.fileView.Widget, "Changed files", "Files changed by the selected history entry")
+	setAccessibility(&app.fileView.Widget, "Changed files", "Files changed by the selected history entry; working-tree rows include Stage, Unstage, and Undo actions")
 	app.fileView.SetHeadersVisible(false)
 	app.fileView.AddEvents(int(gdk.BUTTON_PRESS_MASK))
 	app.fileView.Connect("button-press-event", func(_ *gtk.TreeView, event *gdk.Event) bool {
@@ -678,7 +690,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		if button.Type() != gdk.EVENT_BUTTON_PRESS || button.Button() != gdk.BUTTON_PRIMARY && button.Button() != gdk.BUTTON_SECONDARY {
 			return false
 		}
-		path, _, _, _, ok := app.fileView.GetPathAtPos(int(button.X()), int(button.Y()))
+		path, column, _, _, ok := app.fileView.GetPathAtPos(int(button.X()), int(button.Y()))
 		if !ok && button.Button() == gdk.BUTTON_PRIMARY {
 			return false
 		}
@@ -700,7 +712,17 @@ func (app *giti) buildWindow(application *gtk.Application) {
 			}
 		}
 		if button.Button() == gdk.BUTTON_PRIMARY {
+			if index >= 0 && column != nil && (column.GetTitle() == "Stage or Unstage" || column.GetTitle() == "Undo") {
+				selection, _ := app.fileView.GetSelection()
+				selection.SelectPath(path)
+				app.changeWorkingFile(index, column.GetTitle() == "Undo")
+				return true
+			}
 			if index >= 0 {
+				if column != nil && column.GetTitle() == "Changes" {
+					app.fileView.SetCursor(path, app.fileColumn, false)
+					return true
+				}
 				return false
 			}
 			app.fileView.GrabFocus()
@@ -739,7 +761,109 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		menu.PopupAtPointer(event)
 		return true
 	})
-	app.fileView.SetTooltipColumn(fileTooltipColumn)
+	app.fileView.Connect("key-press-event", func(_ *gtk.TreeView, event *gdk.Event) bool {
+		key := gdk.EventKeyNewFromEvent(event).KeyVal()
+		if key == gdk.KEY_Left || key == gdk.KEY_Right {
+			path, column := app.fileView.GetCursor()
+			if path == nil || column == nil {
+				return false
+			}
+			if key == gdk.KEY_Right && column.GetTitle() != "Stage or Unstage" && column.GetTitle() != "Undo" && app.fileStageColumn.GetVisible() {
+				app.fileView.SetCursorOnCell(path, app.fileStageColumn, &app.fileStageRenderer.CellRenderer, false)
+			} else if key == gdk.KEY_Right && column.GetTitle() == "Stage or Unstage" && app.fileUndoColumn.GetVisible() {
+				app.fileView.SetCursorOnCell(path, app.fileUndoColumn, &app.fileUndoRenderer.CellRenderer, false)
+			} else if key == gdk.KEY_Left && column.GetTitle() == "Undo" {
+				app.fileView.SetCursorOnCell(path, app.fileStageColumn, &app.fileStageRenderer.CellRenderer, false)
+			} else if key == gdk.KEY_Left && column.GetTitle() != "Files" {
+				app.fileView.SetCursor(path, app.fileColumn, false)
+			}
+			return true
+		}
+		if key != gdk.KEY_Return && key != gdk.KEY_KP_Enter && key != gdk.KEY_space {
+			return false
+		}
+		path, column := app.fileView.GetCursor()
+		if path == nil || column == nil || column.GetTitle() != "Stage or Unstage" && column.GetTitle() != "Undo" {
+			return false
+		}
+		iter, err := app.fileModel.GetIter(path)
+		if err != nil {
+			return false
+		}
+		value, err := app.fileModel.GetValue(iter, fileIndexColumn)
+		if err != nil {
+			return false
+		}
+		index, valueErr := value.GoValue()
+		if valueErr != nil {
+			return false
+		}
+		if index, ok := index.(int); ok && index >= 0 {
+			app.changeWorkingFile(index, column.GetTitle() == "Undo")
+			return true
+		}
+		return false
+	})
+	app.fileView.Connect("cursor-changed", app.fileView.QueueDraw)
+	app.fileView.Connect("focus-in-event", func() bool { app.fileView.QueueDraw(); return false })
+	app.fileView.Connect("focus-out-event", func() bool { app.fileView.QueueDraw(); return false })
+	app.fileView.ConnectAfter("draw", func(_ *gtk.TreeView, context *cairo.Context) bool {
+		path, column := app.fileView.GetCursor()
+		if !app.fileView.HasFocus() || path == nil || column == nil || column.GetTitle() != "Stage or Unstage" && column.GetTitle() != "Undo" {
+			return false
+		}
+		x, y, width, height := app.fileView.GetCellArea(path, column).GetRectangleInt()
+		context.SetSourceRGB(0.914, 0.329, 0.125)
+		context.SetLineWidth(2)
+		context.Rectangle(float64(x+1), float64(y+1), float64(width-2), float64(height-2))
+		context.Stroke()
+		return false
+	})
+	app.fileView.SetProperty("has-tooltip", true)
+	app.fileView.Connect("query-tooltip", func(_ *gtk.TreeView, x, y int, keyboard bool, tooltip *gtk.Tooltip) bool {
+		path, column := app.fileView.GetCursor()
+		if !keyboard {
+			var ok bool
+			path, column, _, _, ok = app.fileView.GetPathAtPos(x, y)
+			if !ok {
+				return false
+			}
+		}
+		if path == nil || column == nil {
+			return false
+		}
+		iter, err := app.fileModel.GetIter(path)
+		if err != nil {
+			return false
+		}
+		text := ""
+		if column.GetTitle() == "Files" || column.GetTitle() == "Changes" {
+			if value, valueErr := app.fileModel.GetValue(iter, fileTooltipColumn); valueErr == nil {
+				text, _ = value.GetString()
+			}
+		} else if app.currentRow != nil {
+			value, valueErr := app.fileModel.GetValue(iter, fileIndexColumn)
+			if valueErr != nil {
+				return false
+			}
+			if raw, rawErr := value.GoValue(); rawErr == nil {
+				if index, ok := raw.(int); ok && index >= 0 && index < len(app.files) {
+					stageIcon, undoIcon, action := app.workingFileAction(app.currentRow.kind, app.files[index])
+					if column.GetTitle() == "Stage or Unstage" && stageIcon != "" {
+						text = map[string]string{"stage": "Stage " + app.files[index].path, "unstage": "Unstage " + app.files[index].path, "stage-warning": "Conflict markers remain; stage " + app.files[index].path + " anyway"}[action]
+					} else if column.GetTitle() == "Undo" && undoIcon != "" {
+						text = "Undo changes to " + app.files[index].path
+					}
+				}
+			}
+		}
+		if text == "" {
+			return false
+		}
+		tooltip.SetText(text)
+		app.fileView.SetTooltipCell(tooltip, path, column, nil)
+		return true
+	})
 	fileContext, _ := app.fileView.GetStyleContext()
 	fileContext.AddClass("giti-list")
 	fileRenderer := must(gtk.CellRendererTextNew())
@@ -748,10 +872,27 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	fileColumn := must(gtk.TreeViewColumnNewWithAttribute("Files", fileRenderer, "markup", fileLabelColumn))
 	fileColumn.SetExpand(true)
 	app.fileView.AppendColumn(fileColumn)
+	app.fileColumn = fileColumn
 	statRenderer := must(gtk.CellRendererTextNew())
 	statRenderer.SetProperty("xalign", 1.0)
 	statColumn := must(gtk.TreeViewColumnNewWithAttribute("Changes", statRenderer, "markup", 1))
 	app.fileView.AppendColumn(statColumn)
+	for _, action := range []struct {
+		title string
+		icon  int
+	}{{"Stage or Unstage", fileStageIconColumn}, {"Undo", fileUndoIconColumn}} {
+		renderer := must(gtk.CellRendererPixbufNew())
+		renderer.SetProperty("xpad", 6)
+		renderer.SetProperty("mode", gtk.CELL_RENDERER_MODE_ACTIVATABLE)
+		column := must(gtk.TreeViewColumnNewWithAttribute(action.title, renderer, "icon-name", action.icon))
+		column.SetMinWidth(32)
+		app.fileView.AppendColumn(column)
+		if action.icon == fileStageIconColumn {
+			app.fileStageColumn, app.fileStageRenderer = column, renderer
+		} else {
+			app.fileUndoColumn, app.fileUndoRenderer = column, renderer
+		}
+	}
 	fileSelection, _ := app.fileView.GetSelection()
 	fileSelection.SetSelectFunction(func(_ *gtk.TreeSelection, model *gtk.TreeModel, path *gtk.TreePath, _ bool) bool {
 		iter, err := model.GetIter(path)
@@ -1547,6 +1688,7 @@ func (app *giti) loadHistoryTo(reveal string, refreshSearch, preserveView bool) 
 			app.loadFooter.setBusy(false)
 			if err != nil {
 				app.historyCancel = nil
+				app.historyTargetKind = ""
 				app.showError(err)
 				if restoreFocus {
 					app.loadButton.GrabFocus()
@@ -1569,6 +1711,9 @@ func (app *giti) loadHistoryTo(reveal string, refreshSearch, preserveView bool) 
 			preferredKind, preferredRevision := "", ""
 			if app.currentRow != nil {
 				preferredKind, preferredRevision = app.currentRow.kind, app.currentRow.revision
+			}
+			if app.historyTargetKind != "" {
+				preferredKind, preferredRevision, app.historyTargetKind = app.historyTargetKind, "", ""
 			}
 			preserveSelection := preserveView && preferredKind != "" && reveal == ""
 			if preserveSelection {
@@ -1709,11 +1854,11 @@ func (app *giti) clearRepositoryView() {
 		app.searchCancel = nil
 	}
 	app.clearSearchResults()
-	app.historyRows, app.files, app.searchMatches, app.searchDepths = nil, nil, nil, nil
+	app.historyRows, app.files, app.fileVisible, app.searchMatches, app.searchDepths = nil, nil, nil, nil, nil
 	app.historyHasMore, app.searchLimit = false, initialHistoryLimit
 	app.searchViewingResult = false
 	app.diffScroll = make(map[string]scrollPosition)
-	app.currentRow, app.currentFile, app.diffLoaded = nil, nil, false
+	app.currentRow, app.currentFile, app.historyTargetKind, app.fileTargetPath, app.diffLoaded = nil, nil, "", "", false
 	app.setSearchBusy(false)
 	app.historySearch.SetText("")
 	app.searchBack.Hide()
