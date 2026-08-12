@@ -808,6 +808,21 @@ func TestGTKChangedFileSearchAndTreeView(t *testing.T) {
 		t.Fatalf("tree view did not retain the matching file hierarchy: found=%v root=%q errors=%v/%v", found, rootLabel, rootErr, labelErr)
 	}
 	rootPath := must(gtk.TreePathNewFromIndicesv([]int{0}))
+	app.fileStageColumn.SetVisible(true)
+	app.fileUndoColumn.SetVisible(true)
+	for _, column := range []*gtk.TreeViewColumn{app.fileView.GetColumn(1), app.fileStageColumn, app.fileUndoColumn} {
+		app.fileView.SetCursor(rootPath, column, false)
+		app.normalizeFileCursor()
+		for gtk.EventsPending() {
+			gtk.MainIteration()
+		}
+		_, focusedColumn := app.fileView.GetCursor()
+		if focusedColumn == nil || focusedColumn.GetTitle() != "Files" {
+			t.Fatalf("directory retained focus in blank %q column", column.GetTitle())
+		}
+	}
+	app.fileStageColumn.SetVisible(false)
+	app.fileUndoColumn.SetVisible(false)
 	app.toggleFileDirectory(rootPath)
 	if app.fileView.RowExpanded(rootPath) {
 		t.Fatal("directory row toggle did not collapse it")
@@ -822,7 +837,7 @@ func TestGTKChangedFileSearchAndTreeView(t *testing.T) {
 	selection.UnselectAll()
 	selection.SelectPath(rootPath)
 	_, _, directorySelected := selection.GetSelected()
-	if err != nil || childErr != nil || childIndex != 1 || directorySelected {
+	if err != nil || childErr != nil || childIndex != 1 || !directorySelected {
 		t.Fatalf("tree file mapping or folder selection is wrong: index=%v selected=%v errors=%v/%v", childIndex, directorySelected, err, childErr)
 	}
 	app.fileSearch.SetText("InvoiceService")

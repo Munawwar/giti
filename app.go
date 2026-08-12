@@ -248,6 +248,7 @@ type giti struct {
 	fileUndoColumn             *gtk.TreeViewColumn
 	fileStageRenderer          *gtk.CellRendererPixbuf
 	fileUndoRenderer           *gtk.CellRendererPixbuf
+	normalizingFileCursor      bool
 	mainPane, repositoryPane   *gtk.Paned
 	historySearch              *gtk.SearchEntry
 	searchSpinner              *gtk.Spinner
@@ -461,6 +462,42 @@ func newGiti(repo *repository, resident bool, applications ...*gtk.Application) 
 		addMainSource(time.Minute, app.expireIfIdle)
 	}
 	return app, nil
+}
+
+func (app *giti) normalizeFileCursor() {
+	if app.normalizingFileCursor {
+		return
+	}
+	app.fileView.QueueDraw()
+	path, column := app.fileView.GetCursor()
+	if path == nil || column == nil || column.GetTitle() == "Files" {
+		return
+	}
+	iter, err := app.fileModel.GetIter(path)
+	if err != nil {
+		return
+	}
+	modelColumn := fileIndexColumn
+	if column.GetTitle() == "Stage or Unstage" {
+		modelColumn = fileStageIconColumn
+	} else if column.GetTitle() == "Undo" {
+		modelColumn = fileUndoIconColumn
+	}
+	if modelColumn == fileIndexColumn {
+		app.normalizingFileCursor = true
+		app.fileView.SetCursor(path, app.fileColumn, false)
+		app.normalizingFileCursor = false
+		return
+	}
+	value, err := app.fileModel.GetValue(iter, modelColumn)
+	if err != nil {
+		return
+	}
+	if text, textErr := value.GetString(); textErr != nil || text == "" {
+		app.normalizingFileCursor = true
+		app.fileView.SetCursor(path, app.fileColumn, false)
+		app.normalizingFileCursor = false
+	}
 }
 
 func (app *giti) buildWindow(application *gtk.Application) {
@@ -726,6 +763,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 				return false
 			}
 			app.fileView.GrabFocus()
+			app.fileView.SetCursor(path, app.fileColumn, false)
 			app.toggleFileDirectory(path)
 			return true
 		}
@@ -768,6 +806,19 @@ func (app *giti) buildWindow(application *gtk.Application) {
 			if path == nil || column == nil {
 				return false
 			}
+			iter, err := app.fileModel.GetIter(path)
+			if err != nil {
+				return false
+			}
+			value, err := app.fileModel.GetValue(iter, fileIndexColumn)
+			if err != nil {
+				return false
+			}
+			index, valueErr := value.GoValue()
+			fileIndex, valid := index.(int)
+			if valueErr != nil || !valid || fileIndex < 0 {
+				return false
+			}
 			if key == gdk.KEY_Right && column.GetTitle() != "Stage or Unstage" && column.GetTitle() != "Undo" && app.fileStageColumn.GetVisible() {
 				app.fileView.SetCursorOnCell(path, app.fileStageColumn, &app.fileStageRenderer.CellRenderer, false)
 			} else if key == gdk.KEY_Right && column.GetTitle() == "Stage or Unstage" && app.fileUndoColumn.GetVisible() {
@@ -783,7 +834,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 			return false
 		}
 		path, column := app.fileView.GetCursor()
-		if path == nil || column == nil || column.GetTitle() != "Stage or Unstage" && column.GetTitle() != "Undo" {
+		if path == nil || column == nil {
 			return false
 		}
 		iter, err := app.fileModel.GetIter(path)
@@ -798,21 +849,43 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		if valueErr != nil {
 			return false
 		}
-		if index, ok := index.(int); ok && index >= 0 {
+		if index, ok := index.(int); ok && index < 0 && column.GetTitle() == "Files" {
+			app.toggleFileDirectory(path)
+			return true
+		} else if ok && index >= 0 && (column.GetTitle() == "Stage or Unstage" || column.GetTitle() == "Undo") {
 			app.changeWorkingFile(index, column.GetTitle() == "Undo")
 			return true
 		}
 		return false
 	})
-	app.fileView.Connect("cursor-changed", app.fileView.QueueDraw)
+	app.fileView.Connect("cursor-changed", app.normalizeFileCursor)
+	app.fileView.Connect("key-release-event", func() bool { app.normalizeFileCursor(); return false })
 	app.fileView.Connect("focus-in-event", func() bool { app.fileView.QueueDraw(); return false })
 	app.fileView.Connect("focus-out-event", func() bool { app.fileView.QueueDraw(); return false })
 	app.fileView.ConnectAfter("draw", func(_ *gtk.TreeView, context *cairo.Context) bool {
 		path, column := app.fileView.GetCursor()
-		if !app.fileView.HasFocus() || path == nil || column == nil || column.GetTitle() != "Stage or Unstage" && column.GetTitle() != "Undo" {
+		if !app.fileView.HasFocus() || path == nil || column == nil {
+			return false
+		}
+		iter, err := app.fileModel.GetIter(path)
+		if err != nil {
+			return false
+		}
+		value, err := app.fileModel.GetValue(iter, fileIndexColumn)
+		if err != nil {
+			return false
+		}
+		index, valueErr := value.GoValue()
+		fileIndex, valid := index.(int)
+		if valueErr != nil || !valid {
 			return false
 		}
 		x, y, width, height := app.fileView.GetCellArea(path, column).GetRectangleInt()
+		if fileIndex < 0 {
+			x, width = 0, app.fileView.GetAllocatedWidth()
+		} else if column.GetTitle() != "Stage or Unstage" && column.GetTitle() != "Undo" {
+			return false
+		}
 		context.SetSourceRGB(0.914, 0.329, 0.125)
 		context.SetLineWidth(2)
 		context.Rectangle(float64(x+1), float64(y+1), float64(width-2), float64(height-2))
@@ -905,7 +978,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		}
 		index, err := value.GoValue()
 		fileIndex, valid := index.(int)
-		return err == nil && valid && fileIndex >= 0
+		return err == nil && valid && (fileIndex >= 0 || app.fileTreeToggle.GetActive())
 	})
 	fileSelection.Connect("changed", app.onFileSelected)
 	app.fileSearch = must(gtk.SearchEntryNew())
