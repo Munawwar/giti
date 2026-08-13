@@ -57,6 +57,7 @@ var fileTreeIconSVG []byte
 const appCSS = `
 treeview.giti-list.view {
   -GtkTreeView-vertical-separator: 0;
+  border-left-color: #c7cbd1;
 }
 treeview.giti-list.view:selected,
 treeview.giti-list.view:selected:focus {
@@ -90,6 +91,29 @@ button.giti-ref-copy {
 button.giti-ref-copy.giti-ref-joined {
   border-width: 0;
   margin: 0;
+}
+button.giti-parent-button {
+  background-color: transparent;
+  background-image: none;
+  border-color: transparent;
+  box-shadow: none;
+  min-height: 0;
+  min-width: 0;
+  padding: 1px 3px;
+}
+button.giti-parent-button > label {
+  color: #4b5563;
+  font-family: monospace;
+  text-decoration-line: underline;
+}
+button.giti-parent-button:hover {
+  background-color: alpha(#6b7280, 0.10);
+}
+button.giti-parent-button:hover > label {
+  color: #303846;
+}
+button.giti-parent-button:focus {
+  box-shadow: 0 0 0 2px #e95420;
 }
 .giti-flat-button {
   background-color: transparent;
@@ -249,6 +273,7 @@ type giti struct {
 	fileStageRenderer          *gtk.CellRendererPixbuf
 	fileUndoRenderer           *gtk.CellRendererPixbuf
 	normalizingFileCursor      bool
+	fileExpandedSubtrees       map[string][]string
 	mainPane, repositoryPane   *gtk.Paned
 	historySearch              *gtk.SearchEntry
 	searchSpinner              *gtk.Spinner
@@ -286,6 +311,7 @@ type giti struct {
 	referencesPage             *gtk.Box
 	referencesView             *gtk.TextView
 	headerReferenceButtons     []*gtk.Button
+	headerParentButtons        []*gtk.Button
 	whitespaceToggle           *gtk.CheckButton
 	fullFileToggle             *gtk.CheckButton
 	fullMergeToggle            *gtk.CheckButton
@@ -302,6 +328,9 @@ type giti struct {
 	diffGutterDigits           int
 	diffGutterWidth            int
 	diffFindIndex              int
+	diffContextLine            int
+	compactLineNumbers         bool
+	fullLineNumbers            bool
 	diffFindLimited            bool
 	fullFileHandler            glib.SignalHandle
 	fullMergeHandler           glib.SignalHandle
@@ -413,9 +442,20 @@ func diffKey(row historyRow, file changedFile) string {
 
 func (app *giti) toggleFileDirectory(path *gtk.TreePath) {
 	if app.fileView.RowExpanded(path) {
+		expanded := make([]string, 0)
+		app.fileModel.ForEach(func(_ *gtk.TreeModel, candidate *gtk.TreePath, _ *gtk.TreeIter) bool {
+			if path.IsAncestor(candidate) && app.fileView.RowExpanded(candidate) {
+				expanded = append(expanded, candidate.String())
+			}
+			return false
+		})
+		app.fileExpandedSubtrees[path.String()] = expanded
 		app.fileView.CollapseRow(path)
 	} else {
 		app.fileView.ExpandRow(path, false)
+		for _, child := range app.fileExpandedSubtrees[path.String()] {
+			app.fileView.ExpandRow(must(gtk.TreePathNewFromString(child)), false)
+		}
 	}
 }
 
@@ -445,7 +485,7 @@ func newGiti(repo *repository, resident bool, applications ...*gtk.Application) 
 	if len(applications) > 0 {
 		application = applications[0]
 	}
-	app := &giti{repository: repo, resident: resident, application: application, busy: true, historyLimit: initialHistoryLimit, searchLimit: initialHistoryLimit, diffScroll: make(map[string]scrollPosition), statePath: uiStatePath()}
+	app := &giti{repository: repo, resident: resident, application: application, busy: true, historyLimit: initialHistoryLimit, searchLimit: initialHistoryLimit, diffScroll: make(map[string]scrollPosition), fileExpandedSubtrees: make(map[string][]string), statePath: uiStatePath(), fullLineNumbers: true}
 	if resident {
 		app.server = newResidentServer(app)
 		if err := app.server.start(); err != nil {
@@ -504,6 +544,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	// Create the long-lived shell first; resident mode hides and reuses this
 	// widget tree rather than rebuilding it for every repository request.
 	state := loadUIState(app.statePath)
+	app.compactLineNumbers = state.CompactLineNumbers
 	if application == nil {
 		app.window = must(gtk.WindowNew(gtk.WINDOW_TOPLEVEL))
 	} else {
@@ -664,11 +705,13 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	searchOptions.ShowAll()
 	app.searchSettings.SetPopover(searchPopover)
 	app.searchMessages.Connect("toggled", func() {
-		app.persistUIState()
+		active := app.searchMessages.GetActive()
+		_ = patchUIState(app.statePath, func(state *uiState) { state.SearchCommitMessages = active })
 		app.updateGraphSearch()
 	})
 	app.searchReferences.Connect("toggled", func() {
-		app.persistUIState()
+		active := app.searchReferences.GetActive()
+		_ = patchUIState(app.statePath, func(state *uiState) { state.SearchReferences = active })
 		app.updateGraphSearch()
 	})
 	app.searchFollow.Connect("toggled", func() {
@@ -1020,6 +1063,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.fileTreeToggle.SetTooltipText("Group changed files into collapsible folders")
 	setAccessibility(&app.fileListToggle.Widget, "List view", "Show changed files in the original flat list")
 	setAccessibility(&app.fileTreeToggle.Widget, "Tree view", "Toggle between the unchanged file list and a folder tree")
+	app.fileTreeToggle.SetActive(true)
 	app.fileTreeToggle.Connect("toggled", func() { app.refreshFileView("") })
 
 	// The diff pane owns both the text rendering and the optional full-file
@@ -1036,6 +1080,69 @@ func (app *giti) buildWindow(application *gtk.Application) {
 	app.diffView.SetCursorVisible(false)
 	app.diffView.SetMonospace(true)
 	app.diffView.SetWrapMode(gtk.WRAP_NONE)
+	app.diffContextLine = -1
+	app.diffView.AddEvents(int(gdk.BUTTON_PRESS_MASK))
+	app.diffView.Connect("button-press-event", func(_ *gtk.TextView, event *gdk.Event) bool {
+		button := gdk.EventButtonNewFromEvent(event)
+		if button.Type() != gdk.EVENT_BUTTON_PRESS || button.Button() != gdk.BUTTON_SECONDARY {
+			return false
+		}
+		_, y := app.diffView.WindowToBufferCoords(gtk.TEXT_WINDOW_WIDGET, int(button.X()), int(button.Y()))
+		iter := app.diffView.GetIterAtLocation(0, y)
+		lineY, lineHeight := app.diffView.GetLineYrange(iter)
+		app.diffContextLine = iter.GetLine()
+		if y < lineY || y >= lineY+lineHeight {
+			app.diffContextLine = -1
+		}
+		return false
+	})
+	app.diffView.Connect("populate-popup", func(_ *gtk.TextView, menuWidget *gtk.Widget) {
+		if app.currentFile == nil || !app.diffLoaded {
+			return
+		}
+		menu := &gtk.Menu{MenuShell: gtk.MenuShell{Container: gtk.Container{Widget: *menuWidget}}}
+		children := menu.GetChildren()
+		children.Foreach(func(item any) { item.(*gtk.Widget).Destroy() })
+		children.Free()
+		clipboard := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD))
+		copyItem := must(gtk.MenuItemNewWithLabel("Copy"))
+		_, _, selected := app.diffBuffer.GetSelectionBounds()
+		copyItem.SetSensitive(selected)
+		copyItem.Connect("activate", func() { app.diffBuffer.CopyClipboard(clipboard) })
+		menu.Append(copyItem)
+		copyPath := must(gtk.MenuItemNewWithLabel("Copy Path"))
+		line := app.diffContextLine
+		if line < 0 || line >= len(app.diffLineNumbers) || app.diffLineNumbers[line].new == 0 {
+			copyPath.SetSensitive(false)
+		} else {
+			target := fmt.Sprintf("%s:%d:0", app.currentFile.path, app.diffLineNumbers[line].new)
+			copyPath.Connect("activate", func() { app.copyToClipboard(target, "Copied line path to clipboard.") })
+		}
+		menu.Append(copyPath)
+		selectAll := must(gtk.MenuItemNewWithLabel("Select All"))
+		selectAll.Connect("activate", func() { app.diffBuffer.SelectRange(app.diffBuffer.GetBounds()) })
+		menu.Append(selectAll)
+		menu.Append(must(gtk.SeparatorMenuItemNew()))
+		lineNumbers := must(gtk.CheckMenuItemNewWithLabel("Show line numbers"))
+		fullFile := app.fullFileToggle.GetActive()
+		lineNumbers.SetActive(fullFile && app.fullLineNumbers || !fullFile && app.compactLineNumbers)
+		lineNumbers.Connect("toggled", func() {
+			if fullFile {
+				app.fullLineNumbers = lineNumbers.GetActive()
+			} else {
+				app.compactLineNumbers = lineNumbers.GetActive()
+				_ = patchUIState(app.statePath, func(state *uiState) { state.CompactLineNumbers = app.compactLineNumbers })
+			}
+			hasNumbers := false
+			for _, numbers := range app.diffLineNumbers {
+				hasNumbers = hasNumbers || numbers.old > 0 || numbers.new > 0
+			}
+			app.diffGutter.SetVisible(lineNumbers.GetActive() && hasNumbers)
+			app.diffGutter.QueueDraw()
+		})
+		menu.Append(lineNumbers)
+		menu.ShowAll()
+	})
 	app.buildDiffOverview()
 	app.buildDiffGutter()
 
@@ -1308,7 +1415,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 			app.stateSavePending = true
 			addMainSource(time.Second, func() bool {
 				app.stateSavePending = false
-				app.persistUIState()
+				app.persistPanePositions()
 				return false
 			})
 		})
@@ -1897,15 +2004,14 @@ func (app *giti) fitGraphRows(ctx context.Context, historyGeneration uint64, rep
 	}()
 }
 
-func (app *giti) persistUIState() {
-	state := loadUIState(app.statePath)
-	if app.panesReady && app.mainPane != nil && app.repositoryPane != nil && app.mainPane.GetAllocatedWidth() > 1 && app.repositoryPane.GetAllocatedHeight() > 1 {
-		state.MainPanePosition, state.RepositoryPanePosition = app.mainPane.GetPosition(), app.repositoryPane.GetPosition()
+func (app *giti) persistPanePositions() {
+	if !app.panesReady || app.mainPane.GetAllocatedWidth() <= 1 || app.repositoryPane.GetAllocatedHeight() <= 1 {
+		return
 	}
-	if app.searchMessages != nil {
-		state.SearchCommitMessages, state.SearchReferences = app.searchMessages.GetActive(), app.searchReferences.GetActive()
-	}
-	_ = saveUIState(app.statePath, state)
+	main, repository := app.mainPane.GetPosition(), app.repositoryPane.GetPosition()
+	_ = patchUIState(app.statePath, func(state *uiState) {
+		state.MainPanePosition, state.RepositoryPanePosition = main, repository
+	})
 }
 
 func (app *giti) clearRepositoryView() {
@@ -1942,7 +2048,7 @@ func (app *giti) clearRepositoryView() {
 	app.fileTreeStore.Clear()
 	app.fileSearch.SetText("")
 	app.fileSearchToggle.SetActive(false)
-	app.fileListToggle.SetActive(true)
+	app.fileTreeToggle.SetActive(true)
 	app.fileSummary.SetText("Select a history entry to see changed files")
 	app.fileSummary.SetTooltipText("")
 	app.setCommitHeader(commitDetails{})
@@ -1962,7 +2068,6 @@ func (app *giti) clearRepositoryView() {
 }
 
 func (app *giti) hideResident() {
-	app.persistUIState()
 	app.clearRepositoryView()
 	app.window.Hide()
 	app.stateMu.Lock()
@@ -2141,7 +2246,6 @@ func (app *giti) expireIfIdle() bool {
 }
 
 func (app *giti) quit() {
-	app.persistUIState()
 	if app.application != nil {
 		app.application.Quit()
 		return

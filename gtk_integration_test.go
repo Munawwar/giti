@@ -348,18 +348,23 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	}
 	app.mainPane.SetPosition(app.mainPane.GetAllocatedWidth() / 3)
 	app.repositoryPane.SetPosition(splitHeight * 2 / 3)
-	app.persistUIState()
+	app.persistPanePositions()
 	savedState := loadUIState(app.statePath)
 	if savedState.MainPanePosition != app.mainPane.GetPosition() || savedState.RepositoryPanePosition != app.repositoryPane.GetPosition() {
 		t.Fatalf("pane positions were not persisted: %#v", savedState)
 	}
 	longBranch := "feature/" + strings.Repeat("copyable-reference-", 8)
-	details := commitDetails{sha: strings.Repeat("a", 40), subject: "subject", branches: []string{longBranch}, author: "Alice", authorEmail: "alice@example.com", authored: "2026-08-08T23:26:45+05:30", committer: "Bob", committerEmail: "bob@example.com", committed: "2026-08-08T17:56:45Z", additions: 12, deletions: 3, untracked: 4, statistics: true}
+	parentSHA := strings.Repeat("c", 40)
+	details := commitDetails{sha: strings.Repeat("a", 40), subject: "subject", branches: []string{longBranch}, parents: []string{parentSHA}, author: "Alice", authorEmail: "alice@example.com", authored: "2026-08-08T23:26:45+05:30", committer: "Bob", committerEmail: "bob@example.com", committed: "2026-08-08T17:56:45Z", additions: 12, deletions: 3, untracked: 4, statistics: true}
 	app.setCommitHeader(details)
 	detailChildren := app.headerDetails.GetChildren()
 	compactDetails := detailChildren.Length()
 	detailChildren.Free()
 	referenceButton := app.headerReferenceButtons[0]
+	parentButton := app.headerParentButtons[0]
+	parentText, parentTextErr := parentButton.GetLabel()
+	parentTooltip, parentTooltipErr := parentButton.GetTooltipText()
+	parentContext, _ := parentButton.GetStyleContext()
 	referenceWidget, referenceErr := referenceButton.GetChild()
 	referenceLabel, labelOK := referenceWidget.(*gtk.Label)
 	referenceValue, textErr := "", referenceErr
@@ -400,13 +405,14 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	metaText, metaTextErr := headerMeta.GetText()
 	metaTooltip, metaTooltipErr := headerMeta.GetTooltipText()
 	referenceValid := labelOK && textErr == nil && !referenceLabel.GetSelectable() && referenceLabel.GetEllipsize() == pango.ELLIPSIZE_END && strings.Contains(referenceValue, longBranch) && referenceButton.GetCanFocus() && copiedReference == longBranch && copyReferenceErr == nil && app.notification.GetVisible() && copyNotification == "Copied branch to clipboard." && notificationErr == nil && app.mainPane.GetAllocatedWidth() == contentWidth && app.mainPane.GetAllocatedHeight() == contentHeight
+	parentValid := parentTextErr == nil && parentTooltipErr == nil && parentText == parentSHA[:7] && parentTooltip == "Open parent commit "+parentSHA && parentButton.GetCanFocus() && parentButton.GetRelief() == gtk.RELIEF_NONE && parentContext.HasClass("giti-parent-button")
 	statisticsValid := strings.Join(statLabels, ",") == "+12,−3,4 untracked"
 	controlsValid := fullFileLabel == "Show full file" && whitespaceLabel == "Whitespace changes" && !app.whitespaceToggle.GetActive() && fullMergeLabel == "Full merge" && shaErr == nil && shaTooltipErr == nil && shaLabel.GetEllipsize() == pango.ELLIPSIZE_MIDDLE && shaTooltip == details.sha && metaTextErr == nil && metaTooltipErr == nil && strings.Count(metaText, formatCommitTime(details.authored, time.Local, "2 Jan 2006, 15:04 MST")) == 2 && metaTooltip == "Author: "+formatCommitTime(details.authored, time.UTC, time.RFC3339)+"\nCommitter: "+formatCommitTime(details.committed, time.UTC, time.RFC3339)
 	searchIdle := !app.searchSpinner.GetVisible() && app.historySearch.GetIconStorageType(gtk.ENTRY_ICON_PRIMARY) == gtk.IMAGE_ICON_NAME
 	app.setSearchBusy(true)
 	searchBusy := app.searchSpinner.GetVisible() && app.historySearch.GetIconStorageType(gtk.ENTRY_ICON_PRIMARY) == gtk.IMAGE_PIXBUF
 	app.setSearchBusy(false)
-	if expandedDetails != compactDetails+1 || titleErr != nil || metaErr != nil || referenceErr != nil || !referenceValid || !statisticsValid || !controlsValid || !searchIdle || !searchBusy || !headerTitle.GetSelectable() || !headerMeta.GetSelectable() || !shaLabel.GetSelectable() {
+	if expandedDetails != compactDetails+1 || titleErr != nil || metaErr != nil || referenceErr != nil || !referenceValid || !parentValid || !statisticsValid || !controlsValid || !searchIdle || !searchBusy || !headerTitle.GetSelectable() || !headerMeta.GetSelectable() || !shaLabel.GetSelectable() {
 		t.Fatalf("commit header copy control is incomplete: compact=%d body=%d title=%v meta=%v sha=%v controls=%q/%q/%q reference=%q/%v/%v/%v copied=%q/%v notification=%q/%v content=%dx%d/%dx%d", compactDetails, expandedDetails, titleErr, metaErr, shaErr, fullFileLabel, whitespaceLabel, fullMergeLabel, referenceValue, referenceErr, labelOK, textErr, copiedReference, copyReferenceErr, copyNotification, notificationErr, contentWidth, contentHeight, app.mainPane.GetAllocatedWidth(), app.mainPane.GetAllocatedHeight())
 	}
 	details.committer, details.committerEmail, details.committed = details.author, details.authorEmail, details.authored
@@ -630,6 +636,39 @@ func TestGTKDiffInteraction(t *testing.T) {
 	if !strings.Contains(compact, "+one") || strings.Contains(compact, "second") || strings.Contains(compact, "diff --git") || hunkOffset < 0 || !app.diffBuffer.GetIterAtOffset(hunkOffset).HasTag(hunkTag) || app.diffGutter.GetVisible() {
 		t.Fatalf("single-file rendered diff is wrong: %q", compact)
 	}
+	app.diffContextLine = -1
+	wantLinePath := ""
+	for index, numbers := range app.diffLineNumbers {
+		if numbers.new > 0 {
+			app.diffContextLine = index
+			wantLinePath = fmt.Sprintf("first.txt:%d:0", numbers.new)
+			break
+		}
+	}
+	menu := must(gtk.MenuNew())
+	menu.Append(must(gtk.MenuItemNewWithLabel("Paste")))
+	_, popupErr := app.diffView.Emit("populate-popup", glib.TYPE_NONE, &menu.Widget)
+	children := menu.GetChildren()
+	copyPath, hasCopyPath := children.NthData(1).(*gtk.Widget)
+	lineNumberToggle, hasLineNumberToggle := children.NthData(4).(*gtk.Widget)
+	if popupErr == nil && hasCopyPath {
+		_, popupErr = copyPath.Emit("activate", glib.TYPE_NONE)
+	}
+	linePath, copyErr := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD)).WaitForText()
+	if popupErr == nil && hasLineNumberToggle {
+		_, popupErr = lineNumberToggle.Emit("activate", glib.TYPE_NONE)
+	}
+	compactNumbersVisible := app.diffGutter.GetVisible()
+	compactNumbersSaved := loadUIState(app.statePath).CompactLineNumbers
+	if popupErr == nil && hasLineNumberToggle {
+		_, popupErr = lineNumberToggle.Emit("activate", glib.TYPE_NONE)
+	}
+	menuItems := children.Length()
+	children.Free()
+	menu.Destroy()
+	if popupErr != nil || menuItems != 5 || !hasCopyPath || !hasLineNumberToggle || !compactNumbersVisible || !compactNumbersSaved || app.diffGutter.GetVisible() || loadUIState(app.statePath).CompactLineNumbers || copyErr != nil || linePath != wantLinePath {
+		t.Fatalf("diff line actions failed: line=%d items=%d copied=%q want=%q numbers=%v/%v saved=%v popup=%v copy=%v", app.diffContextLine, menuItems, linePath, wantLinePath, compactNumbersVisible, app.diffGutter.GetVisible(), compactNumbersSaved, popupErr, copyErr)
+	}
 	app.diffBuffer.SelectRange(start, end)
 	clipboard := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD))
 	app.diffBuffer.CopyClipboard(clipboard)
@@ -772,9 +811,10 @@ func TestGTKChangedFileSearchAndTreeView(t *testing.T) {
 	treeImage, treeImageErr := app.fileTreeToggle.GetImage()
 	_, listIcon := listImage.(*gtk.Image)
 	_, treeIcon := treeImage.(*gtk.Image)
-	if !app.fileListToggle.GetActive() || app.fileTreeToggle.GetActive() || app.fileSearchToggle.GetActive() || app.fileSearchReveal.GetRevealChild() || app.fileStageColumn.GetVisible() || app.fileUndoColumn.GetVisible() || app.fileStore.IterNChildren(nil) != 4 || listImageErr != nil || treeImageErr != nil || !listIcon || !treeIcon {
-		t.Fatalf("changed files did not start in the compact icon list view: list/tree/search=%v/%v/%v reveal=%v rows=%d icons=%v/%v errors=%v/%v", app.fileListToggle.GetActive(), app.fileTreeToggle.GetActive(), app.fileSearchToggle.GetActive(), app.fileSearchReveal.GetRevealChild(), app.fileStore.IterNChildren(nil), listIcon, treeIcon, listImageErr, treeImageErr)
+	if app.fileListToggle.GetActive() || !app.fileTreeToggle.GetActive() || !app.fileView.GetEnableTreeLines() || app.fileSearchToggle.GetActive() || app.fileSearchReveal.GetRevealChild() || app.fileStageColumn.GetVisible() || app.fileUndoColumn.GetVisible() || listImageErr != nil || treeImageErr != nil || !listIcon || !treeIcon {
+		t.Fatalf("changed files did not start in tree view: list/tree/search=%v/%v/%v reveal=%v icons=%v/%v errors=%v/%v", app.fileListToggle.GetActive(), app.fileTreeToggle.GetActive(), app.fileSearchToggle.GetActive(), app.fileSearchReveal.GetRevealChild(), listIcon, treeIcon, listImageErr, treeImageErr)
 	}
+	app.fileListToggle.SetActive(true)
 	first, _ := app.fileStore.GetIterFirst()
 	firstLabel, _ := app.fileStore.GetValue(first, fileLabelColumn)
 	firstTooltip, _ := app.fileStore.GetValue(first, fileTooltipColumn)
@@ -840,6 +880,15 @@ func TestGTKChangedFileSearchAndTreeView(t *testing.T) {
 	if err != nil || childErr != nil || childIndex != 1 || !directorySelected {
 		t.Fatalf("tree file mapping or folder selection is wrong: index=%v selected=%v errors=%v/%v", childIndex, directorySelected, err, childErr)
 	}
+	app.fileSearch.SetText("")
+	srcPath := must(gtk.TreePathNewFromIndicesv([]int{0}))
+	uiPath := must(gtk.TreePathNewFromIndicesv([]int{0, 1}))
+	app.fileView.ExpandAll()
+	app.toggleFileDirectory(srcPath)
+	app.toggleFileDirectory(srcPath)
+	if !app.fileView.RowExpanded(uiPath) {
+		t.Fatal("reopened directory forgot its expanded descendants")
+	}
 	app.fileSearch.SetText("InvoiceService")
 	compactRoot, compactFound := app.fileTreeStore.GetIterFirst()
 	compactLabel, compactLabelErr := app.fileTreeStore.GetValue(compactRoot, fileLabelColumn)
@@ -866,6 +915,17 @@ func TestGTKChangedFileSearchAndTreeView(t *testing.T) {
 	commonTip, _ := commonTooltip.GetString()
 	if strings.Contains(commonText, "packages/dashboard/src") || !strings.Contains(commonText, `…/</span>components/cx-templates/ElementTranslation.jsx`) || commonTip != "Modified packages/dashboard/src/components/cx-templates/ElementTranslation.jsx" {
 		t.Fatalf("shared list prefix was not folded without changing its tooltip: label=%q tooltip=%q", commonText, commonTip)
+	}
+	app.files = []changedFile{{status: "A", path: "added.go"}, {status: "D", path: "deleted.go"}, {status: "M", path: "modified.go"}, {status: "R069", oldPath: "before.go", path: "after.go"}}
+	app.refreshFileView("")
+	for iter, valid := app.fileStore.GetIterFirst(); valid; valid = app.fileStore.IterNext(iter) {
+		value, _ := app.fileStore.GetValue(iter, fileLabelColumn)
+		tooltipValue, _ := app.fileStore.GetValue(iter, fileTooltipColumn)
+		label, _ := value.GetString()
+		tooltip, _ := tooltipValue.GetString()
+		if strings.Contains(label, "added.go") && !strings.Contains(label, `foreground="#2e8c47"`) || strings.Contains(label, "deleted.go") && !strings.Contains(label, `foreground="#b42318"`) || strings.Contains(label, "modified.go") && !strings.Contains(label, `foreground="#6b7280"`) || strings.Contains(label, "after.go") && (!strings.Contains(label, `foreground="#24527a">R</span>`) || strings.Contains(label, "R069") || tooltip != "Renamed before.go to after.go (69% similarity)") {
+			t.Fatalf("file status did not use its semantic color: %q", label)
+		}
 	}
 	conflictPath := "conflict.txt"
 	if err := os.WriteFile(filepath.Join(path, conflictPath), []byte("<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> topic\n"), 0o644); err != nil {

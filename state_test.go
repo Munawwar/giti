@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestUIState(t *testing.T) {
@@ -15,7 +16,7 @@ func TestUIState(t *testing.T) {
 		if path != filepath.Join(config, "giti", "state.json") {
 			t.Fatalf("unexpected state path %q", path)
 		}
-		want := uiState{MainPanePosition: 437, RepositoryPanePosition: 362, SearchCommitMessages: true, SearchReferences: true}
+		want := uiState{MainPanePosition: 437, RepositoryPanePosition: 362, SearchCommitMessages: true, SearchReferences: true, CompactLineNumbers: true}
 		if err := saveUIState(path, want); err != nil {
 			t.Fatal(err)
 		}
@@ -48,12 +49,30 @@ func TestUIState(t *testing.T) {
 		if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 			t.Fatal(err)
 		}
-		defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-		if err = saveUIState(path, uiState{MainPanePosition: 900, SearchCommitMessages: true}); err != nil {
+		done := make(chan error, 1)
+		go func() {
+			done <- patchUIState(path, func(state *uiState) { state.SearchCommitMessages = true })
+		}()
+		select {
+		case err = <-done:
+			t.Fatalf("contending update did not wait for the state lock: %v", err)
+		case <-time.After(20 * time.Millisecond):
+		}
+		if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
 			t.Fatal(err)
 		}
-		if got := loadUIState(path); got != first {
-			t.Fatalf("contending writer replaced the first state: got=%#v want=%#v", got, first)
+		select {
+		case err = <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("contending state update did not resume")
+		}
+		want := first
+		want.SearchCommitMessages = true
+		if got := loadUIState(path); got != want {
+			t.Fatalf("state patch lost an unrelated preference: got=%#v want=%#v", got, want)
 		}
 	}
 }

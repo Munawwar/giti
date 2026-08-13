@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -13,6 +12,7 @@ type uiState struct {
 	RepositoryPanePosition int  `json:"repository_pane_position"`
 	SearchCommitMessages   bool `json:"search_commit_messages"`
 	SearchReferences       bool `json:"search_references"`
+	CompactLineNumbers     bool `json:"compact_line_numbers"`
 }
 
 func uiStatePath() string {
@@ -39,6 +39,10 @@ func loadUIState(path string) uiState {
 }
 
 func saveUIState(path string, state uiState) error {
+	return patchUIState(path, func(current *uiState) { *current = state })
+}
+
+func patchUIState(path string, patch func(*uiState)) error {
 	if path == "" {
 		return nil
 	}
@@ -51,13 +55,12 @@ func saveUIState(path string, state uiState) error {
 		return err
 	}
 	defer lock.Close()
-	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
-			return nil
-		}
+	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 		return err
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	state := loadUIState(path)
+	patch(&state)
 	temporary, err := os.CreateTemp(directory, "state-*.tmp")
 	if err != nil {
 		return err

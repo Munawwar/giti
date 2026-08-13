@@ -640,7 +640,7 @@ func (app *giti) openSearchResult(index int) {
 func (app *giti) setCommitHeader(details commitDetails) {
 	// The title, commit identity, and detail regions change with selection. The
 	// action row stays mounted so its toggles retain their state and callbacks.
-	app.headerReferenceButtons = nil
+	app.headerReferenceButtons, app.headerParentButtons = nil, nil
 	for _, box := range []*gtk.Box{app.headerTitleRow, app.headerCommit, app.headerDetails} {
 		if children := box.GetChildren(); children != nil {
 			children.Foreach(func(child any) { box.Remove(child.(gtk.IWidget)) })
@@ -791,16 +791,17 @@ func (app *giti) setCommitHeader(details commitDetails) {
 		parents.PackStart(parentLabel, false, false, 0)
 		for _, parent := range details.parents {
 			parent := parent
-			button := must(gtk.ButtonNewWithLabel("↖ " + parent[:7]))
+			button := must(gtk.ButtonNewWithLabel(parent[:min(7, len(parent))]))
 			button.SetRelief(gtk.RELIEF_NONE)
-			button.SetTooltipText("Open parent " + parent)
+			button.SetTooltipText("Open parent commit " + parent)
 			setAccessibility(&button.Widget, "Open parent commit "+parent, "Navigate to the parent commit")
 			context, _ := button.GetStyleContext()
-			context.AddClass("giti-flat-button")
+			context.AddClass("giti-parent-button")
 			button.Connect("clicked", func() {
 				app.historySearch.SetText("")
 				app.revealHistoryRevision(parent)
 			})
+			app.headerParentButtons = append(app.headerParentButtons, button)
 			parents.PackStart(button, false, false, 0)
 		}
 		app.headerDetails.PackStart(parents, false, false, 0)
@@ -956,6 +957,7 @@ func (app *giti) onHistorySelected() {
 	app.currentRow, app.currentFile, app.files, app.diffLoaded = &app.historyRows[index], nil, nil, false
 	app.fileStore.Clear()
 	app.fileTreeStore.Clear()
+	clear(app.fileExpandedSubtrees)
 	ctx, cancel := context.WithCancel(context.Background())
 	app.selectionCancel = cancel
 	repo, row := app.repository, *app.currentRow
@@ -1148,6 +1150,9 @@ func (app *giti) refreshFileView(preferredPath string) {
 			tooltip = "Deleted " + file.path
 		case strings.HasPrefix(file.status, "R"):
 			sourcePath, tooltip = file.oldPath, "Renamed "+file.oldPath+" to "+file.path
+			if similarity, err := strconv.Atoi(strings.TrimPrefix(file.status, "R")); err == nil {
+				tooltip += fmt.Sprintf(" (%d%% similarity)", similarity)
+			}
 		case strings.HasPrefix(file.status, "C"):
 			sourcePath, tooltip = file.oldPath, "Copied "+file.oldPath+" to "+file.path
 		case strings.Contains(file.status, "M"):
@@ -1157,7 +1162,15 @@ func (app *giti) refreshFileView(preferredPath string) {
 		case strings.Contains(file.status, "T"):
 			tooltip = "Type changed " + file.path
 		}
-		status := fmt.Sprintf("<span size=\"small\" foreground=\"#6b7280\">%s</span>", html.EscapeString(file.status))
+		statusText, statusColor := file.status, "#6b7280"
+		if strings.Contains(file.status, "D") {
+			statusColor = "#b42318"
+		} else if strings.Contains(file.status, "A") {
+			statusColor = "#2e8c47"
+		} else if strings.HasPrefix(file.status, "R") {
+			statusText, statusColor = "R", "#24527a"
+		}
+		status := fmt.Sprintf("<span size=\"small\" foreground=\"%s\">%s</span>", statusColor, html.EscapeString(statusText))
 		displayPath := html.EscapeString(file.path)
 		if commonPrefix != "" && strings.HasPrefix(file.path, commonPrefix) {
 			displayPath = `<span foreground="#9ca3af">…/</span>` + html.EscapeString(strings.TrimPrefix(file.path, commonPrefix))
@@ -1471,7 +1484,8 @@ func (app *giti) setDiff(patch string) {
 		start = end
 	}
 	app.diffGutterDigits = max(2, len(strconv.Itoa(maxLine)))
-	app.diffGutter.SetVisible(app.fullFileToggle.GetActive() && maxLine > 0)
+	fullFile := app.fullFileToggle.GetActive()
+	app.diffGutter.SetVisible((fullFile && app.fullLineNumbers || !fullFile && app.compactLineNumbers) && maxLine > 0)
 	app.diffGutter.QueueDraw()
 	app.diffOverviewReveal.SetRevealChild(app.fullFileToggle.GetActive() && len(app.overviewMarkers) > 0)
 	app.diffOverview.QueueDraw()
