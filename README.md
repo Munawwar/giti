@@ -65,12 +65,6 @@ Uninstalling leaves shared system libraries and Giti's user preferences intact.
 You can then run `giti`, `giti main`, `giti v1.0.0`, or
 `giti <sha>` from any repository.
 
-If GTK 3 is installed at runtime but its development package is unavailable and
-you cannot use `sudo`, `./bootstrap-dev-deps.sh` downloads the needed Ubuntu
-development packages into the ignored `.deps` directory. The build scripts use
-that private copy automatically. It can be deleted after installing
-`libgtk-3-dev` system-wide.
-
 ## Features / Deets
 
 The initial history contains unstaged and staged entries when present, followed by 50 commits. Select a history entry, then a changed file, to view only that file's stacked diff. Whitespace changes are ignored by default using Git's `--ignore-all-space` filtering; enable **Whitespace changes** to include them. A whitespace-only merge resolution remains visible and shows its patch automatically so the resolved change is not hidden.
