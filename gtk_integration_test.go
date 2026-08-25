@@ -140,12 +140,16 @@ func TestGTKApplicationMenu(t *testing.T) {
 	if app.branchButton == nil || app.branchButton.GetPopover() == nil || strings.Join(strings.Fields(branchLabel), " ") != "Current — main" || fmt.Sprint(app.branchRevisions) != "[HEAD alpha Beta main older refs/remotes/origin/main]" || fmt.Sprint(app.branchLabels) != "[Current — main alpha Beta main older origin/main]" || !strings.Contains(app.branchMarkups[1], "#d8f0dd") || strings.Contains(app.branchMarkups[1], "refs/heads/") || !strings.Contains(app.branchMarkups[5], "#dce8f8") {
 		t.Fatalf("unexpected branch selector: label=%q revisions=%v labels=%v", branchLabel, app.branchRevisions, app.branchLabels)
 	}
-	for gtk.EventsPending() {
-		gtk.MainIteration()
-	}
-	rowContext, _ := app.branchList.GetRowAtIndex(0).GetStyleContext()
-	selected, styleErr := rowContext.GetProperty("background-color", gtk.STATE_FLAG_SELECTED)
-	selectedColor, colorOK := selected.(*gdk.RGBA)
+	var selected any
+	var selectedColor *gdk.RGBA
+	var styleErr error
+	iterateGTKUntil(t, time.Second, func() bool {
+		rowContext, _ := app.branchList.GetRowAtIndex(0).GetStyleContext()
+		selected, styleErr = rowContext.GetProperty("background-color", gtk.STATE_FLAG_SELECTED)
+		selectedColor, _ = selected.(*gdk.RGBA)
+		return styleErr == nil && selectedColor != nil && selectedColor.GetAlpha() > 0
+	})
+	_, colorOK := selected.(*gdk.RGBA)
 	if !colorOK || styleErr != nil || int(selectedColor.GetRed()*255+.5) != 255 || int(selectedColor.GetGreen()*255+.5) != 240 || int(selectedColor.GetBlue()*255+.5) != 232 {
 		t.Fatalf("unexpected list selection color: %T %v err=%v", selected, selected, styleErr)
 	}
@@ -647,27 +651,26 @@ func TestGTKDiffInteraction(t *testing.T) {
 	}
 	menu := must(gtk.MenuNew())
 	menu.Append(must(gtk.MenuItemNewWithLabel("Paste")))
-	_, popupErr := app.diffView.Emit("populate-popup", glib.TYPE_NONE, &menu.Widget)
+	copyPath, lineNumberToggle := app.populateDiffMenu(&menu.Widget)
 	children := menu.GetChildren()
-	copyPath, hasCopyPath := children.NthData(1).(*gtk.Widget)
-	lineNumberToggle, hasLineNumberToggle := children.NthData(4).(*gtk.Widget)
-	if popupErr == nil && hasCopyPath {
-		_, popupErr = copyPath.Emit("activate", glib.TYPE_NONE)
+	hasCopyPath, hasLineNumberToggle := copyPath != nil, lineNumberToggle != nil
+	if hasCopyPath {
+		copyPath.Activate()
 	}
 	linePath, copyErr := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD)).WaitForText()
-	if popupErr == nil && hasLineNumberToggle {
-		_, popupErr = lineNumberToggle.Emit("activate", glib.TYPE_NONE)
+	if hasLineNumberToggle {
+		lineNumberToggle.Activate()
 	}
 	compactNumbersVisible := app.diffGutter.GetVisible()
 	compactNumbersSaved := loadUIState(app.statePath).CompactLineNumbers
-	if popupErr == nil && hasLineNumberToggle {
-		_, popupErr = lineNumberToggle.Emit("activate", glib.TYPE_NONE)
+	if hasLineNumberToggle {
+		lineNumberToggle.Activate()
 	}
 	menuItems := children.Length()
 	children.Free()
 	menu.Destroy()
-	if popupErr != nil || menuItems != 5 || !hasCopyPath || !hasLineNumberToggle || !compactNumbersVisible || !compactNumbersSaved || app.diffGutter.GetVisible() || loadUIState(app.statePath).CompactLineNumbers || copyErr != nil || linePath != wantLinePath {
-		t.Fatalf("diff line actions failed: line=%d items=%d copied=%q want=%q numbers=%v/%v saved=%v popup=%v copy=%v", app.diffContextLine, menuItems, linePath, wantLinePath, compactNumbersVisible, app.diffGutter.GetVisible(), compactNumbersSaved, popupErr, copyErr)
+	if menuItems != 5 || !hasCopyPath || !hasLineNumberToggle || !compactNumbersVisible || !compactNumbersSaved || app.diffGutter.GetVisible() || loadUIState(app.statePath).CompactLineNumbers || copyErr != nil || linePath != wantLinePath {
+		t.Fatalf("diff line actions failed: line=%d items=%d copied=%q want=%q numbers=%v/%v saved=%v copy=%v", app.diffContextLine, menuItems, linePath, wantLinePath, compactNumbersVisible, app.diffGutter.GetVisible(), compactNumbersSaved, copyErr)
 	}
 	app.diffBuffer.SelectRange(start, end)
 	clipboard := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD))
