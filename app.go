@@ -269,6 +269,7 @@ type giti struct {
 	fileUndoColumn             *gtk.TreeViewColumn
 	fileStageRenderer          *gtk.CellRendererPixbuf
 	fileUndoRenderer           *gtk.CellRendererPixbuf
+	fileDirectoryFiles         map[int][]int
 	normalizingFileCursor      bool
 	fileExpandedSubtrees       map[string][]string
 	mainPane, repositoryPane   *gtk.Paned

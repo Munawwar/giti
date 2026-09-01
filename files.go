@@ -60,7 +60,9 @@ func (app *giti) refreshFileView(preferredPath string) {
 	var targetPath, firstPath *gtk.TreePath
 	visibleFiles := make([]int, 0, len(app.files))
 	directories, directoryFiles := make(map[string]*gtk.TreeIter), make(map[string]int)
+	directoryMembers := make(map[string][]int)
 	directoryChildren := make(map[string]map[string]bool)
+	app.fileDirectoryFiles = make(map[int][]int)
 	for fileIndex, file := range app.files {
 		haystack := strings.ToLower(strings.Join([]string{file.status, file.path, file.oldPath, file.conflict}, " "))
 		matches := true
@@ -85,6 +87,7 @@ func (app *giti) refreshFileView(preferredPath string) {
 					directoryChildren[parent] = make(map[string]bool)
 				}
 				directoryChildren[parent][current] = true
+				directoryMembers[current] = append(directoryMembers[current], fileIndex)
 				parent = current
 			}
 			directoryFiles[parent]++
@@ -181,11 +184,34 @@ func (app *giti) refreshFileView(preferredPath string) {
 				}
 				iter := directories[directoryPath]
 				if iter == nil {
+					directoryIndex := -2 - len(app.fileDirectoryFiles)
+					members := directoryMembers[directoryPath]
+					stageIcon, undoIcon, action := "", "", ""
+					for _, fileIndex := range members {
+						icon, candidateUndoIcon, candidate := app.workingFileAction(kind, app.files[fileIndex])
+						if undoIcon == "" {
+							undoIcon = candidateUndoIcon
+						} else if candidateUndoIcon != undoIcon {
+							undoIcon = ""
+						}
+						if action == "" {
+							stageIcon, action = icon, candidate
+						} else if action == "stage" && candidate == "stage-warning" {
+							stageIcon, action = icon, candidate
+						} else if action == "stage-warning" && candidate == "stage" {
+							continue
+						} else if candidate != action {
+							stageIcon = ""
+						}
+					}
+					app.fileDirectoryFiles[directoryIndex] = members
 					iter = app.fileTreeStore.Append(parent)
 					app.fileTreeStore.SetValue(iter, fileLabelColumn, html.EscapeString(strings.Join(labelParts, "/")))
 					app.fileTreeStore.SetValue(iter, fileStatColumn, "")
-					app.fileTreeStore.SetValue(iter, fileIndexColumn, -1)
+					app.fileTreeStore.SetValue(iter, fileIndexColumn, directoryIndex)
 					app.fileTreeStore.SetValue(iter, fileTooltipColumn, "Directory "+directoryPath)
+					app.fileTreeStore.SetValue(iter, fileStageIconColumn, stageIcon)
+					app.fileTreeStore.SetValue(iter, fileUndoIconColumn, undoIcon)
 					directories[directoryPath] = iter
 				}
 				parent = iter
@@ -244,14 +270,31 @@ func (app *giti) workingFileAction(kind string, file changedFile) (stageIcon, un
 	return "", "", ""
 }
 
-func (app *giti) changeWorkingFile(index int, undo bool) {
-	if app.repository == nil || app.currentRow == nil || index < 0 || index >= len(app.files) || app.currentRow.kind == "commit" {
+func (app *giti) changeWorkingFiles(indices []int, undo bool) {
+	if app.repository == nil || app.currentRow == nil || len(indices) == 0 || app.currentRow.kind == "commit" {
 		return
 	}
-	file, kind, action := app.files[index], app.currentRow.kind, ""
+	kind, action := app.currentRow.kind, ""
+	files := make([]changedFile, 0, len(indices))
+	for _, index := range indices {
+		if index < 0 || index >= len(app.files) {
+			return
+		}
+		file := app.files[index]
+		_, _, candidate := app.workingFileAction(kind, file)
+		if undo {
+			candidate = "undo"
+		}
+		if action == "" || action == "stage" && candidate == "stage-warning" {
+			action = candidate
+		} else if candidate != action && !(action == "stage-warning" && candidate == "stage") {
+			return
+		}
+		files = append(files, file)
+	}
 	targetPath := ""
 	for position, visibleIndex := range app.fileVisible {
-		if visibleIndex == index && len(app.fileVisible) > 1 {
+		if visibleIndex == indices[0] && len(app.fileVisible) > 1 {
 			target := min(position+1, len(app.fileVisible)-1)
 			if target == position {
 				target--
@@ -264,19 +307,19 @@ func (app *giti) changeWorkingFile(index int, undo bool) {
 		if kind != "unstaged" {
 			return
 		}
-		action = "undo"
-	} else {
-		_, _, action = app.workingFileAction(kind, file)
 	}
 	if action == "" {
 		return
 	}
 	if action == "undo" || action == "stage-warning" {
+		file := files[0]
 		primary, secondary, confirm := "Discard changes to this file?", file.path+" cannot be restored after this operation.", "Discard Changes"
-		if file.status == "??" {
+		if len(files) > 1 && action == "undo" {
+			primary, secondary = "Discard changes to these files?", "All selected changes, including untracked files, cannot be restored after this operation."
+		} else if file.status == "??" {
 			primary, secondary, confirm = "Delete this untracked file?", file.path+" is not tracked by Git and cannot be restored.", "Delete File"
 		} else if action == "stage-warning" {
-			primary, secondary, confirm = "Stage this unresolved file anyway?", file.path+" still appears to contain conflict markers.", "Stage Anyway"
+			primary, secondary, confirm = "Stage unresolved files anyway?", "One or more files in this selection still appear to contain conflict markers.", "Stage Anyway"
 		}
 		dialog := gtk.MessageDialogNew(app.window, gtk.DIALOG_MODAL|gtk.DIALOG_DESTROY_WITH_PARENT, gtk.MESSAGE_WARNING, gtk.BUTTONS_CANCEL, "%s", primary)
 		dialog.FormatSecondaryText("%s", secondary)
@@ -292,10 +335,13 @@ func (app *giti) changeWorkingFile(index int, undo bool) {
 			action = "stage"
 		}
 	}
-	repo, path := app.repository, file.path
-	paths := []string{"--", path}
-	if file.oldPath != "" {
-		paths = []string{"--", file.oldPath, path}
+	repo, paths, seen := app.repository, []string{"--"}, make(map[string]bool)
+	for _, file := range files {
+		for _, path := range []string{file.oldPath, file.path} {
+			if path != "" && !seen[path] {
+				paths, seen[path] = append(paths, path), true
+			}
+		}
 	}
 	app.fileView.SetSensitive(false)
 	go func() {
@@ -306,10 +352,22 @@ func (app *giti) changeWorkingFile(index int, undo bool) {
 		case "unstage":
 			_, err = repo.run(append([]string{"reset", "-q"}, paths...)...)
 		case "undo":
-			if file.status == "??" {
-				err = os.Remove(filepath.Join(repo.path, filepath.FromSlash(path)))
-			} else {
-				_, err = repo.run(append([]string{"restore", "--worktree"}, paths...)...)
+			restorePaths := []string{"--"}
+			for _, file := range files {
+				if file.status == "??" {
+					err = os.Remove(filepath.Join(repo.path, filepath.FromSlash(file.path)))
+				} else {
+					if file.oldPath != "" {
+						restorePaths = append(restorePaths, file.oldPath)
+					}
+					restorePaths = append(restorePaths, file.path)
+				}
+				if err != nil {
+					break
+				}
+			}
+			if err == nil && len(restorePaths) > 1 {
+				_, err = repo.run(append([]string{"restore", "--worktree"}, restorePaths...)...)
 			}
 		}
 		addMainSource(0, func() bool {
@@ -507,10 +565,14 @@ func (app *giti) buildFilePane() *gtk.Box {
 			}
 		}
 		if button.Button() == gdk.BUTTON_PRIMARY {
+			if column != nil && index < -1 && (column.GetTitle() == "Stage or Unstage" || column.GetTitle() == "Undo") {
+				app.changeWorkingFiles(app.fileDirectoryFiles[index], column.GetTitle() == "Undo")
+				return true
+			}
 			if index >= 0 && column != nil && (column.GetTitle() == "Stage or Unstage" || column.GetTitle() == "Undo") {
 				selection, _ := app.fileView.GetSelection()
 				selection.SelectPath(path)
-				app.changeWorkingFile(index, column.GetTitle() == "Undo")
+				app.changeWorkingFiles([]int{index}, column.GetTitle() == "Undo")
 				return true
 			}
 			if index >= 0 {
@@ -574,7 +636,7 @@ func (app *giti) buildFilePane() *gtk.Box {
 			}
 			index, valueErr := value.GoValue()
 			fileIndex, valid := index.(int)
-			if valueErr != nil || !valid || fileIndex < 0 {
+			if valueErr != nil || !valid || fileIndex == -1 {
 				return false
 			}
 			if key == gdk.KEY_Right && column.GetTitle() != "Stage or Unstage" && column.GetTitle() != "Undo" && app.fileStageColumn.GetVisible() {
@@ -610,8 +672,11 @@ func (app *giti) buildFilePane() *gtk.Box {
 		if index, ok := index.(int); ok && index < 0 && column.GetTitle() == "Files" {
 			app.toggleFileDirectory(path)
 			return true
+		} else if ok && index < -1 && (column.GetTitle() == "Stage or Unstage" || column.GetTitle() == "Undo") {
+			app.changeWorkingFiles(app.fileDirectoryFiles[index], column.GetTitle() == "Undo")
+			return true
 		} else if ok && index >= 0 && (column.GetTitle() == "Stage or Unstage" || column.GetTitle() == "Undo") {
-			app.changeWorkingFile(index, column.GetTitle() == "Undo")
+			app.changeWorkingFiles([]int{index}, column.GetTitle() == "Undo")
 			return true
 		}
 		return false
@@ -639,7 +704,7 @@ func (app *giti) buildFilePane() *gtk.Box {
 			return false
 		}
 		x, y, width, height := app.fileView.GetCellArea(path, column).GetRectangleInt()
-		if fileIndex < 0 {
+		if fileIndex < 0 && column.GetTitle() == "Files" {
 			x, width = 0, app.fileView.GetAllocatedWidth()
 		} else if column.GetTitle() != "Stage or Unstage" && column.GetTitle() != "Undo" {
 			return false
@@ -678,7 +743,26 @@ func (app *giti) buildFilePane() *gtk.Box {
 				return false
 			}
 			if raw, rawErr := value.GoValue(); rawErr == nil {
-				if index, ok := raw.(int); ok && index >= 0 && index < len(app.files) {
+				if index, ok := raw.(int); ok && index < -1 && (column.GetTitle() == "Stage or Unstage" || column.GetTitle() == "Undo") {
+					iconColumn := fileStageIconColumn
+					if column.GetTitle() == "Undo" {
+						iconColumn = fileUndoIconColumn
+					}
+					icon, _ := app.fileModel.GetValue(iter, iconColumn)
+					if name, _ := icon.GetString(); name == "" {
+						return false
+					}
+					label, _ := app.fileModel.GetValue(iter, fileTooltipColumn)
+					directory, _ := label.GetString()
+					action := column.GetTitle()
+					if action == "Stage or Unstage" {
+						action = "Stage"
+					}
+					if column.GetTitle() == "Stage or Unstage" && app.currentRow.kind == "staged" {
+						action = "Unstage"
+					}
+					text = action + " " + strings.TrimPrefix(directory, "Directory ")
+				} else if ok && index >= 0 && index < len(app.files) {
 					stageIcon, undoIcon, action := app.workingFileAction(app.currentRow.kind, app.files[index])
 					if column.GetTitle() == "Stage or Unstage" && stageIcon != "" {
 						text = map[string]string{"stage": "Stage " + app.files[index].path, "unstage": "Unstage " + app.files[index].path, "stage-warning": "Conflict markers remain; stage " + app.files[index].path + " anyway"}[action]

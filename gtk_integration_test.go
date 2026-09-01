@@ -952,6 +952,19 @@ func TestGTKChangedFileSearchAndTreeView(t *testing.T) {
 	if stageIcon != "list-add-symbolic" {
 		t.Fatalf("resolved conflict did not expose Stage: %q", stageIcon)
 	}
+	app.currentRow, app.files = &historyRow{kind: "unstaged"}, []changedFile{{status: "M", path: "docs/first.txt"}, {status: "??", path: "docs/second.txt"}}
+	app.refreshFileView("")
+	directoryIter, found := app.fileTreeStore.GetIterFirst()
+	directoryIndexValue, indexErr := app.fileTreeStore.GetValue(directoryIter, fileIndexColumn)
+	directoryStageValue, stageErr := app.fileTreeStore.GetValue(directoryIter, fileStageIconColumn)
+	directoryUndoValue, undoErr := app.fileTreeStore.GetValue(directoryIter, fileUndoIconColumn)
+	directoryIndex, valueErr := directoryIndexValue.GoValue()
+	directoryStageIcon, _ := directoryStageValue.GetString()
+	directoryUndoIcon, _ := directoryUndoValue.GetString()
+	index, valid := directoryIndex.(int)
+	if !found || indexErr != nil || stageErr != nil || undoErr != nil || valueErr != nil || !valid || len(app.fileDirectoryFiles[index]) != 2 || directoryStageIcon != "list-add-symbolic" || directoryUndoIcon != "edit-undo-symbolic" {
+		t.Fatalf("directory actions are incomplete: found=%v index=%v members=%v icons=%q/%q errors=%v/%v/%v/%v", found, directoryIndex, app.fileDirectoryFiles[index], directoryStageIcon, directoryUndoIcon, indexErr, stageErr, undoErr, valueErr)
+	}
 }
 
 func TestGTKWorkingFileStageActions(t *testing.T) {
@@ -989,7 +1002,7 @@ func TestGTKWorkingFileStageActions(t *testing.T) {
 		t.Fatalf("unstaged row actions are incomplete: found=%v index=%d icons=%q/%q activatable=%v/%v focused=%q errors=%v/%v", found, index, stageIcon, undoIcon, app.fileStageRenderer.IsActivatable(), app.fileUndoRenderer.IsActivatable(), focusedTitle, stageErr, undoErr)
 	}
 
-	app.changeWorkingFile(index, false)
+	app.changeWorkingFiles([]int{index}, false)
 	iterateGTKUntil(t, 3*time.Second, func() bool {
 		return app.historyCancel == nil && app.selectionCancel == nil && app.currentRow != nil && app.currentRow.kind == "unstaged" && app.currentFile != nil && app.currentFile.path == nextPath && app.fileView.IsFocus()
 	})
@@ -1011,7 +1024,7 @@ func TestGTKWorkingFileStageActions(t *testing.T) {
 		t.Fatal("Staged file list retained an empty Undo column")
 	}
 	historyGeneration := app.historyGeneration
-	app.changeWorkingFile(0, false)
+	app.changeWorkingFiles([]int{0}, false)
 	iterateGTKUntil(t, 3*time.Second, func() bool {
 		return app.historyGeneration > historyGeneration && app.historyCancel == nil && app.selectionCancel == nil
 	})
@@ -1035,7 +1048,7 @@ func TestGTKWorkingFileStageActions(t *testing.T) {
 		}
 		return false
 	})
-	app.changeWorkingFile(undoIndex, true)
+	app.changeWorkingFiles([]int{undoIndex}, true)
 	after, err := os.ReadFile(filepath.Join(path, app.files[undoIndex].path))
 	if err != nil || !dialogShown || string(after) != string(before) {
 		t.Fatalf("Undo did not require cancelable confirmation: shown=%v changed=%v err=%v", dialogShown, string(after) != string(before), err)
