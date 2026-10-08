@@ -893,6 +893,37 @@ func (repo *repository) diffForViewContext(ctx context.Context, row historyRow, 
 	if err != nil {
 		return "", err
 	}
+	// Including a copy source can also emit its own changes or other copies.
+	// Keep only the section whose destination is the selected file.
+	if file.oldPath != "" {
+		var selected strings.Builder
+		for index, section := range strings.Split(output, "\ndiff --git ") {
+			if index > 0 {
+				section = "diff --git " + section
+			}
+			for _, line := range strings.Split(section, "\n") {
+				if strings.HasPrefix(line, "@@") {
+					break
+				}
+				path, found := strings.CutPrefix(line, "copy to ")
+				if !found {
+					path, found = strings.CutPrefix(line, "rename to ")
+				}
+				if !found {
+					continue
+				}
+				if decoded, decodeErr := strconv.Unquote(path); decodeErr == nil {
+					path = decoded
+				}
+				if path == file.path {
+					selected.WriteString(section)
+					selected.WriteByte('\n')
+					break
+				}
+			}
+		}
+		output = selected.String()
+	}
 	if truncated {
 		output += fmt.Sprintf("\n\n[Diff truncated at %d MiB]\n", diffOutputLimit/1024/1024)
 	}

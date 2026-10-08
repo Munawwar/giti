@@ -344,6 +344,10 @@ func displayLines(patch string) []displayLine {
 	lines := make([]displayLine, 0)
 	inHeader, prefixWidth, oldLine, newLine := true, 1, 0, 0
 	for _, line := range splitAfterLines(patch) {
+		if strings.HasPrefix(line, "diff --") {
+			inHeader, prefixWidth, oldLine, newLine = true, 1, 0, 0
+			continue
+		}
 		hunk := strings.HasPrefix(line, "@@")
 		if hunk {
 			inHeader = false
@@ -363,7 +367,7 @@ func displayLines(patch string) []displayLine {
 					newLine = start
 				}
 			}
-		} else if inHeader && (strings.HasPrefix(line, "diff --") || strings.HasPrefix(line, "index ") ||
+		} else if inHeader && (strings.HasPrefix(line, "index ") ||
 			strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ")) {
 			continue
 		}

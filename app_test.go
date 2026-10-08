@@ -35,6 +35,13 @@ func TestDisplayLines(t *testing.T) {
 		}
 	}
 	{
+		lines := displayLines("@@ -1 +1 @@\n-old\n+new\ndiff --git a/source b/copy\nsimilarity index 50%\ncopy from source\ncopy to copy\nindex 123..456 100644\n--- a/source\n+++ b/copy\n@@ -20 +30 @@\n-before\n+after\n")
+		if len(lines) != 9 || lines[3].text != "similarity index 50%\n" || lines[3].old != 0 || lines[3].new != 0 || lines[7].old != 20 || lines[8].new != 30 {
+			t.Fatalf("multiple diff sections parsed incorrectly: %#v", lines)
+		}
+	}
+
+	{
 		lines := displayLines("@@ -10,3 +20,2 @@\n context before\n-deleted\n context after\n")
 		want := [][2]int{{0, 0}, {10, 20}, {11, 0}, {12, 21}}
 		if len(lines) != len(want) {

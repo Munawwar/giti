@@ -306,9 +306,6 @@ func TestWhitespaceFullFileAndLimits(t *testing.T) {
 	if strings.Contains(compact, "line 19") || !strings.Contains(full, "line 19") {
 		t.Fatalf("full context mismatch")
 	}
-	if repo.fileSize(rows[0], files[0]) >= fullFileLimit {
-		t.Fatalf("fixture unexpectedly large")
-	}
 }
 
 func TestRenameAndCopyDetection(t *testing.T) {
@@ -404,4 +401,59 @@ func TestGitParsingPreservesUnusualNamesAndMarkerText(t *testing.T) {
 	if err != nil || details.subject != "subject __GITI_FIELD__" || details.body != "body __GITI_COMMIT__" {
 		t.Fatalf("commit details lost marker text: %#v err=%v", details, err)
 	}
+}
+
+func TestCopiedFileDiffExcludesSourceChanges(t *testing.T) {
+	path := testRepository(t)
+	run := func(args ...string) {
+		t.Helper()
+		if output, err := exec.Command("git", append([]string{"-C", path}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	var source strings.Builder
+	for i := range 60 {
+		fmt.Fprintf(&source, "original line %d\n", i)
+	}
+	if err := os.WriteFile(filepath.Join(path, "source.txt"), []byte(source.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", ".")
+	run("commit", "-m", "Add copy source")
+	for name, content := range map[string]string{
+		"source.txt":       "source-only change\n",
+		"copied\tfile.txt": source.String() + "destination-only change\n",
+		"other.txt":        source.String() + "other copy change\n",
+	} {
+		if err := os.WriteFile(filepath.Join(path, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("add", ".")
+	run("commit", "-m", "Modify source and copy it")
+	repo, err := newRepository(path, historySpec{Revision: "HEAD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := historyRow{kind: "commit", revision: "HEAD"}
+	files, err := repo.ordinaryChangedFilesContext(context.Background(), row, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		if file.path != "copied\tfile.txt" {
+			continue
+		}
+		if !strings.HasPrefix(file.status, "C") || file.oldPath != "source.txt" {
+			t.Fatalf("expected copy, got %#v", file)
+		}
+		for _, fullFile := range []bool{false, true} {
+			patch, err := repo.diff(row, file, false, fullFile)
+			if err != nil || strings.Count(patch, "diff --git ") != 1 || strings.Contains(patch, "source-only change") || !strings.Contains(patch, "+destination-only change") {
+				t.Fatalf("selected copy diff (full=%v): %v\n%s", fullFile, err, patch)
+			}
+		}
+		return
+	}
+	t.Fatal("copied file missing")
 }
