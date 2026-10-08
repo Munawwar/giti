@@ -694,6 +694,8 @@ func (app *giti) onHistorySelected() {
 		previousPath = app.currentFile.path
 	}
 	app.currentRow, app.currentFile, app.files, app.diffLoaded = &app.historyRows[index], nil, nil, false
+	app.review, app.reviewPath = nil, ""
+	app.updateReviewUI()
 	app.fileStore.Clear()
 	app.fileTreeStore.Clear()
 	clear(app.fileExpandedSubtrees)
@@ -709,6 +711,7 @@ func (app *giti) onHistorySelected() {
 			details, detailsErr = repo.commitDetailsContext(ctx, row.revision)
 		}
 		files, loadErr := repo.changedFilesForViewContext(ctx, row, ignoreWhitespace, mergeResolution)
+		review, reviewPath, reviewErr := loadCommitReview(repo, row, mergeResolution)
 		addMainSource(0, func() bool {
 			if ctx.Err() != nil || generation != app.selectionGeneration || repo != app.repository {
 				return false
@@ -721,6 +724,11 @@ func (app *giti) onHistorySelected() {
 			if loadErr != nil {
 				app.showError(loadErr)
 				return false
+			}
+			if reviewErr != nil {
+				app.showError(fmt.Errorf("load review: %w", reviewErr))
+			} else {
+				app.review, app.reviewPath = review, reviewPath
 			}
 			// Untracked files are a distinct state: they count toward the file summary
 			// but cannot contribute reliable line totals until Git tracks them.
@@ -767,6 +775,7 @@ func (app *giti) onHistorySelected() {
 			// Replace the model only after its summary and header agree with the same
 			// result, then restore the previous path when it is still present.
 			app.files = files
+			app.updateReviewUI()
 			if len(files) == 0 {
 				return false
 			}

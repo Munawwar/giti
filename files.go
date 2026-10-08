@@ -28,6 +28,7 @@ func (app *giti) refreshFileView(preferredPath string) {
 	}
 	app.fileStageColumn.SetVisible(kind == "unstaged" || kind == "staged" || kind == "conflict" || kind == "resolved")
 	app.fileUndoColumn.SetVisible(kind == "unstaged")
+	app.reviewColumn.SetVisible(app.review != nil)
 	commonPrefix := ""
 	if !treeMode && len(app.files) > 1 {
 		parts := strings.Split(app.files[0].path, "/")
@@ -163,7 +164,7 @@ func (app *giti) refreshFileView(preferredPath string) {
 		label := status + " " + displayPath
 
 		flatIter := app.fileStore.Append()
-		app.fileStore.Set(flatIter, []int{fileLabelColumn, fileStatColumn, fileIndexColumn, fileTooltipColumn, fileStageIconColumn, fileUndoIconColumn}, []any{label, stat, fileIndex, tooltip, stageIcon, undoIcon})
+		app.fileStore.Set(flatIter, []int{fileLabelColumn, fileStatColumn, fileIndexColumn, fileTooltipColumn, fileStageIconColumn, fileUndoIconColumn, fileReviewVisibleColumn}, []any{label, stat, fileIndex, tooltip, stageIcon, undoIcon, app.review != nil})
 		path, _ := app.fileStore.GetPath(flatIter)
 		if treeMode {
 			parts, parent, directoryPath := strings.Split(file.path, "/"), (*gtk.TreeIter)(nil), ""
@@ -223,6 +224,7 @@ func (app *giti) refreshFileView(preferredPath string) {
 			}
 			iter := app.fileTreeStore.Append(parent)
 			app.fileTreeStore.SetValue(iter, fileLabelColumn, status+" "+html.EscapeString(name))
+			app.fileTreeStore.SetValue(iter, fileReviewVisibleColumn, app.review != nil)
 			app.fileTreeStore.SetValue(iter, fileStatColumn, stat)
 			app.fileTreeStore.SetValue(iter, fileIndexColumn, fileIndex)
 			app.fileTreeStore.SetValue(iter, fileTooltipColumn, tooltip)
@@ -248,6 +250,7 @@ func (app *giti) refreshFileView(preferredPath string) {
 		selection.SelectPath(targetPath)
 		app.fileView.ScrollToCell(targetPath, nil, false, 0, 0)
 	}
+	app.updateReviewUI()
 }
 
 func (app *giti) workingFileAction(kind string, file changedFile) (stageIcon, undoIcon, action string) {
@@ -471,6 +474,7 @@ func (app *giti) onFileSelected() {
 	file := &app.files[index]
 	app.rememberDiffScroll()
 	app.currentFile = file
+	app.showDiffPage()
 	app.diffLoaded = false
 	app.fullFileToggle.SetSensitive(false)
 	app.clearDiff()
@@ -518,6 +522,7 @@ func (app *giti) onFileSelected() {
 			}
 			app.setDiff(patch)
 			app.diffLoaded = true
+			app.updateReviewUI()
 			addMainSource(0, func() bool {
 				if generation == app.diffGeneration && selectionGeneration == app.selectionGeneration {
 					horizontal, vertical := app.diffScroller.GetHAdjustment(), app.diffScroller.GetVAdjustment()
@@ -576,6 +581,7 @@ func (app *giti) buildFilePane() *gtk.Box {
 				return true
 			}
 			if index >= 0 {
+				app.showDiffPage()
 				if column != nil && column.GetTitle() == "Changes" {
 					app.fileView.SetCursor(path, app.fileColumn, false)
 					return true
@@ -677,6 +683,12 @@ func (app *giti) buildFilePane() *gtk.Box {
 			return true
 		} else if ok && index >= 0 && (column.GetTitle() == "Stage or Unstage" || column.GetTitle() == "Undo") {
 			app.changeWorkingFiles([]int{index}, column.GetTitle() == "Undo")
+			return true
+		} else if ok && index >= 0 && key == gdk.KEY_space && app.review != nil {
+			app.toggleFileReviewed(app.files[index].path)
+			return true
+		} else if ok && index >= 0 && column.GetTitle() == "Files" {
+			app.showDiffPage()
 			return true
 		}
 		return false
@@ -788,6 +800,26 @@ func (app *giti) buildFilePane() *gtk.Box {
 	fileColumn.SetExpand(true)
 	app.fileView.AppendColumn(fileColumn)
 	app.fileColumn = fileColumn
+	reviewRenderer := must(gtk.CellRendererToggleNew())
+	app.reviewColumn = must(gtk.TreeViewColumnNewWithAttribute("Reviewed", reviewRenderer, "active", fileReviewedColumn))
+	app.reviewColumn.AddAttribute(reviewRenderer, "inconsistent", filePartialColumn)
+	app.reviewColumn.AddAttribute(reviewRenderer, "visible", fileReviewVisibleColumn)
+	app.fileView.InsertColumn(app.reviewColumn, 0)
+	app.reviewColumn.SetVisible(false)
+	reviewRenderer.Connect("toggled", func(_ *gtk.CellRendererToggle, pathString string) {
+		iter, err := app.fileModel.GetIterFromString(pathString)
+		if err != nil || app.review == nil {
+			return
+		}
+		value, err := app.fileModel.GetValue(iter, fileIndexColumn)
+		if err != nil {
+			return
+		}
+		raw, _ := value.GoValue()
+		if index, ok := raw.(int); ok && index >= 0 && index < len(app.files) {
+			app.toggleFileReviewed(app.files[index].path)
+		}
+	})
 	statRenderer := must(gtk.CellRendererTextNew())
 	statRenderer.SetProperty("xalign", 1.0)
 	statColumn := must(gtk.TreeViewColumnNewWithAttribute("Changes", statRenderer, "markup", 1))
@@ -886,6 +918,12 @@ func (app *giti) buildFilePane() *gtk.Box {
 	fileHeader.PackEnd(fileViewButtons, false, false, 8)
 	fileHeader.PackEnd(app.fileSearchToggle, false, false, 0)
 	fileBox.PackStart(fileHeader, false, false, 0)
+	app.reviewSelector = must(gtk.ButtonNewWithLabel("Review notes"))
+	app.reviewSelector.SetNoShowAll(true)
+	app.reviewSelector.SetTooltipText("Read, edit, and export comments for this commit")
+	app.reviewSelector.Connect("clicked", app.showReviewNotes)
+	app.reviewSelector.ShowAll()
+	fileBox.PackStart(app.reviewSelector, false, false, 0)
 	app.fileSearchReveal = must(gtk.RevealerNew())
 	app.fileSearchReveal.SetTransitionType(gtk.REVEALER_TRANSITION_TYPE_SLIDE_DOWN)
 	app.fileSearchReveal.SetTransitionDuration(120)

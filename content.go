@@ -207,6 +207,7 @@ func (app *giti) setCommitHeader(details commitDetails) {
 func (app *giti) showDiffPage() {
 	if app.diffStack != nil {
 		app.diffStack.SetVisibleChildName("diff")
+		app.updateReviewUI()
 	}
 }
 
@@ -275,6 +276,7 @@ func (app *giti) showReferences(branches, tags []string) {
 func (app *giti) setDiff(patch string) {
 	app.diffBuffer.SetText("")
 	lines := displayLines(patch)
+	app.reviewLines = lines
 	app.overviewMarkers, app.overviewLines = app.overviewMarkers[:0], len(lines)
 	if cap(app.diffLineNumbers) < len(lines) {
 		app.diffLineNumbers = make([]diffLineNumber, len(lines))
@@ -321,13 +323,18 @@ func (app *giti) setDiff(patch string) {
 	app.diffOverviewReveal.SetRevealChild(app.fullFileToggle.GetActive() && len(app.overviewMarkers) > 0)
 	app.diffOverview.QueueDraw()
 	app.updateDiffFind()
+	app.updateReviewUI()
 }
 
 func (app *giti) clearDiff() {
 	app.diffBuffer.SetText("")
+	app.reviewLines = nil
+	app.reviewSelectionAnchor = -1
+	app.diffContextLine = -1
 	app.diffLineNumbers = app.diffLineNumbers[:0]
 	app.diffGutter.Hide()
 	app.updateDiffFind()
+	app.updateReviewUI()
 }
 
 type overviewMarker struct {
@@ -618,6 +625,27 @@ func (app *giti) buildDiffGutter() {
 	app.diffGutter.SetVExpand(true)
 	app.diffGutter.SetTooltipText("Old and new file line numbers")
 	setAccessibility(&app.diffGutter.Widget, "Diff line numbers", "Old or first-parent line numbers followed by resulting-file line numbers")
+	app.diffGutter.AddEvents(int(gdk.BUTTON_PRESS_MASK))
+	app.diffGutter.Connect("button-press-event", func(_ *gtk.DrawingArea, event *gdk.Event) bool {
+		button := gdk.EventButtonNewFromEvent(event)
+		if app.review == nil || !app.diffLoaded || button.Button() != gdk.BUTTON_PRIMARY {
+			return false
+		}
+		y := int(button.Y()) + app.diffView.GetVisibleRect().GetY()
+		iter := app.diffView.GetIterAtLocation(0, y)
+		lineY, height := app.diffView.GetLineYrange(iter)
+		line := iter.GetLine()
+		if y < lineY || y >= lineY+height || line >= len(app.reviewLines) {
+			return false
+		}
+		if button.State()&uint(gdk.SHIFT_MASK) == 0 || app.reviewSelectionAnchor < 0 {
+			app.reviewSelectionAnchor = line
+		}
+		first, last := min(line, app.reviewSelectionAnchor), max(line, app.reviewSelectionAnchor)
+		app.diffBuffer.SelectRange(app.diffBuffer.GetIterAtLine(first), app.diffBuffer.GetIterAtLine(last+1))
+		app.diffView.GrabFocus()
+		return true
+	})
 	app.diffGutter.Connect("draw", func(_ *gtk.DrawingArea, context *cairo.Context) bool {
 		width, height := app.diffGutter.GetAllocatedWidth(), app.diffGutter.GetAllocatedHeight()
 		context.SetSourceRGB(.965, .97, .975)
@@ -785,6 +813,10 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.diffBuffer.CreateTag("added", map[string]any{"background": "#d7f5dd", "foreground": "#174d22"})
 	app.diffBuffer.CreateTag("removed", map[string]any{"background": "#f9d7d9", "foreground": "#682126"})
 	app.diffBuffer.CreateTag("hunk", map[string]any{"paragraph-background": "#eef0f2", "foreground": "#4b5563"})
+	app.diffBuffer.CreateTag("reviewed-added", map[string]any{"background": "#e7ece8", "paragraph-background": "#e7ece8"})
+	app.diffBuffer.CreateTag("reviewed-removed", map[string]any{"background": "#eee7e8", "paragraph-background": "#eee7e8"})
+	app.diffBuffer.CreateTag("reviewed-context", map[string]any{"paragraph-background": "#edf0ef"})
+	app.diffBuffer.CreateTag("review-comment", map[string]any{"underline": pango.UNDERLINE_SINGLE})
 	app.diffBuffer.CreateTag(diffFindTag, map[string]any{"background": "#fff2a8"})
 	app.diffBuffer.CreateTag(diffFindCurrentTag, map[string]any{"background": "#f6bd4f", "foreground": "#2d2100"})
 	app.diffView = must(gtk.TextViewNewWithBuffer(app.diffBuffer))
@@ -868,6 +900,7 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.diffStack = must(gtk.StackNew())
 	app.diffStack.AddNamed(app.buildDiffFind(diffPage), "diff")
 	app.diffStack.AddNamed(scroller(app.referencesPage), "references")
+	diffBox.PackStart(app.buildReviewControls(), false, false, 0)
 	diffBox.PackStart(app.diffStack, true, true, 0)
 	return diffBox
 }
@@ -898,6 +931,7 @@ func (app *giti) populateDiffMenu(menuWidget *gtk.Widget) (*gtk.MenuItem, *gtk.C
 	selectAll := must(gtk.MenuItemNewWithLabel("Select All"))
 	selectAll.Connect("activate", func() { app.diffBuffer.SelectRange(app.diffBuffer.GetBounds()) })
 	menu.Append(selectAll)
+	app.populateReviewMenu(menu)
 	menu.Append(must(gtk.SeparatorMenuItemNew()))
 	lineNumbers := must(gtk.CheckMenuItemNewWithLabel("Show line numbers"))
 	fullFile := app.fullFileToggle.GetActive()

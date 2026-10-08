@@ -81,6 +81,18 @@ Enable **Show full file** to expand the selected diff with the unchanged surroun
 
 Rendered patches are capped at 8 MiB. Giti terminates larger diff output and shows a truncation notice instead of retaining an unbounded patch in memory. Hiding the resident window also releases its history, file list, and diff contents.
 
+### Review a commit
+
+Select a commit to review its files and individual lines. Use the checkbox beside a file or **Mark reviewed** in the file header to mark the whole file. A partially filled checkbox means some lines have been reviewed; explicitly marking the file completes its review, including changes hidden by the whitespace filter. Click a checked file again to clear its review marks.
+
+Select text across lines, then right-click to mark those lines reviewed or unreviewed, or add a line comment. With line numbers enabled, click a line number and Shift-click another to select a range. Right-click within a hunk and choose **Select hunk** to select its lines. Reviewed additions and removals retain their signs and text colors but use muted green and red backgrounds. Commented lines are underlined.
+
+Use **Add comment** in the file header for a file-wide note. **Review notes** above the file selector opens the saved notes, with actions to edit or delete comments and **Export Markdown…** to save a report at a location you choose. Selecting a file returns to its diff.
+
+Reviews save automatically under `$XDG_DATA_HOME/giti/reviews` (normally `~/.local/share/giti/reviews`). They are durable notes, separate from temporary caches. A review belongs to the repository, full commit SHA, and comparison view: combined merge resolution and full first-parent diffs have independent reviews. Amending a commit starts a new review. Staged and unstaged rows do not offer review controls.
+
+The planned AI helper is described in [the feature plan](docs/review-plan.md).
+
 ### Cold start improvement with a background process
 
 The first normal invocation starts the sole resident as a detached background

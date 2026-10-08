@@ -41,6 +41,7 @@ func newGTKIntegrationApp(t *testing.T) (string, *giti) {
 	runtime.LockOSThread()
 	t.Cleanup(runtime.UnlockOSThread)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	path := testRepository(t)
 	if err := os.WriteFile(filepath.Join(path, "first.txt"), []byte("one"+strings.Repeat("x", 400)+"\n"+strings.Repeat("more\n", 200)), 0o644); err != nil {
 		t.Fatal(err)
@@ -953,6 +954,7 @@ func TestGTKChangedFileSearchAndTreeView(t *testing.T) {
 		t.Fatalf("resolved conflict did not expose Stage: %q", stageIcon)
 	}
 	app.currentRow, app.files = &historyRow{kind: "unstaged"}, []changedFile{{status: "M", path: "docs/first.txt"}, {status: "??", path: "docs/second.txt"}}
+	app.fileTreeToggle.SetActive(true)
 	app.refreshFileView("")
 	directoryIter, found := app.fileTreeStore.GetIterFirst()
 	directoryIndexValue, indexErr := app.fileTreeStore.GetValue(directoryIter, fileIndexColumn)
@@ -1275,5 +1277,149 @@ func TestGTKGraphTextScaling(t *testing.T) {
 	}
 	if err != nil || !ok || height <= graphRowHeight || pixbufHeight != height {
 		t.Fatalf("scaled graph does not fill its GTK row: cell=%d pixbuf=%T/%d err=%v", height, rendered, pixbufHeight, err)
+	}
+}
+
+func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
+	_, app := newGTKIntegrationApp(t)
+	if !app.selectHistoryRevision(app.repository.revision) {
+		t.Fatal("top commit not selectable")
+	}
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.diffLoaded && app.review != nil })
+	if !app.reviewBar.GetVisible() || !app.reviewFileButton.GetVisible() || !app.reviewColumn.GetVisible() {
+		t.Fatal("commit review controls are hidden")
+	}
+	var added, removed, hunk int = -1, -1, -1
+	for index, line := range app.reviewLines {
+		switch line.tag {
+		case "added":
+			added = index
+		case "removed":
+			removed = index
+		case "hunk":
+			hunk = index
+		}
+	}
+	if added < 0 || removed < 0 || hunk < 0 {
+		t.Fatalf("expected a changed-line fixture: %#v", app.reviewLines)
+	}
+	app.diffContextLine = added
+	app.diffBuffer.SelectRange(app.diffBuffer.GetIterAtLine(added), app.diffBuffer.GetIterAtLine(added+1))
+	menu := must(gtk.MenuNew())
+	app.populateReviewMenu(menu)
+	items := menu.GetChildren()
+	items.Foreach(func(raw any) {
+		widget := raw.(*gtk.Widget)
+		cast, _ := widget.Cast()
+		if item, ok := cast.(*gtk.MenuItem); ok {
+			label := item.GetLabel()
+			if label == "Mark selected lines reviewed" {
+				item.Activate()
+			}
+		}
+	})
+	items.Free()
+	menu.Destroy()
+	reviewedTag, _ := must(app.diffBuffer.GetTagTable()).Lookup("reviewed-added")
+	removedTag, _ := must(app.diffBuffer.GetTagTable()).Lookup("reviewed-removed")
+	if !app.diffBuffer.GetIterAtLine(added).HasTag(reviewedTag) || app.diffBuffer.GetIterAtLine(removed).HasTag(removedTag) {
+		t.Fatal("selected line review affected the wrong lines")
+	}
+	complete, partial := app.review.Files[app.currentFile.path].status()
+	if complete || !partial {
+		t.Fatal("line review did not produce partial file state")
+	}
+	answerDialog := func(text string, response gtk.ResponseType) {
+		t.Helper()
+		addMainSource(0, func() bool {
+			windows := gtk.WindowListToplevels()
+			// This API installs a finalizer; disable it before freeing the list explicitly.
+			runtime.SetFinalizer(windows, nil)
+			defer windows.Free()
+			windows.Foreach(func(raw any) {
+				window := raw.(*gtk.Window)
+				title, _ := window.GetTitle()
+				if !strings.HasPrefix(title, "File comment — ") && !strings.HasPrefix(title, "Comment on ") {
+					return
+				}
+				cast, _ := window.Cast()
+				dialog := cast.(*gtk.Dialog)
+				area := must(dialog.GetContentArea())
+				children := area.GetChildren()
+				children.Foreach(func(raw any) {
+					cast, _ := raw.(*gtk.Widget).Cast()
+					if pane, ok := cast.(*gtk.ScrolledWindow); ok {
+						child := must(pane.GetChild())
+						if view, ok := child.(*gtk.TextView); ok && view.GetEditable() {
+							must(view.GetBuffer()).SetText(text)
+						}
+					}
+				})
+				children.Free()
+				dialog.Response(response)
+			})
+			return false
+		})
+	}
+	answerDialog("Should the new value be configurable?", gtk.RESPONSE_OK)
+	app.editReviewComment(app.currentFile.path, reviewComment{Lines: app.selectedReviewLines()})
+	answerDialog("File-wide question", gtk.RESPONSE_OK)
+	app.reviewCommentButton.Clicked()
+	file := app.review.Files[app.currentFile.path]
+	if len(file.Comments) != 2 || len(file.Comments[0].Lines) != 1 || file.Comments[0].Lines[0].New != 1 || len(file.Comments[1].Lines) != 0 {
+		t.Fatalf("line/file comments lost anchors: %#v", file.Comments)
+	}
+	answerDialog("Updated question", gtk.RESPONSE_OK)
+	app.editReviewComment(app.currentFile.path, file.Comments[0])
+	file = app.review.Files[app.currentFile.path]
+	if file.Comments[0].Text != "Updated question" {
+		t.Fatal("comment was not edited")
+	}
+	app.reviewFileButton.Clicked()
+	if complete, _ := app.review.Files[app.currentFile.path].status(); !complete {
+		t.Fatal("file header did not mark the whole file reviewed")
+	}
+	app.reviewSelector.Clicked()
+	if app.diffStack.GetVisibleChildName() != "review-notes" || app.reviewBar.GetVisible() {
+		t.Fatal("notes did not open separately from the diff")
+	}
+	app.onFileSelected()
+	iterateGTKUntil(t, 2*time.Second, func() bool { return app.diffLoaded })
+	if app.diffStack.GetVisibleChildName() != "diff" || !app.diffBuffer.GetIterAtLine(removed).HasTag(removedTag) {
+		t.Fatal("returning to the diff lost review marks")
+	}
+	app.diffContextLine = added
+	app.diffBuffer.SelectRange(app.diffBuffer.GetIterAtLine(added), app.diffBuffer.GetIterAtLine(added))
+	menu = must(gtk.MenuNew())
+	app.populateReviewMenu(menu)
+	items = menu.GetChildren()
+	items.Foreach(func(raw any) {
+		cast, _ := raw.(*gtk.Widget).Cast()
+		if item, ok := cast.(*gtk.MenuItem); ok {
+			label := item.GetLabel()
+			if label == "Select hunk" {
+				item.Activate()
+			}
+		}
+	})
+	items.Free()
+	menu.Destroy()
+	start, end, selected := app.diffBuffer.GetSelectionBounds()
+	if !selected || start.GetLine() != hunk+1 || end.GetLine() != len(app.reviewLines) {
+		t.Fatalf("hunk shortcut selected wrong lines: %d:%d", start.GetLine(), end.GetLine())
+	}
+	app.markReviewLines(app.selectedReviewLines(), false)
+	if complete, partial := app.review.Files[app.currentFile.path].status(); complete || !partial {
+		t.Fatal("unmarking a range in a reviewed file lost partial status")
+	}
+	answerDialog("", gtk.RESPONSE_REJECT)
+	app.editReviewComment(app.currentFile.path, app.review.Files[app.currentFile.path].Comments[1])
+	path, savedPath, revision := app.currentFile.path, app.reviewPath, app.review.Commit
+	app.openRepository(app.repository.path, historySpec{Revision: revision})
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil })
+	app.selectHistoryRevision(revision)
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.diffLoaded && app.review != nil && app.currentRow.kind == "commit" })
+	if app.reviewPath != savedPath || len(app.review.Files[path].Comments) != 1 || app.review.Files[path].Comments[0].Text != "Updated question" {
+		t.Fatalf("reopening lost review notes: %#v", app.review)
 	}
 }

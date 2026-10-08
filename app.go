@@ -43,6 +43,9 @@ const (
 	fileTooltipColumn
 	fileStageIconColumn
 	fileUndoIconColumn
+	fileReviewedColumn
+	filePartialColumn
+	fileReviewVisibleColumn
 )
 
 //go:embed logo/giti-logo.png
@@ -234,6 +237,17 @@ type giti struct {
 	fileVisible                []int
 	currentRow                 *historyRow
 	currentFile                *changedFile
+	review                     *commitReview
+	reviewPath                 string
+	reviewLines                []displayLine
+	reviewSelectionAnchor      int
+	reviewBar                  *gtk.Box
+	reviewFileLabel            *gtk.Label
+	reviewFileButton           *gtk.Button
+	reviewCommentButton        *gtk.Button
+	reviewSelector             *gtk.Button
+	reviewColumn               *gtk.TreeViewColumn
+	reviewNotes                *gtk.Box
 	historyTargetKind          string
 	fileTargetPath             string
 	window                     *gtk.Window
@@ -468,7 +482,7 @@ func newGiti(repo *repository, resident bool, applications ...*gtk.Application) 
 		}
 	}
 	app.historyStore = must(gtk.ListStoreNew(gdk.PixbufGetType(), glib.TYPE_STRING, glib.TYPE_STRING))
-	fileColumns := []glib.Type{glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_INT, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING}
+	fileColumns := []glib.Type{glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_INT, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_BOOLEAN, glib.TYPE_BOOLEAN, glib.TYPE_BOOLEAN}
 	app.fileStore = must(gtk.ListStoreNew(fileColumns...))
 	app.fileTreeStore = must(gtk.TreeStoreNew(fileColumns...))
 	app.fileModel = &app.fileStore.TreeModel
@@ -747,6 +761,8 @@ func (app *giti) clearRepositoryView() {
 	app.searchViewingResult = false
 	app.diffScroll = make(map[string]scrollPosition)
 	app.currentRow, app.currentFile, app.historyTargetKind, app.fileTargetPath, app.diffLoaded = nil, nil, "", "", false
+	app.review, app.reviewPath = nil, ""
+	app.updateReviewUI()
 	app.setSearchBusy(false)
 	app.historySearch.SetText("")
 	app.searchBack.Hide()
