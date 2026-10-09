@@ -43,9 +43,7 @@ const (
 	fileTooltipColumn
 	fileStageIconColumn
 	fileUndoIconColumn
-	fileReviewedColumn
-	filePartialColumn
-	fileReviewVisibleColumn
+	fileReviewMarkColumn
 )
 
 //go:embed logo/giti-logo.png
@@ -114,6 +112,25 @@ button.giti-parent-button:hover > label {
 }
 button.giti-parent-button:focus {
   box-shadow: 0 0 0 2px #e95420;
+}
+button.giti-review-secondary, button.giti-review-primary {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: #6b7280;
+  font-weight: bold;
+  min-height: 0;
+  min-width: 0;
+  padding: 3px 6px;
+}
+button.giti-review-secondary:hover {
+  color: #374151;
+}
+button.giti-review-secondary:disabled {
+  color: #9ca3af;
+}
+button.giti-review-primary {
+  color: #174d22;
 }
 .giti-flat-button {
   background-color: transparent;
@@ -241,9 +258,15 @@ type giti struct {
 	reviewPath                 string
 	reviewLines                []displayLine
 	reviewSelectionAnchor      int
-	reviewBar                  *gtk.Box
-	reviewFileLabel            *gtk.Label
-	reviewFileButton           *gtk.Button
+	reviewActive               bool
+	reviewFiles                []changedFile
+	reviewActions              *gtk.Box
+	reviewProgress             *gtk.Label
+	reviewFileProgress         *gtk.Label
+	reviewButton               *gtk.Button
+	reviewPauseButton          *gtk.Button
+	headerMetaStack            *gtk.Stack
+	headerAuthor               *gtk.Label
 	reviewCommentButton        *gtk.Button
 	reviewSelector             *gtk.Button
 	reviewColumn               *gtk.TreeViewColumn
@@ -284,6 +307,7 @@ type giti struct {
 	fileStageRenderer          *gtk.CellRendererPixbuf
 	fileUndoRenderer           *gtk.CellRendererPixbuf
 	fileDirectoryFiles         map[int][]int
+	fileDirectoryReviewPaths   map[int]string
 	normalizingFileCursor      bool
 	fileExpandedSubtrees       map[string][]string
 	mainPane, repositoryPane   *gtk.Paned
@@ -482,7 +506,7 @@ func newGiti(repo *repository, resident bool, applications ...*gtk.Application) 
 		}
 	}
 	app.historyStore = must(gtk.ListStoreNew(gdk.PixbufGetType(), glib.TYPE_STRING, glib.TYPE_STRING))
-	fileColumns := []glib.Type{glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_INT, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_BOOLEAN, glib.TYPE_BOOLEAN, glib.TYPE_BOOLEAN}
+	fileColumns := []glib.Type{glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_INT, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING}
 	app.fileStore = must(gtk.ListStoreNew(fileColumns...))
 	app.fileTreeStore = must(gtk.TreeStoreNew(fileColumns...))
 	app.fileModel = &app.fileStore.TreeModel
@@ -761,7 +785,7 @@ func (app *giti) clearRepositoryView() {
 	app.searchViewingResult = false
 	app.diffScroll = make(map[string]scrollPosition)
 	app.currentRow, app.currentFile, app.historyTargetKind, app.fileTargetPath, app.diffLoaded = nil, nil, "", "", false
-	app.review, app.reviewPath = nil, ""
+	app.review, app.reviewPath, app.reviewFiles, app.reviewActive = nil, "", nil, false
 	app.updateReviewUI()
 	app.setSearchBusy(false)
 	app.historySearch.SetText("")

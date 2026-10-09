@@ -4,10 +4,11 @@ Build review tools into Giti, starting with manual review of a single committed 
 
 ## Manual review
 
-- Mark a whole file reviewed from its header or a checkbox in the file selector. Show partial state for files with line review marks.
+- Enter explicitly through Start Review / Continue Review below Whitespace changes. Replace author details with progress in a fixed-height area; replace the entry button in place with Complete Review, with Pause Review and Add Comment to its left. Completion records status without changing individual marks.
+- Mark a whole file reviewed through its context menu. Reserve a narrow column after the change counts for a plain green tick without a border or background. Partial files leave the column empty. Derive folder ticks recursively from all changed descendants, independently of search and expansion.
 - Select text across lines to mark or unmark those lines and add a comment. Right-click any line within a hunk to select the entire hunk. Hunks are selection shortcuts; stored marks and comments refer to lines.
 - Retain old and new line numbers and exact captured content. Added and removed lines keep their signs. Reviewed additions use muted gray-green; reviewed removals use muted gray-red. Comments have a separate indicator and never imply review completion.
-- Add file comments from the file header and line comments from the selection menu. Provide a review notes view to read, edit, and delete comments.
+- Add file comments from the commit header or file context menu and line comments from the selection menu. Open the review notes view from the progress comment count to read, edit, and delete comments.
 - Persist marks and comments in durable user application data, outside the AI cache. Save after every action, use atomic writes and serialize competing updates. Failed writes must be visible.
 - Keep merge-resolution and first-parent comparison reviews separate. Full-file context and whitespace toggles do not change the review identity.
 - Export a single Markdown document using a save dialog. Include repository directory, full SHA, comparison, file paths, reviewed status, old/new line numbers, selected added/removed/context content, and comments. Do not silently create files in the repository.

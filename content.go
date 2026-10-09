@@ -55,7 +55,10 @@ func (app *giti) setCommitHeader(details commitDetails) {
 		}
 	}
 	if details.sha == "" {
+		app.headerAuthor.SetText("")
+		app.headerAuthor.SetTooltipText("")
 		app.commitHeader.ShowAll()
+		app.updateReviewUI()
 		return
 	}
 	commitLabel := must(gtk.LabelNew(""))
@@ -69,9 +72,10 @@ func (app *giti) setCommitHeader(details commitDetails) {
 	app.headerCommit.PackStart(commitLabel, false, false, 0)
 	app.headerCommit.PackStart(shaLabel, true, true, 0)
 	app.headerCommit.PackStart(app.copySHAButton(details.sha), false, false, 0)
-	meta := must(gtk.LabelNew(""))
+	meta := app.headerAuthor
+	meta.SetText("")
 	meta.SetXAlign(0)
-	meta.SetLineWrap(true)
+	meta.SetEllipsize(pango.ELLIPSIZE_END)
 	meta.SetSelectable(true)
 	authored := formatCommitTime(details.authored, time.Local, "2 Jan 2006, 15:04 MST")
 	committed := formatCommitTime(details.committed, time.Local, "2 Jan 2006, 15:04 MST")
@@ -84,7 +88,6 @@ func (app *giti) setCommitHeader(details commitDetails) {
 		meta.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Author</b> %s &lt;%s&gt;  ·  %s\n<b>Committer</b> %s &lt;%s&gt;  ·  %s</span>", html.EscapeString(details.author), html.EscapeString(details.authorEmail), html.EscapeString(authored), html.EscapeString(details.committer), html.EscapeString(details.committerEmail), html.EscapeString(committed)))
 		meta.SetTooltipText(fmt.Sprintf("Author: %s\nCommitter: %s", authoredUTC, committedUTC))
 	}
-	app.headerDetails.PackStart(meta, false, false, 0)
 	if len(details.branches) > 0 || len(details.tags) > 0 {
 		refs := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 6))
 		// Reference badges are buttons because their visible text may be shortened;
@@ -202,12 +205,15 @@ func (app *giti) setCommitHeader(details commitDetails) {
 		app.headerDetails.PackStart(expander, false, false, 4)
 	}
 	app.commitHeader.ShowAll()
+	app.updateReviewUI()
 }
 
 func (app *giti) showDiffPage() {
 	if app.diffStack != nil {
 		app.diffStack.SetVisibleChildName("diff")
-		app.updateReviewUI()
+		if app.reviewCommentButton != nil {
+			app.reviewCommentButton.SetSensitive(app.reviewActive && app.currentFile != nil && app.diffLoaded)
+		}
 	}
 }
 
@@ -271,6 +277,7 @@ func (app *giti) showReferences(branches, tags []string) {
 	app.referencesPage.PackStart(app.referencesView, true, true, 0)
 	app.referencesPage.ShowAll()
 	app.diffStack.SetVisibleChildName("references")
+	app.reviewCommentButton.SetSensitive(false)
 }
 
 func (app *giti) setDiff(patch string) {
@@ -628,7 +635,7 @@ func (app *giti) buildDiffGutter() {
 	app.diffGutter.AddEvents(int(gdk.BUTTON_PRESS_MASK))
 	app.diffGutter.Connect("button-press-event", func(_ *gtk.DrawingArea, event *gdk.Event) bool {
 		button := gdk.EventButtonNewFromEvent(event)
-		if app.review == nil || !app.diffLoaded || button.Button() != gdk.BUTTON_PRIMARY {
+		if !app.reviewActive || !app.diffLoaded || button.Button() != gdk.BUTTON_PRIMARY {
 			return false
 		}
 		y := int(button.Y()) + app.diffView.GetVisibleRect().GetY()
@@ -880,6 +887,7 @@ func (app *giti) buildContentPane() *gtk.Box {
 	headerActionRow.PackEnd(app.fullMergeToggle, false, false, 8)
 	app.commitHeader.PackStart(app.headerTitleRow, false, false, 0)
 	app.commitHeader.PackStart(headerActionRow, false, false, 0)
+	app.commitHeader.PackStart(app.buildReviewControls(), false, false, 0)
 	app.commitHeader.PackStart(app.headerDetails, false, false, 0)
 	diffBox := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 4))
 	diffBox.PackStart(app.commitHeader, false, false, 0)
@@ -900,7 +908,7 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.diffStack = must(gtk.StackNew())
 	app.diffStack.AddNamed(app.buildDiffFind(diffPage), "diff")
 	app.diffStack.AddNamed(scroller(app.referencesPage), "references")
-	diffBox.PackStart(app.buildReviewControls(), false, false, 0)
+	app.diffStack.AddNamed(scroller(app.reviewNotes), "review-notes")
 	diffBox.PackStart(app.diffStack, true, true, 0)
 	return diffBox
 }

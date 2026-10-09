@@ -52,6 +52,7 @@ func mergeTestRow(t *testing.T, rows []historyRow, kind string) historyRow {
 }
 
 func TestMergeResolutionIsDefaultAndFullMergeRemainsAvailable(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	path := mergeTestInit(t, map[string]string{"conflict.txt": "base\n", "clean.txt": "base\n", "clean-both.txt": "first\nkeep 1\nkeep 2\nkeep 3\nsecond\n"})
 	mergeTestGit(t, path, "checkout", "-b", "side")
 	mergeTestWrite(t, path, "conflict.txt", "side\n")
@@ -83,7 +84,7 @@ func TestMergeResolutionIsDefaultAndFullMergeRemainsAvailable(t *testing.T) {
 		t.Fatalf("top commit is not a merge: %#v", merge)
 	}
 	resolutionFiles, err := repo.changedFiles(merge, true)
-	if err != nil || len(resolutionFiles) != 1 || resolutionFiles[0].path != "conflict.txt" {
+	if err != nil || len(resolutionFiles) != 1 || resolutionFiles[0].path != "conflict.txt" || resolutionFiles[0].additions != 1 || resolutionFiles[0].deletions != 2 {
 		t.Fatalf("default merge-resolution files = %#v, %v", resolutionFiles, err)
 	}
 	fullFiles, err := repo.changedFilesForViewContext(context.Background(), merge, true, false)
@@ -97,6 +98,18 @@ func TestMergeResolutionIsDefaultAndFullMergeRemainsAvailable(t *testing.T) {
 	fullPatch, err := repo.diffForViewContext(context.Background(), merge, fullFiles[0], true, false, false)
 	if err != nil || strings.Contains(fullPatch, "diff --cc") {
 		t.Fatalf("full first-parent patch = %q, %v", fullPatch, err)
+	}
+	// A mark in the aggregate first-parent view must not complete resolution review.
+	review, reviewPath, err := loadCommitReview(repo, merge, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = saveCommitReview(reviewPath, review, func(current *commitReview) { current.file("conflict.txt").Reviewed = true }); err != nil {
+		t.Fatal(err)
+	}
+	resolutionReview, _, err := loadCommitReview(repo, merge, true)
+	if err != nil || len(resolutionReview.Files) != 0 {
+		t.Fatalf("first-parent review leaked into merge resolution: %#v, %v", resolutionReview, err)
 	}
 }
 

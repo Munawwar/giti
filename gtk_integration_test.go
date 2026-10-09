@@ -389,7 +389,7 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	expandedDetails := detailChildren.Length()
 	headerChildren := app.headerTitleRow.GetChildren()
 	headerTitle, titleErr := gtk.WidgetToLabel(headerChildren.NthData(0).(*gtk.Widget))
-	headerMeta, metaErr := gtk.WidgetToLabel(detailChildren.NthData(0).(*gtk.Widget))
+	headerMeta, metaErr := gtk.WidgetToLabel(&app.headerAuthor.Widget)
 	commitChildren := app.headerCommit.GetChildren()
 	shaLabel, shaErr := gtk.WidgetToLabel(commitChildren.NthData(1).(*gtk.Widget))
 	statLabels := make([]string, 0, 3)
@@ -423,7 +423,7 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	details.committer, details.committerEmail, details.committed = details.author, details.authorEmail, details.authored
 	app.setCommitHeader(details)
 	collapsedChildren := app.headerDetails.GetChildren()
-	collapsedMeta, collapsedErr := gtk.WidgetToLabel(collapsedChildren.NthData(0).(*gtk.Widget))
+	collapsedMeta, collapsedErr := gtk.WidgetToLabel(&app.headerAuthor.Widget)
 	collapsedText, collapsedTooltip := "", ""
 	if collapsedErr == nil {
 		collapsedText, _ = collapsedMeta.GetText()
@@ -1286,8 +1286,17 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 		t.Fatal("top commit not selectable")
 	}
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.diffLoaded && app.review != nil })
-	if !app.reviewBar.GetVisible() || !app.reviewFileButton.GetVisible() || !app.reviewColumn.GetVisible() {
-		t.Fatal("commit review controls are hidden")
+	if app.reviewActive || !app.reviewButton.GetVisible() || app.headerMetaStack.GetVisibleChildName() != "author" || app.reviewCommentButton.GetVisible() {
+		t.Fatal("selecting a commit entered review mode automatically")
+	}
+	for gtk.EventsPending() {
+		gtk.MainIteration()
+	}
+	headerHeight := app.commitHeader.GetAllocatedHeight()
+	app.reviewButton.Clicked()
+	iterateGTKUntil(t, time.Second, func() bool { return app.reviewPauseButton.GetAllocatedHeight() > 1 })
+	if !app.reviewActive || app.headerMetaStack.GetVisibleChildName() != "progress" || app.commitHeader.GetAllocatedHeight() != headerHeight {
+		t.Fatalf("starting a review did not preserve header layout: %d -> %d", headerHeight, app.commitHeader.GetAllocatedHeight())
 	}
 	var added, removed, hunk int = -1, -1, -1
 	for index, line := range app.reviewLines {
@@ -1305,21 +1314,30 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	}
 	app.diffContextLine = added
 	app.diffBuffer.SelectRange(app.diffBuffer.GetIterAtLine(added), app.diffBuffer.GetIterAtLine(added+1))
-	menu := must(gtk.MenuNew())
-	app.populateReviewMenu(menu)
-	items := menu.GetChildren()
-	items.Foreach(func(raw any) {
-		widget := raw.(*gtk.Widget)
-		cast, _ := widget.Cast()
-		if item, ok := cast.(*gtk.MenuItem); ok {
-			label := item.GetLabel()
-			if label == "Mark selected lines reviewed" {
-				item.Activate()
-			}
+	activateMenu := func(label string, fileMenu bool) {
+		t.Helper()
+		menu := must(gtk.MenuNew())
+		defer menu.Destroy()
+		if fileMenu {
+			app.populateFileReviewMenu(menu, app.currentFile.path)
+		} else {
+			app.populateReviewMenu(menu)
 		}
-	})
-	items.Free()
-	menu.Destroy()
+		items := menu.GetChildren()
+		defer items.Free()
+		activated := false
+		items.Foreach(func(raw any) {
+			cast, _ := raw.(*gtk.Widget).Cast()
+			if item, ok := cast.(*gtk.MenuItem); ok && item.GetLabel() == label {
+				item.Activate()
+				activated = true
+			}
+		})
+		if !activated {
+			t.Fatalf("review action %q missing", label)
+		}
+	}
+	activateMenu("Mark selected lines reviewed", false)
 	reviewedTag, _ := must(app.diffBuffer.GetTagTable()).Lookup("reviewed-added")
 	removedTag, _ := must(app.diffBuffer.GetTagTable()).Lookup("reviewed-removed")
 	if !app.diffBuffer.GetIterAtLine(added).HasTag(reviewedTag) || app.diffBuffer.GetIterAtLine(removed).HasTag(removedTag) {
@@ -1375,12 +1393,20 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	if file.Comments[0].Text != "Updated question" {
 		t.Fatal("comment was not edited")
 	}
-	app.reviewFileButton.Clicked()
+	activateMenu("Mark Reviewed", true)
 	if complete, _ := app.review.Files[app.currentFile.path].status(); !complete {
-		t.Fatal("file header did not mark the whole file reviewed")
+		t.Fatal("file context menu did not mark the whole file reviewed")
+	}
+	app.showReferences([]string{"main"}, nil)
+	if app.reviewCommentButton.GetSensitive() {
+		t.Fatal("file comment action remained enabled in the references view")
+	}
+	app.showDiffPage()
+	if !app.reviewCommentButton.GetSensitive() || !app.diffBuffer.GetIterAtLine(added).HasTag(reviewedTag) {
+		t.Fatal("returning from references lost review display")
 	}
 	app.reviewSelector.Clicked()
-	if app.diffStack.GetVisibleChildName() != "review-notes" || app.reviewBar.GetVisible() {
+	if app.diffStack.GetVisibleChildName() != "review-notes" || app.reviewCommentButton.GetSensitive() {
 		t.Fatal("notes did not open separately from the diff")
 	}
 	app.onFileSelected()
@@ -1390,25 +1416,12 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	}
 	app.diffContextLine = added
 	app.diffBuffer.SelectRange(app.diffBuffer.GetIterAtLine(added), app.diffBuffer.GetIterAtLine(added))
-	menu = must(gtk.MenuNew())
-	app.populateReviewMenu(menu)
-	items = menu.GetChildren()
-	items.Foreach(func(raw any) {
-		cast, _ := raw.(*gtk.Widget).Cast()
-		if item, ok := cast.(*gtk.MenuItem); ok {
-			label := item.GetLabel()
-			if label == "Select hunk" {
-				item.Activate()
-			}
-		}
-	})
-	items.Free()
-	menu.Destroy()
+	activateMenu("Select hunk", false)
 	start, end, selected := app.diffBuffer.GetSelectionBounds()
 	if !selected || start.GetLine() != hunk+1 || end.GetLine() != len(app.reviewLines) {
 		t.Fatalf("hunk shortcut selected wrong lines: %d:%d", start.GetLine(), end.GetLine())
 	}
-	app.markReviewLines(app.selectedReviewLines(), false)
+	activateMenu("Mark selected lines unreviewed", false)
 	if complete, partial := app.review.Files[app.currentFile.path].status(); complete || !partial {
 		t.Fatal("unmarking a range in a reviewed file lost partial status")
 	}
@@ -1421,5 +1434,111 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.diffLoaded && app.review != nil && app.currentRow.kind == "commit" })
 	if app.reviewPath != savedPath || len(app.review.Files[path].Comments) != 1 || app.review.Files[path].Comments[0].Text != "Updated question" {
 		t.Fatalf("reopening lost review notes: %#v", app.review)
+	}
+	if app.reviewActive {
+		t.Fatal("reopening entered review mode automatically")
+	}
+	label, _ := app.reviewButton.GetLabel()
+	if label != "Continue Review" {
+		t.Fatalf("saved review did not offer continuation: %s", label)
+	}
+	app.reviewButton.Clicked()
+	app.reviewPauseButton.Clicked()
+	if app.diffBuffer.GetIterAtLine(added).HasTag(reviewedTag) || app.reviewActive {
+		t.Fatal("pausing did not return to ordinary diff styling")
+	}
+	app.reviewButton.Clicked()
+	app.reviewButton.Clicked() // Complete without implicitly marking the remaining lines.
+	if app.reviewActive || !app.review.Completed {
+		t.Fatal("completing did not save and leave review mode")
+	}
+	if complete, _ := app.review.Files[path].status(); complete {
+		t.Fatal("completing unexpectedly marked remaining lines reviewed")
+	}
+	stored, _, err := loadCommitReview(app.repository, *app.currentRow, false)
+	if err != nil || !stored.Completed {
+		t.Fatalf("completed status was not persisted: %#v, %v", stored, err)
+	}
+	app.reviewButton.Clicked()
+	answerDialog("", gtk.RESPONSE_REJECT)
+	app.editReviewComment(path, app.review.Files[path].Comments[0])
+	activateMenu("Mark Reviewed", true)   // Complete the partially reviewed file.
+	activateMenu("Mark Unreviewed", true) // Clear the complete file review.
+	if len(app.review.Files) != 0 {
+		t.Fatalf("cleared review left empty file records: %#v", app.review.Files)
+	}
+
+}
+
+func TestGTKReviewFolderTicksIgnoreSearchAndWhitespaceFilter(t *testing.T) {
+	path, app := newGTKIntegrationApp(t)
+	for _, name := range []string{"src/alerts/a.txt", "src/alerts/b.txt", "src/config.txt"} {
+		fileHistoryWrite(t, path, name, "before\n")
+	}
+	fileHistoryGit(t, path, "add", ".")
+	fileHistoryGit(t, path, "commit", "-m", "review fixture baseline")
+	fileHistoryWrite(t, path, "src/alerts/a.txt", "after\n")
+	fileHistoryWrite(t, path, "src/alerts/b.txt", "after\n")
+	fileHistoryWrite(t, path, "src/config.txt", "before \n")
+	fileHistoryGit(t, path, "commit", "-am", "nested changes")
+	revision := fileHistoryGit(t, path, "rev-parse", "HEAD")
+	app.openRepository(path, historySpec{Revision: revision})
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil })
+	app.selectHistoryRevision(revision)
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.diffLoaded && app.review != nil })
+	app.reviewButton.Clicked()
+	app.toggleFileReviewed("src/alerts/a.txt")
+	app.fileSearch.SetText("a.txt")
+	folderTick := func() string {
+		t.Helper()
+		iter, ok := app.fileTreeStore.GetIterFirst()
+		if !ok {
+			t.Fatal("filtered folder missing")
+		}
+		value, err := app.fileTreeStore.GetValue(iter, fileReviewMarkColumn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return must(value.GetString())
+	}
+	if folderTick() != "" {
+		t.Fatal("search hid an unreviewed sibling and incorrectly completed the folder")
+	}
+	app.toggleFileReviewed("src/alerts/b.txt")
+	if folderTick() != "" {
+		t.Fatal("collapsed parent incorrectly ignored the whitespace-only file")
+	}
+	app.toggleFileReviewed("src/config.txt")
+	if folderTick() != "✓" {
+		t.Fatal("reviewing every descendant did not tick the folder")
+	}
+	progress, _ := app.reviewProgress.GetText()
+	fileProgress, _ := app.reviewFileProgress.GetText()
+	if progress != "6 of 6 lines reviewed" || !strings.Contains(fileProgress, "3 of 3 files reviewed") {
+		t.Fatalf("progress lost hidden whitespace changes: %q", progress)
+	}
+	app.fileSearch.SetText("")
+	app.whitespaceToggle.SetActive(true)
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.diffLoaded && len(app.files) == 3 })
+	if !app.reviewActive {
+		t.Fatal("changing the whitespace display paused review")
+	}
+	app.toggleFileReviewed("src/config.txt")
+	root := must(app.fileTreeStore.GetIterFromString("0"))
+	child := must(app.fileTreeStore.GetIterFromString("0:0"))
+	rootMark := must(app.fileTreeStore.GetValue(root, fileReviewMarkColumn))
+	childMark := must(app.fileTreeStore.GetValue(child, fileReviewMarkColumn))
+	if must(rootMark.GetString()) != "" || must(childMark.GetString()) != "✓" {
+		t.Fatal("folder review did not distinguish the completed child from its incomplete parent")
+	}
+	app.reviewPauseButton.Clicked()
+	app.reviewButton.Clicked()
+	if !app.reviewActive {
+		t.Fatal("paused review could not continue")
+	}
+	app.selectHistoryRevision(fileHistoryGit(t, path, "rev-parse", "HEAD^"))
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.diffLoaded && app.review != nil && app.review.Commit != revision })
+	if app.reviewActive {
+		t.Fatal("selecting another commit carried active review mode across")
 	}
 }

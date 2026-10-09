@@ -83,11 +83,13 @@ Rendered patches are capped at 8 MiB. Giti terminates larger diff output and sho
 
 ### Review a commit
 
-Select a commit to review its files and individual lines. Use the checkbox beside a file or **Mark reviewed** in the file header to mark the whole file. A partially filled checkbox means some lines have been reviewed; explicitly marking the file completes its review, including changes hidden by the whitespace filter. Click a checked file again to clear its review marks.
+Select a commit, then click **Start Review** (or **Continue Review** for saved progress) beneath **Whitespace changes**. The author details switch to line and file progress without moving the diff. **Pause Review** returns to browsing; **Complete Review** saves a completed status without changing your file or line marks.
+
+While reviewing, right-click a file and choose **Mark Reviewed** or **Mark Unreviewed**. Fully reviewed files have a small green tick to the right of their change counts; the reserved column stays empty for unreviewed and partially reviewed files. Folders receive a tick when every changed descendant is reviewed, including files hidden by search.
 
 Select text across lines, then right-click to mark those lines reviewed or unreviewed, or add a line comment. With line numbers enabled, click a line number and Shift-click another to select a range. Right-click within a hunk and choose **Select hunk** to select its lines. Reviewed additions and removals retain their signs and text colors but use muted green and red backgrounds. Commented lines are underlined.
 
-Use **Add comment** in the file header for a file-wide note. **Review notes** above the file selector opens the saved notes, with actions to edit or delete comments and **Export Markdown…** to save a report at a location you choose. Selecting a file returns to its diff.
+Use **Add Comment** in the commit header or **Add file comment…** in a file’s context menu for a file-wide note. The comment count in the review progress opens the saved notes, with actions to edit or delete comments and **Export Markdown…** to save a report at a location you choose. Selecting a file or **Back to diff** returns to its diff. Switching commits leaves review mode; selecting a saved review offers **Continue Review**.
 
 Reviews save automatically under `$XDG_DATA_HOME/giti/reviews` (normally `~/.local/share/giti/reviews`). They are durable notes, separate from temporary caches. A review belongs to the repository, full commit SHA, and comparison view: combined merge resolution and full first-parent diffs have independent reviews. Amending a commit starts a new review. Staged and unstaged rows do not offer review controls.
 

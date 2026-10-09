@@ -543,18 +543,30 @@ func (repo *repository) changedFilesForViewContext(ctx context.Context, row hist
 		if err != nil {
 			return nil, err
 		}
-		visible := make(map[string]bool)
-		for _, line := range strings.Split(patch, "\n") {
-			if path, ok := strings.CutPrefix(line, "diff --cc "); ok {
-				if unquoted, unquoteErr := strconv.Unquote(path); unquoteErr == nil {
-					path = unquoted
-				}
-				visible[path] = true
+		visible := make(map[string]changedFile)
+		for index, section := range strings.Split(patch, "\ndiff --cc ") {
+			if index == 0 {
+				section = strings.TrimPrefix(section, "diff --cc ")
 			}
+			path, _, _ := strings.Cut(section, "\n")
+			if unquoted, unquoteErr := strconv.Unquote(path); unquoteErr == nil {
+				path = unquoted
+			}
+			stat := changedFile{}
+			for _, line := range displayLines("diff --cc " + section) {
+				switch line.tag {
+				case "added":
+					stat.additions++
+				case "removed":
+					stat.deletions++
+				}
+			}
+			visible[path] = stat
 		}
 		filtered := files[:0]
 		for _, file := range files {
-			if visible[file.path] {
+			if stat, ok := visible[file.path]; ok {
+				file.additions, file.deletions = stat.additions, stat.deletions
 				filtered = append(filtered, file)
 			}
 		}
