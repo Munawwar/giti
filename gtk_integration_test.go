@@ -79,6 +79,7 @@ func TestGTKApplicationMenu(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	path := testRepository(t)
 	for _, args := range [][]string{
 		{"update-ref", "refs/heads/Beta", "HEAD"},
@@ -209,6 +210,7 @@ func TestGTKParentNavigationLoadsAndRevealsOlderCommit(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	if err := saveUIState(uiStatePath(), uiState{MainPanePosition: 410, RepositoryPanePosition: 300, SearchCommitMessages: true, SearchReferences: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -393,13 +395,17 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	commitChildren := app.headerCommit.GetChildren()
 	shaLabel, shaErr := gtk.WidgetToLabel(commitChildren.NthData(1).(*gtk.Widget))
 	statLabels := make([]string, 0, 3)
-	for index := uint(1); index < headerChildren.Length(); index++ {
-		label, labelErr := gtk.WidgetToLabel(headerChildren.NthData(index).(*gtk.Widget))
+	statisticsVisible := app.headerStatistics.GetVisible()
+	statChildren := app.headerStatistics.GetChildren()
+	for index := uint(0); index < statChildren.Length(); index++ {
+		label, labelErr := gtk.WidgetToLabel(statChildren.NthData(index).(*gtk.Widget))
 		if labelErr == nil {
 			text, _ := label.GetText()
 			statLabels = append(statLabels, text)
+			statisticsVisible = statisticsVisible && label.GetVisible()
 		}
 	}
+	statChildren.Free()
 	headerChildren.Free()
 	commitChildren.Free()
 	detailChildren.Free()
@@ -411,7 +417,7 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	metaTooltip, metaTooltipErr := headerMeta.GetTooltipText()
 	referenceValid := labelOK && textErr == nil && !referenceLabel.GetSelectable() && referenceLabel.GetEllipsize() == pango.ELLIPSIZE_END && strings.Contains(referenceValue, longBranch) && referenceButton.GetCanFocus() && copiedReference == longBranch && copyReferenceErr == nil && app.notification.GetVisible() && copyNotification == "Copied branch to clipboard." && notificationErr == nil && app.mainPane.GetAllocatedWidth() == contentWidth && app.mainPane.GetAllocatedHeight() == contentHeight
 	parentValid := parentTextErr == nil && parentTooltipErr == nil && parentText == parentSHA[:7] && parentTooltip == "Open parent commit "+parentSHA && parentButton.GetCanFocus() && parentButton.GetRelief() == gtk.RELIEF_NONE && parentContext.HasClass("giti-parent-button")
-	statisticsValid := strings.Join(statLabels, ",") == "+12,−3,4 untracked"
+	statisticsValid := statisticsVisible && strings.Join(statLabels, ",") == "+12,−3,4 untracked"
 	controlsValid := fullFileLabel == "Show full file" && whitespaceLabel == "Whitespace changes" && !app.whitespaceToggle.GetActive() && fullMergeLabel == "Full merge" && shaErr == nil && shaTooltipErr == nil && shaLabel.GetEllipsize() == pango.ELLIPSIZE_MIDDLE && shaTooltip == details.sha && metaTextErr == nil && metaTooltipErr == nil && strings.Count(metaText, formatCommitTime(details.authored, time.Local, "2 Jan 2006, 15:04 MST")) == 2 && metaTooltip == "Author: "+formatCommitTime(details.authored, time.UTC, time.RFC3339)+"\nCommitter: "+formatCommitTime(details.committed, time.UTC, time.RFC3339)
 	searchIdle := !app.searchSpinner.GetVisible() && app.historySearch.GetIconStorageType(gtk.ENTRY_ICON_PRIMARY) == gtk.IMAGE_ICON_NAME
 	app.setSearchBusy(true)
@@ -1241,6 +1247,7 @@ func TestGTKGraphTextScaling(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	gtk.Init(nil)
 	repo, err := newRepository(testRepository(t), historySpec{Revision: "HEAD"})
 	if err != nil {
@@ -1286,15 +1293,19 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 		t.Fatal("top commit not selectable")
 	}
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.diffLoaded && app.review != nil })
-	if app.reviewActive || !app.reviewButton.GetVisible() || app.headerMetaStack.GetVisibleChildName() != "author" || app.reviewCommentButton.GetVisible() {
+	app.window.ShowAll()
+	if app.reviewPreviewButton.GetVisible() || app.reviewExportButton.GetVisible() {
+		t.Fatal("empty review exposed preview or export")
+	}
+	if app.reviewActive || !app.reviewModeButton.GetVisible() || app.headerMetaStack.GetVisibleChildName() != "author" || app.reviewFileActions.GetVisible() {
 		t.Fatal("selecting a commit entered review mode automatically")
 	}
 	for gtk.EventsPending() {
 		gtk.MainIteration()
 	}
 	headerHeight := app.commitHeader.GetAllocatedHeight()
-	app.reviewButton.Clicked()
-	iterateGTKUntil(t, time.Second, func() bool { return app.reviewPauseButton.GetAllocatedHeight() > 1 })
+	app.reviewModeButton.Clicked()
+	iterateGTKUntil(t, time.Second, func() bool { return app.reviewFileButton.GetAllocatedHeight() > 1 })
 	if !app.reviewActive || app.headerMetaStack.GetVisibleChildName() != "progress" || app.commitHeader.GetAllocatedHeight() != headerHeight {
 		t.Fatalf("starting a review did not preserve header layout: %d -> %d", headerHeight, app.commitHeader.GetAllocatedHeight())
 	}
@@ -1338,6 +1349,9 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 		}
 	}
 	activateMenu("Mark selected lines reviewed", false)
+	if !app.reviewPreviewButton.GetVisible() || !app.reviewExportButton.GetVisible() {
+		t.Fatal("line review did not expose preview and export")
+	}
 	reviewedTag, _ := must(app.diffBuffer.GetTagTable()).Lookup("reviewed-added")
 	removedTag, _ := must(app.diffBuffer.GetTagTable()).Lookup("reviewed-removed")
 	if !app.diffBuffer.GetIterAtLine(added).HasTag(reviewedTag) || app.diffBuffer.GetIterAtLine(removed).HasTag(removedTag) {
@@ -1393,9 +1407,12 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	if file.Comments[0].Text != "Updated question" {
 		t.Fatal("comment was not edited")
 	}
-	activateMenu("Mark Reviewed", true)
+	app.reviewFileButton.Clicked()
 	if complete, _ := app.review.Files[app.currentFile.path].status(); !complete {
-		t.Fatal("file context menu did not mark the whole file reviewed")
+		t.Fatal("file button did not mark the selected file reviewed")
+	}
+	if !app.reviewActive {
+		t.Fatal("marking a file exited review mode")
 	}
 	app.showReferences([]string{"main"}, nil)
 	if app.reviewCommentButton.GetSensitive() {
@@ -1405,8 +1422,8 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	if !app.reviewCommentButton.GetSensitive() || !app.diffBuffer.GetIterAtLine(added).HasTag(reviewedTag) {
 		t.Fatal("returning from references lost review display")
 	}
-	app.reviewSelector.Clicked()
-	if app.diffStack.GetVisibleChildName() != "review-notes" || app.reviewCommentButton.GetSensitive() {
+	app.reviewPreviewButton.Clicked()
+	if app.diffStack.GetVisibleChildName() != "review-preview" || app.reviewCommentButton.GetSensitive() {
 		t.Fatal("notes did not open separately from the diff")
 	}
 	app.onFileSelected()
@@ -1438,36 +1455,41 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	if app.reviewActive {
 		t.Fatal("reopening entered review mode automatically")
 	}
-	label, _ := app.reviewButton.GetLabel()
-	if label != "Continue Review" {
-		t.Fatalf("saved review did not offer continuation: %s", label)
+	if !app.reviewPreviewButton.GetVisible() || !app.reviewExportButton.GetVisible() {
+		t.Fatal("saved review did not restore preview and export")
 	}
-	app.reviewButton.Clicked()
-	app.reviewPauseButton.Clicked()
+	app.reviewModeButton.Clicked()
+	app.reviewModeButton.Clicked() // Exit changes the mode, never the review marks.
 	if app.diffBuffer.GetIterAtLine(added).HasTag(reviewedTag) || app.reviewActive {
-		t.Fatal("pausing did not return to ordinary diff styling")
-	}
-	app.reviewButton.Clicked()
-	app.reviewButton.Clicked() // Complete without implicitly marking the remaining lines.
-	if app.reviewActive || !app.review.Completed {
-		t.Fatal("completing did not save and leave review mode")
+		t.Fatal("exiting did not return to ordinary diff styling")
 	}
 	if complete, _ := app.review.Files[path].status(); complete {
-		t.Fatal("completing unexpectedly marked remaining lines reviewed")
+		t.Fatal("exiting unexpectedly marked remaining lines reviewed")
 	}
-	stored, _, err := loadCommitReview(app.repository, *app.currentRow, false)
-	if err != nil || !stored.Completed {
-		t.Fatalf("completed status was not persisted: %#v, %v", stored, err)
+	app.reviewPreviewButton.Clicked()
+	if app.diffStack.GetVisibleChildName() != "review-preview" {
+		t.Fatal("saved review could not be previewed outside review mode")
 	}
-	app.reviewButton.Clicked()
+	app.reviewPreviewExit.Clicked()
+	if app.reviewActive || app.diffStack.GetVisibleChildName() != "diff" {
+		t.Fatal("leaving preview started a review")
+	}
+	app.reviewModeButton.Clicked()
 	answerDialog("", gtk.RESPONSE_REJECT)
 	app.editReviewComment(path, app.review.Files[path].Comments[0])
 	activateMenu("Mark Reviewed", true)   // Complete the partially reviewed file.
-	activateMenu("Mark Unreviewed", true) // Clear the complete file review.
+	activateMenu("Unmark Reviewed", true) // Clear the complete file review.
 	if len(app.review.Files) != 0 {
 		t.Fatalf("cleared review left empty file records: %#v", app.review.Files)
 	}
-
+	if app.reviewPreviewButton.GetVisible() || app.reviewExportButton.GetVisible() {
+		t.Fatal("clearing review left preview or export visible")
+	}
+	answerDialog("Comment without review marks", gtk.RESPONSE_OK)
+	app.reviewCommentButton.Clicked()
+	if !app.reviewPreviewButton.GetVisible() || !app.reviewExportButton.GetVisible() {
+		t.Fatal("comment-only review did not expose preview and export")
+	}
 }
 
 func TestGTKReviewFolderTicksIgnoreSearchAndWhitespaceFilter(t *testing.T) {
@@ -1486,8 +1508,13 @@ func TestGTKReviewFolderTicksIgnoreSearchAndWhitespaceFilter(t *testing.T) {
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil })
 	app.selectHistoryRevision(revision)
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.diffLoaded && app.review != nil })
-	app.reviewButton.Clicked()
-	app.toggleFileReviewed("src/alerts/a.txt")
+	app.reviewModeButton.Clicked()
+	app.refreshFileView("src/alerts/a.txt")
+	iterateGTKUntil(t, time.Second, func() bool { return app.diffLoaded && app.currentFile.path == "src/alerts/a.txt" })
+	app.reviewFileButton.Clicked()
+	if len(app.review.Files) != 1 || app.review.Files["src/alerts/a.txt"] == nil || !app.reviewActive {
+		t.Fatal("file marking affected another file or exited review mode")
+	}
 	app.fileSearch.SetText("a.txt")
 	folderTick := func() string {
 		t.Helper()
@@ -1531,8 +1558,8 @@ func TestGTKReviewFolderTicksIgnoreSearchAndWhitespaceFilter(t *testing.T) {
 	if must(rootMark.GetString()) != "" || must(childMark.GetString()) != "✓" {
 		t.Fatal("folder review did not distinguish the completed child from its incomplete parent")
 	}
-	app.reviewPauseButton.Clicked()
-	app.reviewButton.Clicked()
+	app.reviewModeButton.Clicked()
+	app.reviewModeButton.Clicked()
 	if !app.reviewActive {
 		t.Fatal("paused review could not continue")
 	}
@@ -1540,5 +1567,104 @@ func TestGTKReviewFolderTicksIgnoreSearchAndWhitespaceFilter(t *testing.T) {
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.diffLoaded && app.review != nil && app.review.Commit != revision })
 	if app.reviewActive {
 		t.Fatal("selecting another commit carried active review mode across")
+	}
+}
+
+func TestGTKReviewPreviewRendersMarkdownAndExportsSameDocument(t *testing.T) {
+	_, app := newGTKIntegrationApp(t)
+	app.selectHistoryRevision(app.repository.revision)
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.diffLoaded && app.review != nil })
+	app.reviewModeButton.Clicked()
+	path := app.currentFile.path
+	app.changeReview(func(review *commitReview) {
+		file := review.file(path)
+		file.Comments = []reviewComment{{ID: "format", Text: "**Check** the *failure path*.\n\n- Keep `retry_count`\n- Do not drop <b>literal HTML</b>\n\n```diff\n-before\n+after\n```\n\n| Outcome | Action |\n| --- | --- |\n| Failure | Retry |"}}
+	})
+	app.reviewFileButton.Clicked()
+	if label, _ := app.reviewFileButton.GetLabel(); label != "Unmark Reviewed" || !app.reviewActive {
+		t.Fatal("file marking did not retain review mode and offer unmarking")
+	}
+	app.reviewPreviewButton.Clicked()
+	var rendered, markup strings.Builder
+	var buttons int
+	var inspect func(gtk.IWidget)
+	inspect = func(widget gtk.IWidget) {
+		cast, _ := widget.ToWidget().Cast()
+		switch widget := cast.(type) {
+		case *gtk.Label:
+			text, _ := widget.GetText()
+			rendered.WriteString(text + "\n")
+			markup.WriteString(widget.GetLabel() + "\n")
+		case *gtk.Button:
+			buttons++
+		case *gtk.Box:
+			children := widget.GetChildren()
+			children.Foreach(func(child any) { inspect(child.(*gtk.Widget)) })
+			children.Free()
+		case *gtk.Grid:
+			children := widget.GetChildren()
+			children.Foreach(func(child any) { inspect(child.(*gtk.Widget)) })
+			children.Free()
+		}
+	}
+	inspect(app.reviewDocument)
+	output := rendered.String()
+	for _, expected := range []string{"Commit review", app.review.Commit, path, "Status: Reviewed", "Check the failure path.", "Keep retry_count", "-before\n+after", "Outcome", "Retry", "<b>literal HTML</b>"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("preview lost exported Markdown content %q:\n%s", expected, output)
+		}
+	}
+	if buttons != 0 || !strings.Contains(markup.String(), "<b>Check</b>") || !strings.Contains(markup.String(), "<i>failure path</i>") {
+		t.Fatal("preview has document buttons or lost Markdown formatting")
+	}
+	exported := filepath.Join(t.TempDir(), "review.md")
+	addMainSource(0, func() bool {
+		windows := gtk.WindowListToplevels()
+		runtime.SetFinalizer(windows, nil)
+		defer windows.Free()
+		windows.Foreach(func(raw any) {
+			window := raw.(*gtk.Window)
+			if title, _ := window.GetTitle(); title != "Export review" {
+				return
+			}
+			cast, _ := window.Cast()
+			dialog := cast.(*gtk.FileChooserDialog)
+			dialog.SetCurrentFolder(filepath.Dir(exported))
+			dialog.SetCurrentName(filepath.Base(exported))
+			addMainSource(10*time.Millisecond, func() bool {
+				if dialog.GetFilename() != exported {
+					return true // Wait for GTK's asynchronous folder load.
+				}
+				dialog.Response(gtk.RESPONSE_ACCEPT)
+				return false
+			})
+		})
+		return false
+	})
+	app.reviewExportButton.Clicked()
+	contents, err := os.ReadFile(exported)
+	if err != nil || string(contents) != app.review.markdown(app.reviewFiles) {
+		t.Fatalf("export differs from the preview document: %v", err)
+	}
+	if screenshot := os.Getenv("GITI_REVIEW_SCREENSHOT"); screenshot != "" {
+		app.notification.Hide()
+		app.window.Resize(1280, 960)
+		deadline := time.Now().Add(100 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			for gtk.EventsPending() {
+				gtk.MainIteration()
+			}
+			time.Sleep(time.Millisecond)
+		}
+		window := must(app.window.GetWindow())
+		pixbuf := must(window.PixbufGetFromWindow(0, 0, app.window.GetAllocatedWidth(), app.window.GetAllocatedHeight()))
+		if err := pixbuf.SavePNG(screenshot, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	app.reviewPreviewExit.Clicked()
+	app.reviewFileButton.Clicked()
+	if complete, _ := app.review.Files[path].status(); complete || !app.reviewActive {
+		t.Fatal("unmarking a file changed the session mode or left its review mark")
 	}
 }

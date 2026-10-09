@@ -12,6 +12,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -126,7 +127,7 @@ button.giti-review-secondary, button.giti-review-primary {
 button.giti-review-secondary:hover {
   color: #374151;
 }
-button.giti-review-secondary:disabled {
+button.giti-review-secondary:disabled, button.giti-review-primary:disabled {
   color: #9ca3af;
 }
 button.giti-review-primary {
@@ -150,6 +151,21 @@ button.giti-review-primary {
 }
 .giti-flat-button:focus {
   box-shadow: 0 0 0 1px alpha(@theme_selected_bg_color, 0.55);
+}
+box.giti-review-document {
+  background-color: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 24px;
+}
+box.giti-review-code {
+  background-color: #f3f4f5;
+  border-radius: 6px;
+  padding: 12px;
+}
+box.giti-review-quote {
+  border-left: 2px solid #d1d5db;
+  padding-left: 12px;
 }
 box.giti-load-footer {
   padding: 4px 6px;
@@ -260,17 +276,21 @@ type giti struct {
 	reviewSelectionAnchor      int
 	reviewActive               bool
 	reviewFiles                []changedFile
-	reviewActions              *gtk.Box
+	reviewFileActions          *gtk.Box
+	reviewSessionActions       *gtk.Box
 	reviewProgress             *gtk.Label
 	reviewFileProgress         *gtk.Label
-	reviewButton               *gtk.Button
-	reviewPauseButton          *gtk.Button
+	reviewModeButton           *gtk.Button
+	reviewFileButton           *gtk.Button
+	reviewExportButton         *gtk.Button
+	reviewPreviewButton        *gtk.Button
+	reviewPreviewExit          *gtk.Button
 	headerMetaStack            *gtk.Stack
 	headerAuthor               *gtk.Label
 	reviewCommentButton        *gtk.Button
-	reviewSelector             *gtk.Button
+	reviewCommentCount         *gtk.Label
 	reviewColumn               *gtk.TreeViewColumn
-	reviewNotes                *gtk.Box
+	reviewDocument             *gtk.Box
 	historyTargetKind          string
 	fileTargetPath             string
 	window                     *gtk.Window
@@ -330,6 +350,7 @@ type giti struct {
 	searchLoadFooter           *loadFooter
 	commitHeader               *gtk.Box
 	headerTitleRow             *gtk.Box
+	headerStatistics           *gtk.Box
 	headerCommit               *gtk.Box
 	headerDetails              *gtk.Box
 	diffBuffer                 *gtk.TextBuffer
@@ -511,6 +532,15 @@ func newGiti(repo *repository, resident bool, applications ...*gtk.Application) 
 	app.fileTreeStore = must(gtk.TreeStoreNew(fileColumns...))
 	app.fileModel = &app.fileStore.TreeModel
 	app.buildWindow(application)
+	if directory, err := reviewDataDirectory(); err != nil {
+		fmt.Fprintln(os.Stderr, "review cleanup:", err)
+	} else {
+		go func() {
+			if err := cleanupCommitReviews(directory, time.Now()); err != nil {
+				fmt.Fprintln(os.Stderr, "review cleanup:", err)
+			}
+		}()
+	}
 	if resident {
 		addMainSource(time.Minute, app.expireIfIdle)
 	}

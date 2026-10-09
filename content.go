@@ -18,7 +18,7 @@ func (app *giti) setCommitHeader(details commitDetails) {
 	// The title, commit identity, and detail regions change with selection. The
 	// action row stays mounted so its toggles retain their state and callbacks.
 	app.headerReferenceButtons, app.headerParentButtons = nil, nil
-	for _, box := range []*gtk.Box{app.headerTitleRow, app.headerCommit, app.headerDetails} {
+	for _, box := range []*gtk.Box{app.headerTitleRow, app.headerStatistics, app.headerCommit, app.headerDetails} {
 		if children := box.GetChildren(); children != nil {
 			children.Foreach(func(child any) { box.Remove(child.(gtk.IWidget)) })
 			children.Free()
@@ -32,6 +32,7 @@ func (app *giti) setCommitHeader(details commitDetails) {
 	app.headerTitleRow.PackStart(title, true, true, 0)
 	// Keep aggregate statistics outside the ellipsized title so they remain
 	// visible even for unusually long subjects.
+	app.headerStatistics.SetVisible(details.statistics)
 	if details.statistics {
 		additions := must(gtk.LabelNew(fmt.Sprintf("+%d", details.additions)))
 		deletions := must(gtk.LabelNew(fmt.Sprintf("−%d", details.deletions)))
@@ -39,7 +40,8 @@ func (app *giti) setCommitHeader(details commitDetails) {
 			context, _ := badge.GetStyleContext()
 			context.AddClass("giti-stat")
 			badge.SetTooltipText("Line totals exclude binary and untracked files")
-			app.headerTitleRow.PackStart(badge, false, false, 0)
+			app.headerStatistics.PackStart(badge, false, false, 0)
+			badge.Show()
 		}
 		additionContext, _ := additions.GetStyleContext()
 		additionContext.AddClass("giti-additions")
@@ -51,7 +53,8 @@ func (app *giti) setCommitHeader(details commitDetails) {
 			context.AddClass("giti-stat")
 			context.AddClass("giti-untracked")
 			untracked.SetTooltipText("Untracked files have no line counts")
-			app.headerTitleRow.PackStart(untracked, false, false, 0)
+			app.headerStatistics.PackStart(untracked, false, false, 0)
+			untracked.Show()
 		}
 	}
 	if details.sha == "" {
@@ -211,8 +214,8 @@ func (app *giti) setCommitHeader(details commitDetails) {
 func (app *giti) showDiffPage() {
 	if app.diffStack != nil {
 		app.diffStack.SetVisibleChildName("diff")
-		if app.reviewCommentButton != nil {
-			app.reviewCommentButton.SetSensitive(app.reviewActive && app.currentFile != nil && app.diffLoaded)
+		if app.reviewFileButton != nil {
+			app.updateReviewFileActions()
 		}
 	}
 }
@@ -277,7 +280,7 @@ func (app *giti) showReferences(branches, tags []string) {
 	app.referencesPage.PackStart(app.referencesView, true, true, 0)
 	app.referencesPage.ShowAll()
 	app.diffStack.SetVisibleChildName("references")
-	app.reviewCommentButton.SetSensitive(false)
+	app.updateReviewFileActions()
 }
 
 func (app *giti) setDiff(patch string) {
@@ -878,6 +881,8 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.commitHeader.SetMarginTop(8)
 	app.commitHeader.SetMarginBottom(8)
 	app.headerTitleRow = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
+	app.headerStatistics = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
+	app.headerStatistics.SetNoShowAll(true)
 	headerActionRow := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
 	app.headerCommit = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
 	app.headerDetails = must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 2))
@@ -885,9 +890,14 @@ func (app *giti) buildContentPane() *gtk.Box {
 	headerActionRow.PackEnd(app.whitespaceToggle, false, false, 8)
 	headerActionRow.PackEnd(app.fullFileToggle, false, false, 0)
 	headerActionRow.PackEnd(app.fullMergeToggle, false, false, 8)
-	app.commitHeader.PackStart(app.headerTitleRow, false, false, 0)
+	metaRow := app.buildReviewControls()
+	titleRow := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
+	titleRow.PackStart(app.headerTitleRow, true, true, 0)
+	titleRow.PackStart(app.reviewSessionActions, false, false, 0)
+	titleRow.PackStart(app.headerStatistics, false, false, 0)
+	app.commitHeader.PackStart(titleRow, false, false, 0)
 	app.commitHeader.PackStart(headerActionRow, false, false, 0)
-	app.commitHeader.PackStart(app.buildReviewControls(), false, false, 0)
+	app.commitHeader.PackStart(metaRow, false, false, 0)
 	app.commitHeader.PackStart(app.headerDetails, false, false, 0)
 	diffBox := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 4))
 	diffBox.PackStart(app.commitHeader, false, false, 0)
@@ -908,7 +918,20 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.diffStack = must(gtk.StackNew())
 	app.diffStack.AddNamed(app.buildDiffFind(diffPage), "diff")
 	app.diffStack.AddNamed(scroller(app.referencesPage), "references")
-	app.diffStack.AddNamed(scroller(app.reviewNotes), "review-notes")
+	preview := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0))
+	previewToolbar := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
+	previewToolbar.SetMarginStart(16)
+	previewToolbar.SetMarginEnd(16)
+	previewToolbar.SetMarginTop(8)
+	app.reviewPreviewExit = must(gtk.ButtonNewWithLabel("Exit Preview"))
+	app.reviewPreviewExit.SetRelief(gtk.RELIEF_NONE)
+	context, _ := app.reviewPreviewExit.GetStyleContext()
+	context.AddClass("giti-review-secondary")
+	app.reviewPreviewExit.Connect("clicked", app.showDiffPage)
+	previewToolbar.PackEnd(app.reviewPreviewExit, false, false, 0)
+	preview.PackStart(previewToolbar, false, false, 0)
+	preview.PackStart(scroller(app.reviewDocument), true, true, 0)
+	app.diffStack.AddNamed(preview, "review-preview")
 	diffBox.PackStart(app.diffStack, true, true, 0)
 	return diffBox
 }

@@ -39,8 +39,6 @@ type commitReview struct {
 	Repository string                 `json:"repository"`
 	Commit     string                 `json:"commit"`
 	Comparison string                 `json:"comparison"`
-	Started    bool                   `json:"started,omitempty"`
-	Completed  bool                   `json:"completed,omitempty"`
 	Parents    []string               `json:"parents,omitempty"`
 	Files      map[string]*reviewFile `json:"files"`
 }
@@ -53,34 +51,114 @@ func loadCommitReview(repo *repository, row historyRow, combined bool) (*commitR
 	if combined {
 		comparison = "merge-resolution"
 	}
+	directory, err := reviewDataDirectory()
+	if err != nil {
+		return nil, "", err
+	}
 	root := repo.path
+	identity := sha256.Sum256([]byte(root))
+	path := filepath.Join(directory, fmt.Sprintf("%x", identity[:16]), row.revision+"-"+comparison+".json")
+	seed := &commitReview{Repository: root, Commit: row.revision, Comparison: comparison, Parents: row.parents}
+	review, err := readCommitReview(path, seed)
+	return review, path, err
+}
+
+func reviewDataDirectory() (string, error) {
 	data := os.Getenv("XDG_DATA_HOME")
 	if !filepath.IsAbs(data) {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return nil, "", err
+			return "", err
 		}
 		data = filepath.Join(home, ".local", "share")
 	}
-	identity := sha256.Sum256([]byte(root))
-	path := filepath.Join(data, "giti", "reviews", fmt.Sprintf("%x", identity[:16]), row.revision+"-"+comparison+".json")
-	seed := &commitReview{Repository: root, Commit: row.revision, Comparison: comparison, Parents: row.parents}
-	review, err := readCommitReview(path, seed)
-	return review, path, err
+	return filepath.Join(data, "giti", "reviews"), nil
+}
+
+func lockReviewData(path string, flags int) (*os.File, error) {
+	lock, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err = syscall.Flock(int(lock.Fd()), flags); err != nil {
+		lock.Close()
+		return nil, err
+	}
+	return lock, nil
+}
+
+func cleanupCommitReviews(directory string, now time.Time) error {
+	lock, err := lockReviewData(filepath.Join(directory, ".cleanup.lock"), syscall.LOCK_EX|syscall.LOCK_NB)
+	if os.IsNotExist(err) || err == syscall.EWOULDBLOCK {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	marker := filepath.Join(directory, ".last-cleanup.json")
+	if data, err := os.ReadFile(marker); err == nil {
+		var last time.Time
+		if json.Unmarshal(data, &last) == nil && now.Sub(last) < 24*time.Hour {
+			return nil
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	cutoff := now.Add(-30 * 24 * time.Hour)
+	err = filepath.WalkDir(directory, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !entry.Type().IsRegular() || filepath.Dir(path) == directory || !strings.HasSuffix(path, ".json") {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.ModTime().Before(cutoff) {
+			return nil
+		}
+		fileLock, err := lockReviewData(path+".lock", syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == syscall.EWOULDBLOCK {
+			return nil // A writer is updating this review; check it on the next cleanup.
+		}
+		if err != nil {
+			return err
+		}
+		defer fileLock.Close()
+		defer syscall.Flock(int(fileLock.Fd()), syscall.LOCK_UN)
+		// Recheck under the same lock as saves, which may have refreshed the file.
+		info, err = os.Lstat(path)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() && info.ModTime().Before(cutoff) {
+			return os.Remove(path)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	// Keep lock files so waiting writers continue to coordinate on the same inode.
+	return writeJSONAtomic(marker, now)
 }
 
 func saveCommitReview(path string, seed *commitReview, change func(*commitReview)) (*commitReview, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	lock, err := lockReviewData(path+".lock", syscall.LOCK_EX)
 	if err != nil {
 		return nil, err
 	}
 	defer lock.Close()
-	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		return nil, err
-	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 	// Reload under the lock to preserve updates from other windows.
 	review, err := readCommitReview(path, seed)
@@ -187,13 +265,31 @@ func (file *reviewFile) statusText() string {
 	return "Unreviewed"
 }
 
-func (review *commitReview) paths() []string {
-	paths := make([]string, 0, len(review.Files))
-	for path := range review.Files {
-		paths = append(paths, path)
+func (review *commitReview) progress(files []changedFile) (reviewedLines, totalLines, reviewedFiles int) {
+	for _, changed := range files {
+		file := review.Files[changed.path]
+		if complete, _ := file.status(); complete {
+			reviewedFiles++
+		}
+		lines := changed.additions + changed.deletions
+		totalLines += lines
+		if file == nil {
+			continue
+		}
+		if file.Reviewed {
+			reviewedLines += lines
+		}
+		for _, mark := range file.Lines {
+			if mark.changed() && mark.Reviewed != file.Reviewed {
+				if mark.Reviewed {
+					reviewedLines++
+				} else {
+					reviewedLines--
+				}
+			}
+		}
 	}
-	sort.Strings(paths)
-	return paths
+	return
 }
 
 func (app *giti) changeReview(change func(*commitReview)) bool {
@@ -207,8 +303,8 @@ func (app *giti) changeReview(change func(*commitReview)) bool {
 	}
 	app.review = review
 	app.updateReviewUI()
-	if app.diffStack.GetVisibleChildName() == "review-notes" {
-		app.showReviewNotes()
+	if app.diffStack.GetVisibleChildName() == "review-preview" {
+		app.showReviewPreview()
 	}
 	return true
 }
@@ -258,73 +354,64 @@ func (app *giti) markReviewLines(lines []reviewLine, reviewed bool) {
 	})
 }
 
+func (app *giti) updateReviewFileActions() {
+	visible := app.review != nil && app.reviewActive && app.diffStack.GetVisibleChildName() == "diff"
+	app.reviewFileActions.SetVisible(visible)
+	app.reviewFileButton.SetSensitive(visible && app.currentFile != nil && app.diffLoaded)
+	app.reviewCommentButton.SetSensitive(app.reviewFileButton.GetSensitive())
+	app.reviewFileButton.SetLabel("Mark Reviewed")
+	app.reviewFileButton.SetTooltipText("Mark only this file reviewed, including whitespace changes")
+	if visible && app.currentFile != nil {
+		if complete, _ := app.review.Files[app.currentFile.path].status(); complete {
+			app.reviewFileButton.SetLabel("Unmark Reviewed")
+			app.reviewFileButton.SetTooltipText("Clear this file’s review marks")
+		}
+	}
+}
+
 func (app *giti) updateReviewUI() {
-	if app.reviewButton == nil {
+	if app.reviewModeButton == nil {
 		return
 	}
 	available := app.review != nil
 	active := available && app.reviewActive
-	app.reviewActions.SetVisible(available)
-	app.reviewPauseButton.SetVisible(active)
-	app.reviewCommentButton.SetVisible(active)
-	app.reviewCommentButton.SetSensitive(active && app.currentFile != nil && app.diffLoaded && app.diffStack.GetVisibleChildName() == "diff")
+	app.reviewSessionActions.SetVisible(available)
+	app.updateReviewFileActions()
 	app.reviewColumn.SetVisible(available)
 	app.headerMetaStack.SetVisibleChildName("author")
-	app.reviewButton.SetLabel("Start Review")
-	if available && (app.review.Started || len(app.review.Files) > 0) {
-		app.reviewButton.SetLabel("Continue Review")
-	}
+	app.reviewModeButton.SetLabel("Start Review")
+	app.reviewModeButton.SetTooltipText("Review this commit; saved marks and comments are restored")
 	if active {
 		app.headerMetaStack.SetVisibleChildName("progress")
-		app.reviewButton.SetLabel("Complete Review")
+		app.reviewModeButton.SetLabel("Exit Review")
+		app.reviewModeButton.SetTooltipText("Return to browsing; your marks and comments are saved")
 	}
 	comments, reviewedFiles, reviewedLines, totalLines := 0, 0, 0, 0
+	hasContent := false
 	directories := make(map[string]bool)
 	if available {
 		for _, file := range app.review.Files {
 			comments += len(file.Comments)
+			hasContent = hasContent || file.Reviewed || len(file.Lines) > 0 || len(file.Comments) > 0
 		}
+		reviewedLines, totalLines, reviewedFiles = app.review.progress(app.reviewFiles)
 		for _, changed := range app.reviewFiles {
-			file := app.review.Files[changed.path]
-			complete, _ := file.status()
-			if complete {
-				reviewedFiles++
-			}
+			complete, _ := app.review.Files[changed.path].status()
 			for directory := filepath.Dir(changed.path); directory != "."; directory = filepath.Dir(directory) {
 				checked, exists := directories[directory]
 				directories[directory] = complete && (!exists || checked)
 			}
-			lines := changed.additions + changed.deletions
-			totalLines += lines
-			if file != nil {
-				if file.Reviewed {
-					reviewedLines += lines
-				}
-				for _, mark := range file.Lines {
-					if mark.changed() && mark.Reviewed != file.Reviewed {
-						if mark.Reviewed {
-							reviewedLines++
-						} else {
-							reviewedLines--
-						}
-					}
-				}
-			}
 		}
 	}
+	app.reviewPreviewButton.SetVisible(hasContent)
+	app.reviewExportButton.SetVisible(hasContent)
 	app.reviewProgress.SetMarkup(fmt.Sprintf("<b>%d of %d lines reviewed</b>", reviewedLines, totalLines))
 	app.reviewFileProgress.SetText(fmt.Sprintf("%d of %d files reviewed ·", reviewedFiles, len(app.reviewFiles)))
 	noun := "comments"
 	if comments == 1 {
 		noun = "comment"
 	}
-	app.reviewSelector.SetLabel(fmt.Sprintf("%d %s", comments, noun))
-	app.reviewButton.SetTooltipText("Start or continue reviewing this commit")
-	if active {
-		app.reviewButton.SetTooltipText("Save this review as complete; file and line marks remain as you set them")
-	} else if available && app.review.Completed {
-		app.reviewButton.SetTooltipText("This review was completed; continue to revise marks or comments")
-	}
+	app.reviewCommentCount.SetText(fmt.Sprintf("%d %s", comments, noun))
 	for _, store := range []struct {
 		model *gtk.TreeModel
 		set   func(*gtk.TreeIter, int, any) error
@@ -464,19 +551,42 @@ func (app *giti) editReviewComment(path string, comment reviewComment) {
 	})
 }
 
-func (review *commitReview) markdown() string {
+func (review *commitReview) markdown(files []changedFile) string {
 	var output strings.Builder
-	fmt.Fprintf(&output, "# Review %s\n\nRepository: %s\n\nCommit: %s\n\nComparison: %s\n\n", review.Commit, review.Repository, review.Commit, review.Comparison)
-	if review.Completed {
-		output.WriteString("Review status: Complete\n\n")
-	}
+	done, total, complete := review.progress(files)
+	fmt.Fprintf(&output, "# Commit review\n\n**Commit:** `%s`\n\n**Repository:** `%s`\n\n**Comparison:** %s\n\n", review.Commit, review.Repository, strings.ReplaceAll(review.Comparison, "-", " "))
+	fmt.Fprintf(&output, "**Progress:** %d of %d lines reviewed · %d of %d files reviewed\n\n", done, total, complete, len(files))
 	if len(review.Parents) > 0 {
-		fmt.Fprintf(&output, "Parent commits: %s\n\n", strings.Join(review.Parents, ", "))
+		fmt.Fprintf(&output, "**Parent commits:** %s\n\n", strings.Join(review.Parents, ", "))
 	}
-	paths := review.paths()
+	allPaths := make(map[string]bool)
+	for _, file := range files {
+		allPaths[file.path] = true
+	}
+	for path := range review.Files {
+		allPaths[path] = true
+	}
+	paths := make([]string, 0, len(allPaths))
+	for path := range allPaths {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	output.WriteString("## Files\n\n| File | Status | Comments |\n| --- | --- | --- |\n")
 	for _, path := range paths {
 		file := review.Files[path]
-		fmt.Fprintf(&output, "## %s\n\nStatus: %s\n\n", path, file.statusText())
+		comments := 0
+		if file != nil {
+			comments = len(file.Comments)
+		}
+		fmt.Fprintf(&output, "| `%s` | %s | %d |\n", strings.ReplaceAll(path, "|", "\\|"), file.statusText(), comments)
+	}
+	output.WriteString("\n")
+	for _, path := range paths {
+		file := review.Files[path]
+		if file == nil || len(file.Lines) == 0 && len(file.Comments) == 0 {
+			continue
+		}
+		fmt.Fprintf(&output, "## %s\n\n**Status:** %s\n\n", path, file.statusText())
 		marks := make([]reviewLine, 0, len(file.Lines))
 		for _, line := range file.Lines {
 			marks = append(marks, line)
@@ -488,7 +598,11 @@ func (review *commitReview) markdown() string {
 			return marks[i].Old < marks[j].Old
 		})
 		for _, line := range marks {
-			fmt.Fprintf(&output, "- Old line %d, new line %d (%s): reviewed=%t\n", line.Old, line.New, line.Kind, line.Reviewed)
+			status := "Unreviewed"
+			if line.Reviewed {
+				status = "Reviewed"
+			}
+			fmt.Fprintf(&output, "- %s — old line %d, new line %d (%s)\n", status, line.Old, line.New, line.Kind)
 		}
 		if len(marks) > 0 {
 			writeReviewExcerpt(&output, marks)
@@ -541,73 +655,20 @@ func reviewExcerpt(lines []reviewLine) *gtk.ScrolledWindow {
 	return pane
 }
 
-func (app *giti) showReviewNotes() {
+func (app *giti) showReviewPreview() {
 	if app.review == nil {
 		return
 	}
 	if app.diffFindBox.GetVisible() {
 		app.closeDiffFind()
 	}
-	children := app.reviewNotes.GetChildren()
+	children := app.reviewDocument.GetChildren()
 	children.Foreach(func(child any) { child.(*gtk.Widget).Destroy() })
 	children.Free()
-	back := must(gtk.ButtonNewWithLabel("Back to diff"))
-	back.SetHAlign(gtk.ALIGN_START)
-	back.Connect("clicked", app.showDiffPage)
-	app.reviewNotes.PackStart(back, false, false, 0)
-	heading := must(gtk.LabelNew("Review notes"))
-	heading.SetXAlign(0)
-	app.reviewNotes.PackStart(heading, false, false, 0)
-	export := must(gtk.ButtonNewWithLabel("Export Markdown…"))
-	export.SetHAlign(gtk.ALIGN_START)
-	export.Connect("clicked", func() {
-		review := app.review
-		dialog := must(gtk.FileChooserDialogNewWith2Buttons("Export review notes", app.window, gtk.FILE_CHOOSER_ACTION_SAVE, "Cancel", gtk.RESPONSE_CANCEL, "Export", gtk.RESPONSE_ACCEPT))
-		dialog.SetModal(true)
-		dialog.SetDoOverwriteConfirmation(true)
-		dialog.SetCurrentFolder(app.repository.path)
-		dialog.SetCurrentName("giti-review-" + review.Commit[:12] + ".md")
-		if dialog.Run() == gtk.RESPONSE_ACCEPT {
-			if err := os.WriteFile(dialog.GetFilename(), []byte(review.markdown()), 0o600); err != nil {
-				app.showError(err)
-			} else {
-				app.showNotification("Review notes exported.", 3*time.Second)
-			}
-		}
-		dialog.Destroy()
-	})
-	app.reviewNotes.PackStart(export, false, false, 0)
-	paths := app.review.paths()
-	for _, path := range paths {
-		file := app.review.Files[path]
-		label := must(gtk.LabelNew(path + " · " + file.statusText()))
-		label.SetXAlign(0)
-		label.SetSelectable(true)
-		app.reviewNotes.PackStart(label, false, false, 8)
-		for _, comment := range file.Comments {
-			card := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 4))
-			if len(comment.Lines) > 0 {
-				card.PackStart(reviewExcerpt(comment.Lines), false, true, 0)
-			}
-			text := must(gtk.LabelNew(comment.Text))
-			text.SetXAlign(0)
-			text.SetLineWrap(true)
-			text.SetLineWrapMode(pango.WRAP_WORD_CHAR)
-			text.SetSelectable(true)
-			card.PackStart(text, false, false, 0)
-			edit := must(gtk.ButtonNewWithLabel("Edit comment…"))
-			edit.SetHAlign(gtk.ALIGN_START)
-			edit.Connect("clicked", func() { app.editReviewComment(path, comment) })
-			card.PackStart(edit, false, false, 0)
-			app.reviewNotes.PackStart(card, false, false, 4)
-		}
-	}
-	if len(paths) == 0 {
-		app.reviewNotes.PackStart(must(gtk.LabelNew("No review marks or comments yet. Select a file to begin.")), false, false, 8)
-	}
-	app.reviewNotes.ShowAll()
-	app.diffStack.SetVisibleChildName("review-notes")
-	app.reviewCommentButton.SetSensitive(false)
+	app.reviewDocument.PackStart(renderMarkdown(app.review.markdown(app.reviewFiles)), false, false, 0)
+	app.reviewDocument.ShowAll()
+	app.diffStack.SetVisibleChildName("review-preview")
+	app.updateReviewFileActions()
 }
 
 func (app *giti) buildReviewControls() *gtk.Box {
@@ -631,64 +692,85 @@ func (app *giti) buildReviewControls() *gtk.Box {
 	app.reviewFileProgress.SetXAlign(0)
 	app.reviewFileProgress.SetEllipsize(pango.ELLIPSIZE_END)
 	details.PackStart(app.reviewFileProgress, false, false, 0)
-	app.reviewSelector = must(gtk.ButtonNewWithLabel("0 comments"))
-	app.reviewSelector.SetHAlign(gtk.ALIGN_START)
-	app.reviewSelector.SetRelief(gtk.RELIEF_NONE)
-	app.reviewSelector.SetTooltipText("Read, edit, and export review comments")
-	app.reviewSelector.Connect("clicked", app.showReviewNotes)
-	context, _ := app.reviewSelector.GetStyleContext()
-	context.AddClass("giti-parent-button")
-	details.PackStart(app.reviewSelector, false, false, 0)
+	app.reviewCommentCount = must(gtk.LabelNew("0 comments"))
+	details.PackStart(app.reviewCommentCount, false, false, 0)
 	progress.PackStart(details, false, false, 0)
 	app.headerMetaStack.AddNamed(progress, "progress")
 	row.PackStart(app.headerMetaStack, true, true, 0)
-	app.reviewActions = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 4))
-	app.reviewActions.SetVAlign(gtk.ALIGN_CENTER)
+	app.reviewFileActions = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 4))
+	app.reviewFileActions.SetVAlign(gtk.ALIGN_CENTER)
 	app.reviewCommentButton = must(gtk.ButtonNewWithLabel("Add Comment"))
+	app.reviewCommentButton.SetTooltipText("Add a comment for this file")
 	app.reviewCommentButton.Connect("clicked", func() {
 		if app.currentFile != nil {
 			app.editReviewComment(app.currentFile.path, reviewComment{})
 		}
 	})
-	app.reviewPauseButton = must(gtk.ButtonNewWithLabel("Pause Review"))
-	app.reviewPauseButton.SetTooltipText("Return to browsing; your review is saved")
-	app.reviewPauseButton.Connect("clicked", func() {
-		app.reviewActive = false
-		app.showDiffPage()
-		app.updateReviewUI()
+	app.reviewFileButton = must(gtk.ButtonNewWithLabel("Mark Reviewed"))
+	app.reviewFileButton.Connect("clicked", func() {
+		if app.reviewActive && app.currentFile != nil {
+			app.toggleFileReviewed(app.currentFile.path)
+		}
 	})
-	for _, button := range []*gtk.Button{app.reviewCommentButton, app.reviewPauseButton} {
-		button.SetRelief(gtk.RELIEF_NONE)
-		context, _ := button.GetStyleContext()
-		context.AddClass("giti-review-secondary")
-		button.SetVAlign(gtk.ALIGN_CENTER)
-		button.SetNoShowAll(true)
-		app.reviewActions.PackStart(button, false, false, 0)
-	}
-	app.reviewButton = must(gtk.ButtonNewWithLabel("Start Review"))
-	app.reviewButton.SetRelief(gtk.RELIEF_NONE)
-	context, _ = app.reviewButton.GetStyleContext()
-	context.AddClass("giti-review-primary")
-	app.reviewButton.Connect("clicked", func() {
-		active := app.reviewActive
-		if app.changeReview(func(review *commitReview) {
-			review.Started, review.Completed = true, active
-		}) {
-			app.reviewActive = !active
+	app.reviewFileActions.PackStart(app.reviewCommentButton, false, false, 0)
+	app.reviewFileActions.PackStart(app.reviewFileButton, false, false, 0)
+	row.PackEnd(app.reviewFileActions, false, false, 8)
+	app.reviewSessionActions = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 4))
+	app.reviewSessionActions.SetVAlign(gtk.ALIGN_CENTER)
+	app.reviewModeButton = must(gtk.ButtonNewWithLabel("Start Review"))
+	app.reviewModeButton.Connect("clicked", func() {
+		if app.review != nil {
+			app.reviewActive = !app.reviewActive
 			app.showDiffPage()
 			app.updateReviewUI()
 		}
 	})
-	app.reviewActions.PackStart(app.reviewButton, false, false, 0)
-	app.reviewActions.SetNoShowAll(true)
-	row.PackEnd(app.reviewActions, false, false, 8)
-	app.reviewNotes = must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 8))
-	app.reviewNotes.SetMarginStart(16)
-	app.reviewNotes.SetMarginEnd(16)
-	app.reviewNotes.SetMarginTop(16)
-	app.reviewNotes.SetMarginBottom(16)
-	app.reviewActions.Show()
-	app.reviewButton.ShowAll()
+	app.reviewExportButton = must(gtk.ButtonNewWithLabel("Export Review"))
+	app.reviewExportButton.SetTooltipText("Export this review as Markdown")
+	app.reviewExportButton.Connect("clicked", func() {
+		document := app.review.markdown(app.reviewFiles)
+		dialog := must(gtk.FileChooserDialogNewWith2Buttons("Export review", app.window, gtk.FILE_CHOOSER_ACTION_SAVE, "Cancel", gtk.RESPONSE_CANCEL, "Export", gtk.RESPONSE_ACCEPT))
+		dialog.SetModal(true)
+		dialog.SetDoOverwriteConfirmation(true)
+		dialog.SetCurrentFolder(app.repository.path)
+		dialog.SetCurrentName("giti-review-" + app.review.Commit[:12] + ".md")
+		if dialog.Run() == gtk.RESPONSE_ACCEPT {
+			if err := os.WriteFile(dialog.GetFilename(), []byte(document), 0o600); err != nil {
+				app.showError(err)
+			} else {
+				app.showNotification("Review exported.", 3*time.Second)
+			}
+		}
+		dialog.Destroy()
+	})
+	app.reviewPreviewButton = must(gtk.ButtonNew())
+	app.reviewPreviewButton.SetImage(must(gtk.ImageNewFromIconName("view-reveal-symbolic", gtk.ICON_SIZE_MENU)))
+	app.reviewPreviewButton.SetTooltipText("Preview Review")
+	setAccessibility(&app.reviewPreviewButton.Widget, "Preview Review", "View the formatted Markdown export")
+	for _, button := range []*gtk.Button{app.reviewPreviewButton, app.reviewExportButton, app.reviewModeButton} {
+		app.reviewSessionActions.PackStart(button, false, false, 0)
+	}
+	for _, button := range []*gtk.Button{app.reviewModeButton, app.reviewFileButton, app.reviewCommentButton, app.reviewExportButton, app.reviewPreviewButton} {
+		button.SetRelief(gtk.RELIEF_NONE)
+		context, _ := button.GetStyleContext()
+		class := "giti-review-secondary"
+		if button == app.reviewModeButton || button == app.reviewFileButton {
+			class = "giti-review-primary"
+		}
+		context.AddClass(class)
+	}
+	app.reviewPreviewButton.Connect("clicked", app.showReviewPreview)
+	app.reviewSessionActions.ShowAll()
+	app.reviewSessionActions.SetNoShowAll(true)
+	app.reviewPreviewButton.SetNoShowAll(true)
+	app.reviewExportButton.SetNoShowAll(true)
+	app.reviewFileActions.ShowAll()
+	app.reviewFileActions.SetNoShowAll(true)
+	app.reviewDocument = must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0))
+	app.reviewDocument.SetMarginStart(20)
+	app.reviewDocument.SetMarginEnd(20)
+	app.reviewDocument.SetMarginTop(8)
+	app.reviewDocument.SetMarginBottom(20)
 	return row
 }
 
@@ -698,7 +780,7 @@ func (app *giti) populateFileReviewMenu(menu *gtk.Menu, path string) {
 	}
 	label := "Mark Reviewed"
 	if complete, _ := app.review.Files[path].status(); complete {
-		label = "Mark Unreviewed"
+		label = "Unmark Reviewed"
 	}
 	mark := must(gtk.MenuItemNewWithLabel(label))
 	mark.Connect("activate", func() { app.toggleFileReviewed(path) })
@@ -706,7 +788,53 @@ func (app *giti) populateFileReviewMenu(menu *gtk.Menu, path string) {
 	comment := must(gtk.MenuItemNewWithLabel("Add file comment…"))
 	comment.Connect("activate", func() { app.editReviewComment(path, reviewComment{}) })
 	menu.Append(comment)
+	app.populateReviewCommentMenu(menu, path, nil)
 	menu.Append(must(gtk.SeparatorMenuItemNew()))
+}
+
+func (app *giti) populateReviewCommentMenu(menu *gtk.Menu, path string, lines []reviewLine) {
+	file := app.review.Files[path]
+	if file == nil || len(file.Comments) == 0 {
+		return
+	}
+	selected := make(map[string]bool)
+	for _, line := range lines {
+		selected[reviewLineKey(line)] = true
+	}
+	submenu := must(gtk.MenuNew())
+	count := 0
+	for _, comment := range file.Comments {
+		matches := lines == nil
+		for _, line := range comment.Lines {
+			matches = matches || selected[reviewLineKey(line)]
+		}
+		if !matches {
+			continue
+		}
+		label := strings.TrimSpace(strings.SplitN(comment.Text, "\n", 2)[0])
+		characters := []rune(label)
+		if len(characters) > 48 {
+			label = string(characters[:48]) + "…"
+		}
+		if len(comment.Lines) == 0 {
+			label = "File: " + label
+		} else if line := comment.Lines[0]; line.New > 0 {
+			label = fmt.Sprintf("Line %d: %s", line.New, label)
+		} else {
+			label = fmt.Sprintf("Old line %d: %s", line.Old, label)
+		}
+		item := must(gtk.MenuItemNewWithLabel(label))
+		item.Connect("activate", func() { app.editReviewComment(path, comment) })
+		submenu.Append(item)
+		count++
+	}
+	if count == 0 {
+		submenu.Destroy()
+		return
+	}
+	edit := must(gtk.MenuItemNewWithLabel("Edit comments…"))
+	edit.SetSubmenu(submenu)
+	menu.Append(edit)
 }
 
 func (app *giti) populateReviewMenu(menu *gtk.Menu) {
@@ -728,6 +856,7 @@ func (app *giti) populateReviewMenu(menu *gtk.Menu) {
 	comment.SetSensitive(len(lines) > 0)
 	comment.Connect("activate", func() { app.editReviewComment(app.currentFile.path, reviewComment{Lines: lines}) })
 	menu.Append(comment)
+	app.populateReviewCommentMenu(menu, app.currentFile.path, lines)
 	// A hunk is only a selection shortcut. Persisted review anchors remain lines.
 	first := app.diffContextLine
 	for first >= 0 && first < len(app.reviewLines) && app.reviewLines[first].tag != "hunk" {

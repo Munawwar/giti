@@ -2,9 +2,12 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestCommitReviewPersistsIndependentUpdatesAndAmend(t *testing.T) {
@@ -70,10 +73,87 @@ func TestReviewMarkdownCapturesBothSidesAndFileComments(t *testing.T) {
 	}
 	line := reviewLine{New: 2, Kind: "added", Text: "+after", Reviewed: true}
 	file.Lines[reviewLineKey(line)] = line
-	output := review.markdown()
-	for _, expected := range []string{"Repository: /repo", "Commit: " + review.Commit, "Parent commits: " + review.Parents[0], "## sample.txt", "Partially reviewed", "File-wide question", "Old line 2, new line 0 (removed)", "Old line 0, new line 2 (added)", "````diff\n-before\n+after\n ```\n````", "Why change this?"} {
+	output := review.markdown([]changedFile{{path: "sample.txt", additions: 1, deletions: 1}, {path: "untouched.txt", additions: 2}})
+	for _, expected := range []string{"**Repository:** `/repo`", "**Commit:** `" + review.Commit + "`", "**Parent commits:** " + review.Parents[0], "## sample.txt", "Partially reviewed", "File-wide question", "Old line 2, new line 0 (removed)", "Old line 0, new line 2 (added)", "````diff\n-before\n+after\n ```\n````", "Why change this?", "`untouched.txt` | Unreviewed | 0", "1 of 4 lines reviewed"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("export missing %q:\n%s", expected, output)
 		}
+	}
+}
+
+func TestReviewCleanupRetentionThrottleAndConcurrentWriters(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "giti", "reviews")
+	now := time.Now().UTC()
+	makeReview := func(repository, name string, age time.Duration) string {
+		t.Helper()
+		path := filepath.Join(directory, repository, name+"-first-parent.json")
+		seed := &commitReview{Repository: repository, Commit: name, Comparison: "first-parent"}
+		if _, err := saveCommitReview(path, seed, func(review *commitReview) {
+			review.file("sample.txt").Comments = []reviewComment{{ID: "note", Text: "Review question"}}
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, now.Add(-age), now.Add(-age)); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	old := makeReview("repo-a", "old", 31*24*time.Hour)
+	other := makeReview("repo-b", "old", 31*24*time.Hour)
+	fresh := makeReview("repo-a", "fresh", time.Hour)
+	boundary := makeReview("repo-a", "boundary", 30*24*time.Hour)
+	busy := makeReview("repo-a", "busy", 31*24*time.Hour)
+	// Hold the writer's real lock while cleanup visits an otherwise expired review.
+	writer := must(lockReviewData(busy+".lock", syscall.LOCK_EX))
+	defer writer.Close()
+	defer syscall.Flock(int(writer.Fd()), syscall.LOCK_UN)
+	if err := cleanupCommitReviews(directory, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{old, other} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expired review remains: %s, %v", path, err)
+		}
+	}
+	for _, path := range []string{fresh, boundary, busy} {
+		if data, err := os.ReadFile(path); err != nil || !strings.Contains(string(data), "Review question") {
+			t.Fatalf("retained review lost notes: %s, %v", path, err)
+		}
+	}
+	if err := syscall.Flock(int(writer.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	pending := makeReview("repo-b", "pending", 31*24*time.Hour)
+	if err := cleanupCommitReviews(directory, now.Add(23*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{pending, busy} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("cleanup ran again within 24 hours: %s, %v", path, err)
+		}
+	}
+	// Another process owning the cleanup lock must prevent a competing scan.
+	cleaner := must(lockReviewData(filepath.Join(directory, ".cleanup.lock"), syscall.LOCK_EX))
+	defer cleaner.Close()
+	defer syscall.Flock(int(cleaner.Fd()), syscall.LOCK_UN)
+	if err := cleanupCommitReviews(directory, now.Add(25*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(pending); err != nil {
+		t.Fatalf("competing cleaner ignored the process lock: %v", err)
+	}
+	if err := syscall.Flock(int(cleaner.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanupCommitReviews(directory, now.Add(25*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{pending, busy, boundary} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("next daily cleanup missed expired review: %s, %v", path, err)
+		}
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("next cleanup removed a fresh review: %v", err)
 	}
 }
