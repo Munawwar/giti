@@ -520,7 +520,7 @@ func (app *giti) onFileSelected() {
 			if automaticWhitespace {
 				patch = "Whitespace-only merge resolution — shown automatically.\n\n" + patch
 			} else if patch == "" && ignoreWhitespace {
-				patch = "No non-whitespace changes. Turn on “Whitespace changes” to view this diff.\n"
+				patch = "No non-whitespace changes. Turn on “Whitespace” to view this diff.\n"
 			}
 			app.diffLoaded = true
 			app.setDiff(patch)

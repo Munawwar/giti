@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"html"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,7 +16,6 @@ import (
 	"github.com/gotk3/gotk3/cairo"
 	"github.com/gotk3/gotk3/gdk"
 	"github.com/gotk3/gotk3/gtk"
-	"github.com/gotk3/gotk3/pango"
 )
 
 type reviewLine struct {
@@ -420,8 +420,9 @@ func (app *giti) markReviewLines(lines []reviewLine, reviewed bool) {
 	})
 }
 
-// reviewFileTarget finds the nearest listed file in direction that still needs review.
-func (app *giti) reviewFileTarget(direction int) *gtk.TreePath {
+// reviewFileTarget finds the next listed file, wrapping to the start; while
+// reviewing it skips files that are already reviewed.
+func (app *giti) reviewFileTarget() *gtk.TreePath {
 	type listed struct {
 		tree string
 		done bool
@@ -435,33 +436,62 @@ func (app *giti) reviewFileTarget(direction int) *gtk.TreePath {
 			if app.currentFile != nil && app.files[index].path == app.currentFile.path {
 				current = len(files)
 			}
-			files = append(files, listed{path.String(), app.reviewState(app.files[index].path) >= reviewDone})
+			files = append(files, listed{path.String(), app.reviewActive && app.review != nil && app.reviewState(app.files[index].path) >= reviewDone})
 		}
 		return false
 	})
-	if current < 0 && direction < 0 {
-		current = len(files)
-	}
-	for index := current + direction; index >= 0 && index < len(files); index += direction {
-		if !files[index].done {
+	for step := 1; step <= len(files); step++ {
+		if index := (current + step) % len(files); index != current && !files[index].done {
 			return must(gtk.TreePathNewFromString(files[index].tree))
 		}
 	}
 	return nil
 }
 
+// updateReviewFileActions refreshes the file row: name, counts, review action, and next file.
 func (app *giti) updateReviewFileActions() {
+	file := app.currentFile
+	app.headerFileName.SetMarkup(`<span foreground="#9ca3af">No file selected</span>`)
+	app.headerFileName.SetTooltipText("")
+	if file != nil {
+		app.headerFileName.SetMarkup("<b>" + html.EscapeString(filepath.Base(file.path)) + "</b>")
+		app.headerFileName.SetTooltipText(file.path)
+	}
+	// Untracked and binary files have no line counts; working-tree views list them beside each file already.
+	app.fileStatistics.SetVisible(file != nil && !file.binary && file.status != "??" && app.currentRow != nil && app.currentRow.kind == "commit")
+	if file != nil {
+		app.fileStatisticLabels[0].SetText(fmt.Sprintf("+%d", file.additions))
+		app.fileStatisticLabels[1].SetText(fmt.Sprintf("−%d", file.deletions))
+		for _, label := range app.fileStatisticLabels {
+			label.Show()
+		}
+	}
 	visible := app.review != nil && app.reviewActive && app.diffStack.GetVisibleChildName() == "diff"
-	app.reviewFileActions.SetVisible(visible)
-	app.reviewFileButton.SetSensitive(visible && app.currentFile != nil && app.diffLoaded)
-	app.reviewCommentButton.SetSensitive(app.reviewFileButton.GetSensitive())
-	app.reviewPreviousButton.SetSensitive(visible && app.reviewFileTarget(-1) != nil)
-	app.reviewNextButton.SetSensitive(visible && app.reviewFileTarget(1) != nil)
+	app.reviewFileButton.SetVisible(visible)
+	app.reviewLinesLabel.SetVisible(visible)
+	app.reviewFileButton.SetSensitive(visible && file != nil && app.diffLoaded)
+	app.reviewCommentItem.SetSensitive(app.reviewFileButton.GetSensitive())
+	next := app.reviewFileTarget()
+	app.reviewNextButton.SetSensitive(next != nil)
+	app.reviewNextButton.SetTooltipText(map[bool]string{false: "Next file", true: "Next file to review"}[app.reviewActive])
+	if app.reviewActive && next == nil {
+		app.reviewNextButton.SetTooltipText("All files reviewed")
+	}
 	app.reviewFileButton.SetLabel("Mark _Reviewed")
 	app.reviewFileButton.SetTooltipText("Mark this whole file reviewed, including whitespace changes (Alt+R)")
-	if visible && app.currentFile != nil && app.reviewState(app.currentFile.path) >= reviewDone {
+	app.reviewLinesLabel.SetText("")
+	if !visible || file == nil {
+		return
+	}
+	if app.reviewState(file.path) >= reviewDone {
 		app.reviewFileButton.SetLabel("Unmark _Reviewed")
 		app.reviewFileButton.SetTooltipText("Clear this file’s review marks; comments stay (Alt+R)")
+	}
+	for _, changed := range app.reviewFiles {
+		if changed.path == file.path {
+			total := changed.additions + changed.deletions
+			app.reviewLinesLabel.SetText(fmt.Sprintf("%d/%d lines", app.review.Files[changed.path].reviewedLines(total), total))
+		}
 	}
 }
 
@@ -473,11 +503,10 @@ func (app *giti) updateReviewUI() {
 	active := available && app.reviewActive
 	app.reviewSessionActions.SetVisible(available)
 	app.reviewColumn.SetVisible(available)
-	app.headerMetaStack.SetVisibleChildName("author")
-	app.reviewModeButton.SetLabel("Start Review")
+	app.reviewFilesLabel.SetVisible(active)
+	app.reviewModeButton.SetLabel("Review")
 	app.reviewModeButton.SetTooltipText("Review this commit; saved marks and comments are restored")
 	if active {
-		app.headerMetaStack.SetVisibleChildName("progress")
 		app.reviewModeButton.SetLabel("Exit Review")
 		app.reviewModeButton.SetTooltipText("Return to browsing; your marks and comments are saved")
 	}
@@ -502,19 +531,17 @@ func (app *giti) updateReviewUI() {
 			}
 		}
 	}
-	// Keep export controls mounted for the whole session so marking never shifts the title.
-	app.reviewPreviewButton.SetVisible(hasContent || active)
-	app.reviewExportButton.SetVisible(hasContent || active)
-	app.reviewPreviewButton.SetSensitive(hasContent)
-	app.reviewExportButton.SetSensitive(hasContent)
-	complete := app.reviewStateCounts[reviewDone] + app.reviewStateCounts[reviewCommented]
-	if complete == len(app.reviewFiles) && complete > 0 {
-		app.reviewProgress.SetMarkup("<b>Review complete</b>")
-	} else {
-		app.reviewProgress.SetMarkup(fmt.Sprintf("<b>%d of %d lines reviewed</b>", reviewedLines, totalLines))
+	for _, item := range []*gtk.MenuItem{app.reviewPreviewItem, app.reviewExportItem, app.reviewCopyItem} {
+		item.SetSensitive(hasContent)
 	}
-	app.reviewFileProgress.SetText(fmt.Sprintf("%d of %d files reviewed ·", complete, len(app.reviewFiles)))
-	app.reviewCommentCount.SetText(plural(comments, "comment"))
+	app.reviewSummaryItem.SetLabel(fmt.Sprintf("%d of %d lines reviewed · %s", reviewedLines, totalLines, plural(comments, "comment")))
+	complete := app.reviewStateCounts[reviewDone] + app.reviewStateCounts[reviewCommented]
+	app.reviewFilesLabel.SetText(fmt.Sprintf("%d/%d files", complete, len(app.reviewFiles)))
+	app.reviewFilesLabel.SetTooltipText("Files reviewed in this commit")
+	if complete == len(app.reviewFiles) && complete > 0 {
+		app.reviewFilesLabel.SetMarkup(fmt.Sprintf(`<span foreground="#2e8c47">✓ %d/%d files</span>`, complete, complete))
+		app.reviewFilesLabel.SetTooltipText("Review complete: every changed file is reviewed")
+	}
 	app.reviewProgressBar.SetTooltipText(fmt.Sprintf("%d good to go · %d with comments · %d partial · %d not reviewed", app.reviewStateCounts[reviewDone], app.reviewStateCounts[reviewCommented], app.reviewStateCounts[reviewPartial], app.reviewStateCounts[reviewNone]))
 	app.reviewProgressBar.QueueDraw()
 	for _, store := range []struct {
@@ -1001,70 +1028,13 @@ func (app *giti) showReviewPreview() {
 	app.updateReviewFileActions()
 }
 
-func (app *giti) buildReviewControls() *gtk.Box {
-	row := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 12))
-	app.headerAuthor = must(gtk.LabelNew(""))
-	app.headerAuthor.SetXAlign(0)
-	app.headerAuthor.SetEllipsize(pango.ELLIPSIZE_END)
-	app.headerMetaStack = must(gtk.StackNew())
-	app.headerMetaStack.SetHHomogeneous(false)
-	app.headerMetaStack.SetVHomogeneous(true)
-	app.headerMetaStack.SetTransitionDuration(0)
-	app.headerMetaStack.AddNamed(app.headerAuthor, "author")
-	progress := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0))
-	app.reviewProgress = must(gtk.LabelNew(""))
-	app.reviewProgress.SetXAlign(0)
-	app.reviewProgress.SetEllipsize(pango.ELLIPSIZE_END)
-	app.reviewProgress.SetTooltipText("Progress covers all changed lines in this comparison, including whitespace")
-	progress.PackStart(app.reviewProgress, false, false, 0)
-	details := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 4))
-	app.reviewFileProgress = must(gtk.LabelNew(""))
-	app.reviewFileProgress.SetXAlign(0)
-	app.reviewFileProgress.SetEllipsize(pango.ELLIPSIZE_END)
-	details.PackStart(app.reviewFileProgress, false, false, 0)
-	app.reviewCommentCount = must(gtk.LabelNew("0 comments"))
-	details.PackStart(app.reviewCommentCount, false, false, 0)
-	progress.PackStart(details, false, false, 0)
-	app.headerMetaStack.AddNamed(progress, "progress")
-	row.PackStart(app.headerMetaStack, true, true, 0)
-	app.reviewFileActions = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 4))
-	app.reviewFileActions.SetVAlign(gtk.ALIGN_CENTER)
-	for _, step := range []struct {
-		button     **gtk.Button
-		icon, name string
-		direction  int
-	}{{&app.reviewPreviousButton, "go-previous-symbolic", "Previous file to review", -1}, {&app.reviewNextButton, "go-next-symbolic", "Next file to review", 1}} {
-		*step.button = must(gtk.ButtonNewFromIconName(step.icon, gtk.ICON_SIZE_MENU))
-		(*step.button).SetTooltipText(step.name)
-		setAccessibility(&(*step.button).Widget, step.name, "Skip files that are already reviewed")
-		(*step.button).Connect("clicked", func() {
-			if path := app.reviewFileTarget(step.direction); path != nil {
-				app.fileView.ExpandToPath(path)
-				app.fileView.SetCursor(path, app.fileColumn, false)
-				app.fileView.ScrollToCell(path, nil, false, 0, 0)
-			}
-		})
-		app.reviewFileActions.PackStart(*step.button, false, false, 0)
-	}
-	app.reviewCommentButton = must(gtk.ButtonNewWithLabel("Add Comment"))
-	app.reviewCommentButton.SetTooltipText("Add a comment for this file")
-	app.reviewCommentButton.Connect("clicked", func() {
-		if app.currentFile != nil {
-			app.startReviewDraft(app.currentFile.path, reviewComment{})
-		}
-	})
-	app.reviewFileButton = must(gtk.ButtonNewWithMnemonic("Mark _Reviewed"))
-	app.reviewFileButton.Connect("clicked", func() {
-		if app.reviewActive && app.currentFile != nil {
-			app.toggleFileReviewed(app.currentFile.path)
-		}
-	})
-	app.reviewFileActions.PackStart(app.reviewCommentButton, false, false, 0)
-	app.reviewFileActions.PackStart(app.reviewFileButton, false, false, 0)
-	row.PackEnd(app.reviewFileActions, false, false, 8)
-	app.reviewSessionActions = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 4))
-	app.reviewSessionActions.SetVAlign(gtk.ALIGN_CENTER)
-	app.reviewModeButton = must(gtk.ButtonNewWithLabel("Start Review"))
+// buildReviewControls creates the review split button, file arrows, and file
+// actions; buildContentPane places them in the header rows.
+func (app *giti) buildReviewControls() {
+	app.reviewFilesLabel = must(gtk.LabelNew(""))
+	app.reviewFilesLabel.SetNoShowAll(true)
+	app.reviewFilesLabel.SetXAlign(1)
+	app.reviewModeButton = must(gtk.ButtonNewWithLabel("Review"))
 	app.reviewModeButton.Connect("clicked", func() {
 		if app.review != nil {
 			app.reviewActive = !app.reviewActive
@@ -1072,9 +1042,23 @@ func (app *giti) buildReviewControls() *gtk.Box {
 			app.updateReviewUI()
 		}
 	})
-	app.reviewExportButton = must(gtk.ButtonNewWithLabel("Export Review"))
-	app.reviewExportButton.SetTooltipText("Export this review as Markdown")
-	app.reviewExportButton.Connect("clicked", func() {
+	menu := must(gtk.MenuNew())
+	add := func(label string, activate func()) *gtk.MenuItem {
+		item := must(gtk.MenuItemNewWithLabel(label))
+		item.Connect("activate", activate)
+		menu.Append(item)
+		return item
+	}
+	app.reviewSummaryItem = add("", func() {})
+	app.reviewSummaryItem.SetSensitive(false)
+	menu.Append(must(gtk.SeparatorMenuItemNew()))
+	app.reviewCommentItem = add("Add file comment", func() {
+		if app.currentFile != nil {
+			app.startReviewDraft(app.currentFile.path, reviewComment{})
+		}
+	})
+	app.reviewPreviewItem = add("Preview review", app.showReviewPreview)
+	app.reviewExportItem = add("Export review…", func() {
 		document := app.review.markdown(app.reviewFiles)
 		dialog := must(gtk.FileChooserDialogNewWith2Buttons("Export review", app.window, gtk.FILE_CHOOSER_ACTION_SAVE, "Cancel", gtk.RESPONSE_CANCEL, "Export", gtk.RESPONSE_ACCEPT))
 		dialog.SetModal(true)
@@ -1090,29 +1074,56 @@ func (app *giti) buildReviewControls() *gtk.Box {
 		}
 		dialog.Destroy()
 	})
-	app.reviewPreviewButton = must(gtk.ButtonNew())
-	app.reviewPreviewButton.SetImage(must(gtk.ImageNewFromIconName("view-reveal-symbolic", gtk.ICON_SIZE_MENU)))
-	app.reviewPreviewButton.SetTooltipText("Preview Review")
-	setAccessibility(&app.reviewPreviewButton.Widget, "Preview Review", "View the formatted Markdown export")
-	for _, button := range []*gtk.Button{app.reviewPreviewButton, app.reviewExportButton, app.reviewModeButton} {
-		app.reviewSessionActions.PackStart(button, false, false, 0)
+	app.reviewCopyItem = add("Copy review as Markdown", func() {
+		app.copyToClipboard(app.review.markdown(app.reviewFiles), "Copied review to clipboard.")
+	})
+	menu.ShowAll()
+	more := must(gtk.MenuButtonNew())
+	more.SetPopup(menu)
+	more.SetImage(chevron("pan-down-symbolic", 12))
+	more.SetTooltipText("Review actions")
+	setAccessibility(&more.Widget, "Review actions", "Comment on the file, preview, export, or copy the review")
+	app.reviewSessionActions = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
+	app.reviewSessionActions.SetVAlign(gtk.ALIGN_CENTER)
+	for _, widget := range []gtk.IWidget{app.reviewModeButton, more} {
+		app.reviewSessionActions.PackStart(widget, false, false, 0)
 	}
-	for _, button := range []*gtk.Button{app.reviewModeButton, app.reviewFileButton, app.reviewCommentButton, app.reviewExportButton, app.reviewPreviewButton, app.reviewPreviousButton, app.reviewNextButton} {
+	// Flat like the rest of the header: bold text marks the primary action.
+	for _, button := range []*gtk.Button{app.reviewModeButton, &more.ToggleButton.Button} {
 		button.SetRelief(gtk.RELIEF_NONE)
 		context, _ := button.GetStyleContext()
-		class := "giti-review-secondary"
-		if button == app.reviewModeButton || button == app.reviewFileButton {
-			class = "giti-review-primary"
-		}
-		context.AddClass(class)
+		context.AddClass("giti-review-primary")
 	}
-	app.reviewPreviewButton.Connect("clicked", app.showReviewPreview)
 	app.reviewSessionActions.ShowAll()
 	app.reviewSessionActions.SetNoShowAll(true)
-	app.reviewPreviewButton.SetNoShowAll(true)
-	app.reviewExportButton.SetNoShowAll(true)
-	app.reviewFileActions.ShowAll()
-	app.reviewFileActions.SetNoShowAll(true)
+	// The next-file chevron matches the ⋮ button above it in size.
+	app.reviewNextButton = must(gtk.ButtonNew())
+	app.reviewNextButton.SetImage(chevron("pan-end-symbolic", 14))
+	app.reviewNextButton.SetVAlign(gtk.ALIGN_CENTER)
+	setAccessibility(&app.reviewNextButton.Widget, "Next file", "Go to the next file, wrapping to the first; while reviewing, skip reviewed files")
+	app.reviewNextButton.Connect("clicked", func() {
+		if path := app.reviewFileTarget(); path != nil {
+			app.fileView.ExpandToPath(path)
+			app.fileView.SetCursor(path, app.fileColumn, false)
+			app.fileView.ScrollToCell(path, nil, false, 0, 0)
+		}
+	})
+	app.reviewLinesLabel = must(gtk.LabelNew(""))
+	app.reviewLinesLabel.SetNoShowAll(true)
+	app.reviewLinesLabel.SetXAlign(1)
+	app.reviewLinesLabel.SetTooltipText("Changed lines reviewed in this file, including whitespace changes")
+	app.reviewFileButton = must(gtk.ButtonNewWithMnemonic("Mark _Reviewed"))
+	app.reviewFileButton.SetNoShowAll(true)
+	app.reviewFileButton.SetRelief(gtk.RELIEF_NONE)
+	app.reviewFileButton.SetVAlign(gtk.ALIGN_CENTER)
+	app.reviewFileButton.Connect("clicked", func() {
+		if app.reviewActive && app.currentFile != nil {
+			app.toggleFileReviewed(app.currentFile.path)
+		}
+	})
+	fileContext, _ := app.reviewFileButton.GetStyleContext()
+	fileContext.AddClass("giti-review-primary")
+	squareButton(app.reviewNextButton)
 	app.reviewDocument = must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0))
 	app.reviewDocument.SetMarginStart(20)
 	app.reviewDocument.SetMarginEnd(20)
@@ -1142,7 +1153,6 @@ func (app *giti) buildReviewControls() *gtk.Box {
 		}
 		return false
 	})
-	return row
 }
 
 func (app *giti) populateFileReviewMenu(menu *gtk.Menu, path string) {

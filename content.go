@@ -15,22 +15,28 @@ import (
 )
 
 func (app *giti) setCommitHeader(details commitDetails) {
-	// The title, commit identity, and detail regions change with selection. The
-	// action row stays mounted so its toggles retain their state and callbacks.
-	app.headerReferenceButtons, app.headerParentButtons = nil, nil
-	for _, box := range []*gtk.Box{app.headerTitleRow, app.headerStatistics, app.headerCommit, app.headerDetails} {
+	// The title, identity, and message regions change with selection. The rows
+	// and their actions stay mounted so toggles keep their state and callbacks.
+	app.headerReferenceButtons, app.headerIdentity = nil, details
+	for _, box := range []*gtk.Box{app.headerTitleRow, app.headerStatistics, app.headerSHA, app.headerCommit, app.headerDetails} {
 		if children := box.GetChildren(); children != nil {
 			children.Foreach(func(child any) { box.Remove(child.(gtk.IWidget)) })
 			children.Free()
 		}
 	}
+	// The title stays selectable for copying; the chevron after it opens the full
+	// message, which also holds any part of the subject the ellipsis hides.
 	title := must(gtk.LabelNew(""))
 	title.SetXAlign(0)
 	title.SetSelectable(true)
 	title.SetEllipsize(pango.ELLIPSIZE_END)
+	title.SetMarginStart(4)
 	title.SetMarkup("<span size=\"large\" weight=\"bold\">" + html.EscapeString(details.subject) + "</span>")
-	title.SetTooltipText(details.subject)
-	app.headerTitleRow.PackStart(title, true, true, 0)
+	title.Connect("size-allocate", func() {
+		_, natural := title.GetPreferredWidth()
+		title.SetTooltipText(map[bool]string{false: "", true: details.subject}[title.GetAllocatedWidth() < natural])
+	})
+	app.headerTitleRow.PackStart(title, false, true, 0)
 	// Keep aggregate statistics outside the ellipsized title so they remain
 	// visible even for unusually long subjects.
 	app.headerStatistics.SetVisible(details.statistics)
@@ -58,39 +64,22 @@ func (app *giti) setCommitHeader(details commitDetails) {
 			untracked.Show()
 		}
 	}
-	if details.sha == "" {
+	commit := details.sha != ""
+	app.headerIdentityButton.SetVisible(commit)
+	app.headerMenuButton.SetVisible(commit)
+	if !commit {
+		// Working-tree views have no identity, message, or parents: one commit row.
 		app.headerAuthor.SetText("")
-		app.headerAuthor.SetTooltipText("")
 		app.commitHeader.ShowAll()
+		app.headerMetaRow.Hide()
 		app.updateReviewUI()
 		return
 	}
-	commitLabel := must(gtk.LabelNew(""))
-	commitLabel.SetMarkup("<span foreground=\"#4b5563\"><b>Commit</b></span>")
-	shaLabel := must(gtk.LabelNew(""))
-	shaLabel.SetXAlign(0)
-	shaLabel.SetSelectable(true)
-	shaLabel.SetEllipsize(pango.ELLIPSIZE_MIDDLE)
-	shaLabel.SetTooltipText(details.sha)
-	shaLabel.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><tt>%s</tt></span>", html.EscapeString(details.sha)))
-	app.headerCommit.PackStart(commitLabel, false, false, 0)
-	app.headerCommit.PackStart(shaLabel, true, true, 0)
-	app.headerCommit.PackStart(app.copySHAButton(details.sha), false, false, 0)
-	meta := app.headerAuthor
-	meta.SetText("")
-	meta.SetXAlign(0)
-	meta.SetEllipsize(pango.ELLIPSIZE_END)
-	meta.SetSelectable(true)
-	authored := formatCommitTime(details.authored, time.Local, "2 Jan 2006, 15:04 MST")
-	committed := formatCommitTime(details.committed, time.Local, "2 Jan 2006, 15:04 MST")
-	authoredUTC := formatCommitTime(details.authored, time.UTC, time.RFC3339)
-	committedUTC := formatCommitTime(details.committed, time.UTC, time.RFC3339)
-	if details.author == details.committer && details.authorEmail == details.committerEmail && details.authored == details.committed {
-		meta.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Author &amp; committer</b> %s &lt;%s&gt;  ·  %s</span>", html.EscapeString(details.author), html.EscapeString(details.authorEmail), html.EscapeString(authored)))
-		meta.SetTooltipText("Author & committer: " + authoredUTC)
-	} else {
-		meta.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Author</b> %s &lt;%s&gt;  ·  %s\n<b>Committer</b> %s &lt;%s&gt;  ·  %s</span>", html.EscapeString(details.author), html.EscapeString(details.authorEmail), html.EscapeString(authored), html.EscapeString(details.committer), html.EscapeString(details.committerEmail), html.EscapeString(committed)))
-		meta.SetTooltipText(fmt.Sprintf("Author: %s\nCommitter: %s", authoredUTC, committedUTC))
+	sameIdentity := details.author == details.committer && details.authorEmail == details.committerEmail
+	app.headerAuthor.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>%s</b>  ·  %s</span>", html.EscapeString(details.author), html.EscapeString(formatCommitTime(details.authored, time.Local, "2 Jan 2006, 15:04 MST"))))
+	app.headerIdentityButton.SetTooltipText("Author details")
+	if !sameIdentity {
+		app.headerIdentityButton.SetTooltipText("Committed by " + details.committer + " — show details")
 	}
 	if len(details.branches) > 0 || len(details.tags) > 0 {
 		refs := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 6))
@@ -166,52 +155,91 @@ func (app *giti) setCommitHeader(details commitDetails) {
 			more.Connect("clicked", func() { app.showReferences(details.branches, details.tags) })
 			refs.PackStart(more, false, false, 0)
 		}
-		app.headerDetails.PackStart(refs, false, false, 0)
+		// Clip long reference lists rather than pushing the view toggles away;
+		// the overflow chips open the complete list.
+		clip := must(gtk.ScrolledWindowNew(nil, nil))
+		clip.SetPolicy(gtk.POLICY_EXTERNAL, gtk.POLICY_NEVER)
+		clip.SetPropagateNaturalHeight(true)
+		clip.SetVAlign(gtk.ALIGN_CENTER)
+		clip.Add(refs)
+		app.headerCommit.PackStart(clip, true, true, 0)
 	}
-	if len(details.parents) > 0 {
-		parents := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 4))
-		parentLabel := must(gtk.LabelNew("Parents:"))
-		parentLabel.SetSelectable(true)
-		parents.PackStart(parentLabel, false, false, 0)
-		for _, parent := range details.parents {
-			parent := parent
-			button := must(gtk.ButtonNewWithLabel(parent[:min(7, len(parent))]))
-			button.SetRelief(gtk.RELIEF_NONE)
-			button.SetTooltipText("Open parent commit " + parent)
-			setAccessibility(&button.Widget, "Open parent commit "+parent, "Navigate to the parent commit")
-			context, _ := button.GetStyleContext()
-			context.AddClass("giti-parent-button")
-			button.Connect("clicked", func() {
-				app.historySearch.SetText("")
-				app.revealHistoryRevision(parent)
-			})
-			app.headerParentButtons = append(app.headerParentButtons, button)
-			parents.PackStart(button, false, false, 0)
-		}
-		app.headerDetails.PackStart(parents, false, false, 0)
-	}
-	// Always offer the full message: long subjects ellipsize in the title, and a
-	// constant expander keeps the header height stable between commits.
-	if text := strings.TrimSpace(details.subject + "\n\n" + details.body); text != "" {
-		expander := must(gtk.ExpanderNew("Commit message"))
-		body := must(gtk.LabelNew(text))
-		body.SetXAlign(0)
-		body.SetYAlign(0)
-		body.SetSelectable(true)
-		body.SetLineWrap(true)
-		body.SetLineWrapMode(pango.WRAP_WORD_CHAR)
-		body.SetMarginStart(20)
-		body.SetMarginEnd(8)
-		message := scroller(body)
-		message.SetPolicy(gtk.POLICY_NEVER, gtk.POLICY_AUTOMATIC)
-		message.SetMinContentHeight(min(180, max(48, (strings.Count(text, "\n")+1)*20+12)))
-		message.SetMaxContentHeight(180)
-		message.SetPropagateNaturalHeight(true)
-		expander.Add(message)
-		app.headerDetails.PackStart(expander, false, false, 4)
-	}
+	shaMarkup := "<span foreground=\"#4b5563\" font_features=\"tnum\">" + html.EscapeString(details.sha[:min(7, len(details.sha))]) + "</span>"
+	app.headerSHA.PackStart(app.copyButton(shaMarkup, details.sha, "Copy full SHA: "+details.sha, "Copied commit ID to clipboard."), false, false, 0)
+	message := strings.TrimSpace(details.subject + "\n\n" + details.body)
+	icon := chevron(map[bool]string{false: "pan-down-symbolic", true: "pan-up-symbolic"}[app.headerMessageOpen], 12)
+	toggle := must(gtk.ButtonNew())
+	toggle.SetImage(icon)
+	toggle.SetVAlign(gtk.ALIGN_CENTER)
+	toggle.SetTooltipText("Show the full commit message")
+	setAccessibility(&toggle.Widget, "Commit message", "Show or hide the complete commit message")
+	squareButton(toggle)
+	app.headerTitleRow.PackStart(toggle, false, false, 0)
+	body := must(gtk.LabelNew(message))
+	body.SetXAlign(0)
+	body.SetYAlign(0)
+	body.SetSelectable(true)
+	body.SetLineWrap(true)
+	body.SetLineWrapMode(pango.WRAP_WORD_CHAR)
+	text := scroller(body)
+	text.SetPolicy(gtk.POLICY_NEVER, gtk.POLICY_AUTOMATIC)
+	text.SetMaxContentHeight(180)
+	text.SetPropagateNaturalHeight(true)
+	panel := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0))
+	panelContext, _ := panel.GetStyleContext()
+	panelContext.AddClass("giti-message-panel")
+	panel.PackStart(text, true, true, 0)
+	reveal := must(gtk.RevealerNew())
+	reveal.SetTransitionDuration(0)
+	reveal.Add(panel)
+	reveal.SetRevealChild(app.headerMessageOpen)
+	toggle.Connect("clicked", func() {
+		app.headerMessageOpen = !app.headerMessageOpen
+		reveal.SetRevealChild(app.headerMessageOpen)
+		icon.SetFromIconName(map[bool]string{false: "pan-down-symbolic", true: "pan-up-symbolic"}[app.headerMessageOpen], gtk.ICON_SIZE_MENU)
+	})
+	app.headerDetails.PackStart(reveal, false, false, 0)
 	app.commitHeader.ShowAll()
 	app.updateReviewUI()
+}
+
+// commitMenu lists parents to navigate to; merge parents show a short subject
+// excerpt so the menu stays narrow.
+func (app *giti) commitMenu() *gtk.Menu {
+	menu := must(gtk.MenuNew())
+	parents := app.headerIdentity.parents
+	add := func(label, tooltip string, activate func()) {
+		item := must(gtk.MenuItemNewWithLabel(label))
+		item.SetTooltipText(tooltip)
+		item.SetSensitive(activate != nil)
+		if activate != nil {
+			item.Connect("activate", activate)
+		}
+		menu.Append(item)
+	}
+	open := func(parent string) func() {
+		return func() {
+			app.historySearch.SetText("")
+			app.revealHistoryRevision(parent)
+		}
+	}
+	switch len(parents) {
+	case 0:
+		add("No parent commit", "", nil)
+	case 1:
+		add("Go to parent  "+parents[0][:min(7, len(parents[0]))], parents[0], open(parents[0]))
+	default:
+		add("Go to parent", "", nil)
+		for _, parent := range parents {
+			subject, _ := app.repository.run("log", "-1", "--format=%s", parent)
+			if excerpt := []rune(strings.TrimSpace(subject)); len(excerpt) > 50 {
+				subject = string(excerpt[:50]) + "…"
+			}
+			add("    "+parent[:min(7, len(parent))]+"  "+strings.TrimSpace(subject), parent, open(parent))
+		}
+	}
+	menu.ShowAll()
+	return menu
 }
 
 func (app *giti) showDiffPage() {
@@ -786,16 +814,33 @@ func scroller(child gtk.IWidget) *gtk.ScrolledWindow {
 	return scroll
 }
 
-func (app *giti) copySHAButton(sha string) *gtk.Button {
-	button := must(gtk.ButtonNewFromIconName("edit-copy-symbolic", gtk.ICON_SIZE_BUTTON))
-	setAccessibility(&button.Widget, "Copy commit SHA", "Copy "+sha+" to the clipboard")
+// chevron is the one arrow style used by menus, disclosures, and file navigation.
+func chevron(name string, size int) *gtk.Image {
+	image := must(gtk.ImageNewFromIconName(name, gtk.ICON_SIZE_MENU))
+	image.SetPixelSize(size)
+	return image
+}
+
+// squareButton styles a flat icon button so every chevron and ⋮ shares one size.
+func squareButton(button *gtk.Button) {
 	button.SetRelief(gtk.RELIEF_NONE)
 	context, _ := button.GetStyleContext()
-	context.AddClass("giti-flat-button")
-	button.SetTooltipText("Copy SHA: " + sha)
-	button.Connect("clicked", func() {
-		app.copyToClipboard(sha, "Copied commit ID to clipboard.")
-	})
+	context.AddClass("giti-glyph-button")
+	context.AddClass("giti-square-button")
+}
+
+// copyButton is the app's compact copy control: optional visible text followed by a ⧉ glyph.
+func (app *giti) copyButton(markup, value, tooltip, message string) *gtk.Button {
+	label := must(gtk.LabelNew(""))
+	label.SetMarkup(strings.TrimSpace(markup + " ⧉"))
+	button := must(gtk.ButtonNew())
+	button.Add(label)
+	button.SetRelief(gtk.RELIEF_NONE)
+	button.SetTooltipText(tooltip)
+	setAccessibility(&button.Widget, tooltip, "Copy to the clipboard")
+	context, _ := button.GetStyleContext()
+	context.AddClass("giti-glyph-button")
+	button.Connect("clicked", func() { app.copyToClipboard(value, message) })
 	return button
 }
 
@@ -847,10 +892,10 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.buildDiffOverview()
 	app.buildDiffGutter()
 
-	app.whitespaceToggle = must(gtk.CheckButtonNewWithLabel("Whitespace changes"))
+	app.whitespaceToggle = must(gtk.CheckButtonNewWithLabel("Whitespace"))
 	app.whitespaceToggle.SetTooltipText("Include whitespace-only changes in file lists and diffs")
 	app.whitespaceHandler = app.whitespaceToggle.Connect("toggled", app.onWhitespaceToggled)
-	app.fullFileToggle = must(gtk.CheckButtonNewWithLabel("Show full file"))
+	app.fullFileToggle = must(gtk.CheckButtonNewWithLabel("Full file"))
 	app.fullFileToggle.SetTooltipText("Show unchanged lines from the complete file")
 	app.fullFileHandler = app.fullFileToggle.Connect("toggled", func() {
 		app.fullFilePreferred = app.fullFileToggle.GetActive()
@@ -875,22 +920,122 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.headerTitleRow = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
 	app.headerStatistics = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
 	app.headerStatistics.SetNoShowAll(true)
-	headerActionRow := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
-	app.headerCommit = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
-	app.headerDetails = must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 2))
-	headerActionRow.PackStart(app.headerCommit, false, false, 0)
-	headerActionRow.PackEnd(app.whitespaceToggle, false, false, 8)
-	headerActionRow.PackEnd(app.fullFileToggle, false, false, 0)
-	headerActionRow.PackEnd(app.fullMergeToggle, false, false, 8)
-	metaRow := app.buildReviewControls()
+	app.headerStatistics.SetVAlign(gtk.ALIGN_CENTER)
+	app.buildReviewControls()
+	// Commit section, then a hairline, then the file row. The right-hand columns of
+	// the title row and the file row share widths, so review buttons, diff counts,
+	// and the ⋮ / › icons line up vertically.
+	app.headerMenuButton = must(gtk.ButtonNew())
+	app.headerMenuButton.SetImage(chevron("view-more-symbolic", 14))
+	squareButton(app.headerMenuButton)
+	app.headerMenuButton.SetVAlign(gtk.ALIGN_CENTER)
+	app.headerMenuButton.SetTooltipText("Commit actions")
+	setAccessibility(&app.headerMenuButton.Widget, "Commit actions", "Go to a parent commit")
+	app.headerMenuButton.Connect("clicked", func() {
+		menu := app.commitMenu()
+		menu.Connect("selection-done", menu.Destroy)
+		menu.PopupAtWidget(app.headerMenuButton, gdk.GDK_GRAVITY_SOUTH_EAST, gdk.GDK_GRAVITY_NORTH_EAST, nil)
+	})
+	app.headerMenuButton.SetNoShowAll(true)
 	titleRow := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
 	titleRow.PackStart(app.headerTitleRow, true, true, 0)
-	titleRow.PackStart(app.reviewSessionActions, false, false, 0)
-	titleRow.PackStart(app.headerStatistics, false, false, 0)
-	app.commitHeader.PackStart(titleRow, false, false, 0)
-	app.commitHeader.PackStart(headerActionRow, false, false, 0)
-	app.commitHeader.PackStart(metaRow, false, false, 0)
-	app.commitHeader.PackStart(app.headerDetails, false, false, 0)
+	for _, widget := range []gtk.IWidget{app.headerMenuButton, app.headerStatistics, app.reviewSessionActions, app.reviewFilesLabel} {
+		titleRow.PackEnd(widget, false, false, 0)
+	}
+	// Author details sit behind one popover so names stay short in the header.
+	app.headerAuthor = must(gtk.LabelNew(""))
+	app.headerAuthor.SetXAlign(0)
+	app.headerAuthor.SetEllipsize(pango.ELLIPSIZE_END)
+	app.headerAuthor.SetSelectable(true)
+	app.headerAuthor.SetMarginStart(4) // Line up with the text inside the compact buttons above and below.
+	app.headerIdentityButton = must(gtk.ButtonNewFromIconName("dialog-information-symbolic", gtk.ICON_SIZE_MENU))
+	app.headerIdentityButton.SetRelief(gtk.RELIEF_NONE)
+	app.headerIdentityButton.SetVAlign(gtk.ALIGN_CENTER)
+	app.headerIdentityButton.SetNoShowAll(true)
+	identityContext, _ := app.headerIdentityButton.GetStyleContext()
+	identityContext.AddClass("giti-glyph-button")
+	setAccessibility(&app.headerIdentityButton.Widget, "Author and committer", "Show author and committer names, emails, and dates")
+	app.headerIdentityButton.Connect("clicked", func() {
+		details := app.headerIdentity
+		grid := must(gtk.GridNew())
+		grid.SetColumnSpacing(12)
+		grid.SetRowSpacing(6)
+		for _, margin := range []func(int){grid.SetMarginStart, grid.SetMarginEnd, grid.SetMarginTop, grid.SetMarginBottom} {
+			margin(10)
+		}
+		when := func(date string) string { return formatCommitTime(date, time.Local, "2 Jan 2006, 15:04 MST") }
+		identities := [][4]string{{"Author", details.author, details.authorEmail, when(details.authored)}, {"Committer", details.committer, details.committerEmail, when(details.committed)}}
+		if details.author == details.committer && details.authorEmail == details.committerEmail {
+			identities[0][0], identities = "Author & committer", identities[:1]
+			if details.authored != details.committed {
+				identities[0][3] += "  ·  committed " + when(details.committed)
+			}
+		}
+		for row, identity := range identities {
+			person := identity[1] + " <" + identity[2] + ">"
+			for column, markup := range []string{"<b>" + html.EscapeString(identity[0]) + "</b>", html.EscapeString(person), "<span foreground=\"#4b5563\">" + html.EscapeString(identity[3]) + "</span>"} {
+				label := must(gtk.LabelNew(""))
+				label.SetMarkup(markup)
+				label.SetXAlign(0)
+				label.SetSelectable(column == 1)
+				grid.Attach(label, column, row, 1, 1)
+			}
+			grid.Attach(app.copyButton("", person, "Copy "+person, "Copied "+strings.ToLower(identity[0])+" to clipboard."), 3, row, 1, 1)
+		}
+		popover := must(gtk.PopoverNew(app.headerIdentityButton))
+		popover.Add(grid)
+		popover.Connect("closed", popover.Destroy)
+		grid.ShowAll()
+		popover.Popup()
+	})
+	app.headerMetaRow = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 2))
+	app.headerMetaRow.PackStart(app.headerAuthor, false, true, 0)
+	app.headerMetaRow.PackStart(app.headerIdentityButton, false, false, 0)
+	app.headerSHA = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
+	app.headerSHA.SetMarginStart(6)
+	app.headerMetaRow.PackStart(app.headerSHA, false, false, 0)
+	app.headerCommit = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
+	app.headerMetaRow.PackEnd(app.headerCommit, true, true, 0)
+	app.headerDetails = must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0))
+	divider := must(gtk.SeparatorNew(gtk.ORIENTATION_HORIZONTAL))
+	dividerContext, _ := divider.GetStyleContext()
+	dividerContext.AddClass("giti-hairline")
+	// Equal air on both sides lets the hairline separate the sections without weight.
+	divider.SetMarginTop(6)
+	divider.SetMarginBottom(6)
+	app.headerFileName = must(gtk.LabelNew(""))
+	app.headerFileName.SetEllipsize(pango.ELLIPSIZE_MIDDLE)
+	app.headerFileName.SetMarginStart(4)
+	fileRow := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
+	fileRow.PackStart(app.headerFileName, false, true, 0)
+	for _, toggle := range []*gtk.CheckButton{app.fullFileToggle, app.whitespaceToggle, app.fullMergeToggle} {
+		fileRow.PackStart(toggle, false, false, 0)
+	}
+	app.fileStatistics = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
+	app.fileStatistics.SetVAlign(gtk.ALIGN_CENTER)
+
+	app.fileStatistics.SetNoShowAll(true)
+	// The shared column takes the commit counts' width; packing from the end keeps
+	// the file counts against the › so both rows' bubbles end together.
+	for index, class := range []string{"giti-deletions", "giti-additions"} {
+		badge := must(gtk.LabelNew(""))
+		context, _ := badge.GetStyleContext()
+		context.AddClass("giti-stat")
+		context.AddClass(class)
+		app.fileStatistics.PackEnd(badge, false, false, 0)
+		app.fileStatisticLabels[1-index] = badge
+	}
+	for _, widget := range []gtk.IWidget{app.reviewNextButton, app.fileStatistics, app.reviewFileButton, app.reviewLinesLabel} {
+		fileRow.PackEnd(widget, false, false, 0)
+	}
+	for _, column := range [][2]gtk.IWidget{{app.headerMenuButton, app.reviewNextButton}, {app.headerStatistics, app.fileStatistics}, {app.reviewSessionActions, app.reviewFileButton}, {app.reviewFilesLabel, app.reviewLinesLabel}} {
+		group := must(gtk.SizeGroupNew(gtk.SIZE_GROUP_HORIZONTAL))
+		group.AddWidget(column[0])
+		group.AddWidget(column[1])
+	}
+	for _, row := range []gtk.IWidget{titleRow, app.headerDetails, app.headerMetaRow, divider, fileRow} {
+		app.commitHeader.PackStart(row, false, false, 0)
+	}
 	diffBox := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 4))
 	diffBox.PackStart(app.commitHeader, false, false, 0)
 	diffBox.PackStart(app.reviewProgressBar, false, false, 0)

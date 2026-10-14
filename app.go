@@ -91,29 +91,6 @@ button.giti-ref-copy.giti-ref-joined {
   border-width: 0;
   margin: 0;
 }
-button.giti-parent-button {
-  background-color: transparent;
-  background-image: none;
-  border-color: transparent;
-  box-shadow: none;
-  min-height: 0;
-  min-width: 0;
-  padding: 1px 3px;
-}
-button.giti-parent-button > label {
-  color: #4b5563;
-  font-family: monospace;
-  text-decoration-line: underline;
-}
-button.giti-parent-button:hover {
-  background-color: alpha(#6b7280, 0.10);
-}
-button.giti-parent-button:hover > label {
-  color: #303846;
-}
-button.giti-parent-button:focus {
-  box-shadow: 0 0 0 2px #e95420;
-}
 button.giti-review-secondary, button.giti-review-primary {
   background: transparent;
   border: none;
@@ -122,7 +99,7 @@ button.giti-review-secondary, button.giti-review-primary {
   font-weight: bold;
   min-height: 0;
   min-width: 0;
-  padding: 3px 6px;
+  padding: 1px 6px;
 }
 button.giti-review-secondary:hover {
   color: #374151;
@@ -169,6 +146,34 @@ box.giti-review-card {
 box.giti-review-card box.giti-review-document {
   border: none;
   padding: 0;
+}
+button.giti-glyph-button {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: #4b5563;
+  min-height: 0;
+  min-width: 0;
+  padding: 1px 4px;
+}
+button.giti-glyph-button, button.giti-square-button {
+  border-radius: 4px;
+}
+button.giti-square-button {
+  padding: 3px;
+}
+button.giti-glyph-button:hover {
+  background-color: alpha(#6b7280, 0.12);
+}
+box.giti-message-panel {
+  background-color: #eef0f2;
+  border-radius: 4px;
+  margin: 2px 0 4px;
+  padding: 8px 12px;
+}
+separator.giti-hairline {
+  background-color: #e5e7eb;
+  min-height: 1px;
 }
 box.giti-review-code {
   background-color: #f3f4f5;
@@ -287,19 +292,27 @@ type giti struct {
 	reviewLines                []displayLine
 	reviewActive               bool
 	reviewFiles                []changedFile
-	reviewFileActions          *gtk.Box
 	reviewSessionActions       *gtk.Box
-	reviewProgress             *gtk.Label
-	reviewFileProgress         *gtk.Label
 	reviewModeButton           *gtk.Button
 	reviewFileButton           *gtk.Button
-	reviewExportButton         *gtk.Button
-	reviewPreviewButton        *gtk.Button
 	reviewPreviewExit          *gtk.Button
-	headerMetaStack            *gtk.Stack
 	headerAuthor               *gtk.Label
-	reviewCommentButton        *gtk.Button
-	reviewPreviousButton       *gtk.Button
+	headerIdentityButton       *gtk.Button
+	headerIdentity             commitDetails
+	headerMetaRow              *gtk.Box
+	headerSHA                  *gtk.Box
+	headerMenuButton           *gtk.Button
+	headerFileName             *gtk.Label
+	fileStatistics             *gtk.Box
+	fileStatisticLabels        [2]*gtk.Label
+	headerMessageOpen          bool
+	reviewFilesLabel           *gtk.Label
+	reviewLinesLabel           *gtk.Label
+	reviewSummaryItem          *gtk.MenuItem
+	reviewCommentItem          *gtk.MenuItem
+	reviewPreviewItem          *gtk.MenuItem
+	reviewExportItem           *gtk.MenuItem
+	reviewCopyItem             *gtk.MenuItem
 	reviewNextButton           *gtk.Button
 	reviewProgressBar          *gtk.DrawingArea
 	reviewStateCounts          [4]int
@@ -311,7 +324,6 @@ type giti struct {
 	reviewGaps                 map[int]int
 	reviewGapTags              []*gtk.TextTag
 	overviewComments           []int
-	reviewCommentCount         *gtk.Label
 	reviewColumn               *gtk.TreeViewColumn
 	reviewDocument             *gtk.Box
 	historyTargetKind          string
@@ -391,7 +403,6 @@ type giti struct {
 	referencesPage             *gtk.Box
 	referencesView             *gtk.TextView
 	headerReferenceButtons     []*gtk.Button
-	headerParentButtons        []*gtk.Button
 	whitespaceToggle           *gtk.CheckButton
 	fullFileToggle             *gtk.CheckButton
 	fullMergeToggle            *gtk.CheckButton

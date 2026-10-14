@@ -368,10 +368,14 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	compactDetails := detailChildren.Length()
 	detailChildren.Free()
 	referenceButton := app.headerReferenceButtons[0]
-	parentButton := app.headerParentButtons[0]
-	parentText, parentTextErr := parentButton.GetLabel()
-	parentTooltip, parentTooltipErr := parentButton.GetTooltipText()
-	parentContext, _ := parentButton.GetStyleContext()
+	parentItems := app.commitMenu().GetChildren()
+	parentCast, _ := parentItems.NthData(0).(*gtk.Widget).Cast()
+	parentItem, parentOK := parentCast.(*gtk.MenuItem)
+	parentLabel, parentTooltip := "", ""
+	if parentOK {
+		parentLabel, parentTooltip = parentItem.GetLabel(), must(parentItem.GetTooltipText())
+	}
+	parentItems.Free()
 	referenceWidget, referenceErr := referenceButton.GetChild()
 	referenceLabel, labelOK := referenceWidget.(*gtk.Label)
 	referenceValue, textErr := "", referenceErr
@@ -390,10 +394,16 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	detailChildren = app.headerDetails.GetChildren()
 	expandedDetails := detailChildren.Length()
 	headerChildren := app.headerTitleRow.GetChildren()
-	headerTitle, titleErr := gtk.WidgetToLabel(headerChildren.NthData(0).(*gtk.Widget))
-	headerMeta, metaErr := gtk.WidgetToLabel(&app.headerAuthor.Widget)
-	commitChildren := app.headerCommit.GetChildren()
-	shaLabel, shaErr := gtk.WidgetToLabel(commitChildren.NthData(1).(*gtk.Widget))
+	titleCast, _ := headerChildren.NthData(0).(*gtk.Widget).Cast()
+	titleLabel, titleOK := titleCast.(*gtk.Label)
+	titleText := ""
+	if titleOK {
+		titleText, _ = titleLabel.GetText()
+		titleOK = titleLabel.GetSelectable()
+	}
+	commitChildren := app.headerSHA.GetChildren()
+	shaCast, _ := commitChildren.NthData(commitChildren.Length() - 1).(*gtk.Widget).Cast()
+	shaButton, shaOK := shaCast.(*gtk.Button)
 	statLabels := make([]string, 0, 3)
 	statisticsVisible := app.headerStatistics.GetVisible()
 	statChildren := app.headerStatistics.GetChildren()
@@ -412,32 +422,27 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	fullFileLabel, _ := app.fullFileToggle.GetLabel()
 	whitespaceLabel, _ := app.whitespaceToggle.GetLabel()
 	fullMergeLabel, _ := app.fullMergeToggle.GetLabel()
-	shaTooltip, shaTooltipErr := shaLabel.GetTooltipText()
-	metaText, metaTextErr := headerMeta.GetText()
-	metaTooltip, metaTooltipErr := headerMeta.GetTooltipText()
+	shaTooltip := ""
+	if shaOK {
+		shaTooltip, _ = shaButton.GetTooltipText()
+	}
+	metaText, metaTextErr := app.headerAuthor.GetText()
+	identityTooltip, identityErr := app.headerIdentityButton.GetTooltipText()
 	referenceValid := labelOK && textErr == nil && !referenceLabel.GetSelectable() && referenceLabel.GetEllipsize() == pango.ELLIPSIZE_END && strings.Contains(referenceValue, longBranch) && referenceButton.GetCanFocus() && copiedReference == longBranch && copyReferenceErr == nil && app.notification.GetVisible() && copyNotification == "Copied branch to clipboard." && notificationErr == nil && app.mainPane.GetAllocatedWidth() == contentWidth && app.mainPane.GetAllocatedHeight() == contentHeight
-	parentValid := parentTextErr == nil && parentTooltipErr == nil && parentText == parentSHA[:7] && parentTooltip == "Open parent commit "+parentSHA && parentButton.GetCanFocus() && parentButton.GetRelief() == gtk.RELIEF_NONE && parentContext.HasClass("giti-parent-button")
+	parentValid := parentLabel == "Go to parent  "+parentSHA[:7] && parentTooltip == parentSHA && parentItem.GetSensitive() && app.headerMenuButton.GetVisible()
 	statisticsValid := statisticsVisible && strings.Join(statLabels, ",") == "+12,−3,4 untracked"
-	controlsValid := fullFileLabel == "Show full file" && whitespaceLabel == "Whitespace changes" && !app.whitespaceToggle.GetActive() && fullMergeLabel == "Full merge" && shaErr == nil && shaTooltipErr == nil && shaLabel.GetEllipsize() == pango.ELLIPSIZE_MIDDLE && shaTooltip == details.sha && metaTextErr == nil && metaTooltipErr == nil && strings.Count(metaText, formatCommitTime(details.authored, time.Local, "2 Jan 2006, 15:04 MST")) == 2 && metaTooltip == "Author: "+formatCommitTime(details.authored, time.UTC, time.RFC3339)+"\nCommitter: "+formatCommitTime(details.committed, time.UTC, time.RFC3339)
+	controlsValid := fullFileLabel == "Full file" && whitespaceLabel == "Whitespace" && !app.whitespaceToggle.GetActive() && fullMergeLabel == "Full merge" && shaTooltip == "Copy full SHA: "+details.sha && metaTextErr == nil && identityErr == nil && metaText == "Alice  ·  "+formatCommitTime(details.authored, time.Local, "2 Jan 2006, 15:04 MST") && identityTooltip == "Committed by Bob — show details" && app.headerIdentityButton.GetVisible()
 	searchIdle := !app.searchSpinner.GetVisible() && app.historySearch.GetIconStorageType(gtk.ENTRY_ICON_PRIMARY) == gtk.IMAGE_ICON_NAME
 	app.setSearchBusy(true)
 	searchBusy := app.searchSpinner.GetVisible() && app.historySearch.GetIconStorageType(gtk.ENTRY_ICON_PRIMARY) == gtk.IMAGE_PIXBUF
 	app.setSearchBusy(false)
-	if expandedDetails != compactDetails || titleErr != nil || metaErr != nil || referenceErr != nil || !referenceValid || !parentValid || !statisticsValid || !controlsValid || !searchIdle || !searchBusy || !headerTitle.GetSelectable() || !headerMeta.GetSelectable() || !shaLabel.GetSelectable() {
-		t.Fatalf("commit header copy control is incomplete: compact=%d body=%d title=%v meta=%v sha=%v controls=%q/%q/%q reference=%q/%v/%v/%v copied=%q/%v notification=%q/%v content=%dx%d/%dx%d", compactDetails, expandedDetails, titleErr, metaErr, shaErr, fullFileLabel, whitespaceLabel, fullMergeLabel, referenceValue, referenceErr, labelOK, textErr, copiedReference, copyReferenceErr, copyNotification, notificationErr, contentWidth, contentHeight, app.mainPane.GetAllocatedWidth(), app.mainPane.GetAllocatedHeight())
+	if expandedDetails != compactDetails || !titleOK || titleText != "subject" || referenceErr != nil || !referenceValid || !parentValid || !statisticsValid || !controlsValid || !searchIdle || !searchBusy || !app.headerAuthor.GetSelectable() {
+		t.Fatalf("commit header copy control is incomplete: compact=%d body=%d title=%q meta=%q sha=%q controls=%q/%q/%q reference=%q/%v/%v/%v copied=%q/%v notification=%q/%v content=%dx%d/%dx%d", compactDetails, expandedDetails, titleText, metaText, shaTooltip, fullFileLabel, whitespaceLabel, fullMergeLabel, referenceValue, referenceErr, labelOK, textErr, copiedReference, copyReferenceErr, copyNotification, notificationErr, contentWidth, contentHeight, app.mainPane.GetAllocatedWidth(), app.mainPane.GetAllocatedHeight())
 	}
 	details.committer, details.committerEmail, details.committed = details.author, details.authorEmail, details.authored
 	app.setCommitHeader(details)
-	collapsedChildren := app.headerDetails.GetChildren()
-	collapsedMeta, collapsedErr := gtk.WidgetToLabel(&app.headerAuthor.Widget)
-	collapsedText, collapsedTooltip := "", ""
-	if collapsedErr == nil {
-		collapsedText, _ = collapsedMeta.GetText()
-		collapsedTooltip, _ = collapsedMeta.GetTooltipText()
-	}
-	collapsedChildren.Free()
-	if collapsedErr != nil || strings.Count(collapsedText, "Author & committer") != 1 || strings.Contains(collapsedText, "\n") || collapsedTooltip != "Author & committer: "+formatCommitTime(details.authored, time.UTC, time.RFC3339) {
-		t.Fatalf("identical author and committer were not collapsed: text=%q tooltip=%q err=%v", collapsedText, collapsedTooltip, collapsedErr)
+	if tooltip, _ := app.headerIdentityButton.GetTooltipText(); tooltip != "Author details" {
+		t.Fatalf("identical author and committer still announced a committer: %q", tooltip)
 	}
 	syncedDetails := commitDetails{
 		sha:       strings.Repeat("b", 40),
@@ -1294,10 +1299,10 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	}
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.diffLoaded && app.review != nil })
 	app.window.ShowAll()
-	if app.reviewPreviewButton.GetVisible() || app.reviewExportButton.GetVisible() {
-		t.Fatal("empty review exposed preview or export")
+	if app.reviewPreviewItem.GetSensitive() || app.reviewExportItem.GetSensitive() {
+		t.Fatal("empty review enabled preview or export")
 	}
-	if app.reviewActive || !app.reviewModeButton.GetVisible() || app.headerMetaStack.GetVisibleChildName() != "author" || app.reviewFileActions.GetVisible() {
+	if app.reviewActive || !app.reviewModeButton.GetVisible() || app.reviewFileButton.GetVisible() {
 		t.Fatal("selecting a commit entered review mode automatically")
 	}
 	for gtk.EventsPending() {
@@ -1306,7 +1311,7 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	headerHeight := app.commitHeader.GetAllocatedHeight()
 	app.reviewModeButton.Clicked()
 	iterateGTKUntil(t, time.Second, func() bool { return app.reviewFileButton.GetAllocatedHeight() > 1 })
-	if !app.reviewActive || app.headerMetaStack.GetVisibleChildName() != "progress" || app.commitHeader.GetAllocatedHeight() != headerHeight {
+	if !app.reviewActive || !app.reviewFileButton.GetVisible() || app.commitHeader.GetAllocatedHeight() != headerHeight {
 		t.Fatalf("starting a review did not preserve header layout: %d -> %d", headerHeight, app.commitHeader.GetAllocatedHeight())
 	}
 	var added, removed, hunk int = -1, -1, -1
@@ -1349,8 +1354,8 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 		}
 	}
 	activateMenu("Mark selected lines reviewed", false)
-	if !app.reviewPreviewButton.GetVisible() || !app.reviewExportButton.GetVisible() {
-		t.Fatal("line review did not expose preview and export")
+	if !app.reviewPreviewItem.GetSensitive() || !app.reviewExportItem.GetSensitive() {
+		t.Fatal("line review did not enable preview and export")
 	}
 	reviewedTag, _ := must(app.diffBuffer.GetTagTable()).Lookup("reviewed-added")
 	commentTag, _ := must(app.diffBuffer.GetTagTable()).Lookup("review-comment")
@@ -1399,7 +1404,7 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	}
 	activateMenu("Comment on selected lines…", false)
 	writeComment("Should the new value be configurable?")
-	app.reviewCommentButton.Clicked()
+	app.reviewCommentItem.Activate()
 	writeComment("File-wide question")
 	file := app.review.Files[app.currentFile.path]
 	if len(file.Comments) != 2 || len(file.Comments[0].Lines) != 1 || file.Comments[0].Lines[0].New != 1 || len(file.Comments[1].Lines) != 0 {
@@ -1422,15 +1427,15 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 		t.Fatal("marking a file exited review mode")
 	}
 	app.showReferences([]string{"main"}, nil)
-	if app.reviewCommentButton.GetSensitive() {
+	if app.reviewCommentItem.GetSensitive() {
 		t.Fatal("file comment action remained enabled in the references view")
 	}
 	app.showDiffPage()
-	if !app.reviewCommentButton.GetSensitive() || !app.diffBuffer.GetIterAtLine(added).HasTag(commentTag) {
+	if !app.reviewCommentItem.GetSensitive() || !app.diffBuffer.GetIterAtLine(added).HasTag(commentTag) {
 		t.Fatal("returning from references lost review display")
 	}
-	app.reviewPreviewButton.Clicked()
-	if app.diffStack.GetVisibleChildName() != "review-preview" || app.reviewCommentButton.GetSensitive() {
+	app.reviewPreviewItem.Activate()
+	if app.diffStack.GetVisibleChildName() != "review-preview" || app.reviewCommentItem.GetSensitive() {
 		t.Fatal("notes did not open separately from the diff")
 	}
 	app.onFileSelected()
@@ -1462,7 +1467,7 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	if app.reviewActive {
 		t.Fatal("reopening entered review mode automatically")
 	}
-	if !app.reviewPreviewButton.GetVisible() || !app.reviewExportButton.GetVisible() {
+	if !app.reviewPreviewItem.GetSensitive() || !app.reviewExportItem.GetSensitive() {
 		t.Fatal("saved review did not restore preview and export")
 	}
 	app.reviewModeButton.Clicked()
@@ -1473,7 +1478,7 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	if app.reviewState(path) >= reviewDone {
 		t.Fatal("exiting unexpectedly marked remaining lines reviewed")
 	}
-	app.reviewPreviewButton.Clicked()
+	app.reviewPreviewItem.Activate()
 	if app.diffStack.GetVisibleChildName() != "review-preview" {
 		t.Fatal("saved review could not be previewed outside review mode")
 	}
@@ -1493,12 +1498,12 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	if len(app.review.Files) != 0 {
 		t.Fatalf("cleared review left empty file records: %#v", app.review.Files)
 	}
-	if !app.reviewPreviewButton.GetVisible() || app.reviewPreviewButton.GetSensitive() || app.reviewExportButton.GetSensitive() {
-		t.Fatal("clearing review shifted the header or left export enabled")
+	if app.reviewPreviewItem.GetSensitive() || app.reviewExportItem.GetSensitive() {
+		t.Fatal("clearing review left export enabled")
 	}
-	app.reviewCommentButton.Clicked()
+	app.reviewCommentItem.Activate()
 	writeComment("Comment without review marks")
-	if !app.reviewPreviewButton.GetSensitive() || !app.reviewExportButton.GetSensitive() {
+	if !app.reviewPreviewItem.GetSensitive() || !app.reviewExportItem.GetSensitive() {
 		t.Fatal("comment-only review did not enable preview and export")
 	}
 }
@@ -1550,9 +1555,7 @@ func TestGTKReviewFolderTicksIgnoreSearchAndWhitespaceFilter(t *testing.T) {
 	if folderTick() != reviewStates[reviewDone].mark {
 		t.Fatal("reviewing every descendant did not tick the folder")
 	}
-	progress, _ := app.reviewProgress.GetText()
-	fileProgress, _ := app.reviewFileProgress.GetText()
-	if progress != "Review complete" || !strings.Contains(fileProgress, "3 of 3 files reviewed") {
+	if progress, _ := app.reviewFilesLabel.GetText(); progress != "✓ 3/3 files" {
 		t.Fatalf("progress lost hidden whitespace changes: %q", progress)
 	}
 	app.fileSearch.SetText("")
@@ -1595,7 +1598,7 @@ func TestGTKReviewPreviewRendersMarkdownAndExportsSameDocument(t *testing.T) {
 	if label, _ := app.reviewFileButton.GetLabel(); label != "Unmark _Reviewed" || !app.reviewActive {
 		t.Fatal("file marking did not retain review mode and offer unmarking")
 	}
-	app.reviewPreviewButton.Clicked()
+	app.reviewPreviewItem.Activate()
 	var rendered, markup strings.Builder
 	var buttons int
 	var inspect func(gtk.IWidget)
@@ -1652,7 +1655,7 @@ func TestGTKReviewPreviewRendersMarkdownAndExportsSameDocument(t *testing.T) {
 		})
 		return false
 	})
-	app.reviewExportButton.Clicked()
+	app.reviewExportItem.Activate()
 	contents, err := os.ReadFile(exported)
 	if err != nil || string(contents) != app.review.markdown(app.reviewFiles) {
 		t.Fatalf("export differs from the preview document: %v", err)

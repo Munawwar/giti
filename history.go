@@ -539,7 +539,7 @@ func (app *giti) searchResultRow(match searchMatch) *gtk.ListBoxRow {
 	label.SetLineWrap(true)
 	label.SetMarkup(searchResultMarkup(match))
 	result.PackStart(label, true, true, 0)
-	result.PackEnd(app.copySHAButton(match.row.revision), false, false, 0)
+	result.PackEnd(app.copyButton("", match.row.revision, "Copy SHA: "+match.row.revision, "Copied commit ID to clipboard."), false, false, 0)
 	row := must(gtk.ListBoxRowNew())
 	rowContext, _ := row.GetStyleContext()
 	rowContext.AddClass("giti-selection-row")
