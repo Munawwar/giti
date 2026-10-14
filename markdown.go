@@ -31,7 +31,7 @@ func markdownInline(node ast.Node, source []byte) string {
 		if node.HardLineBreak() {
 			content += "\n"
 		} else if node.SoftLineBreak() {
-			content += " "
+			content += "\n" // Review comments keep their typed line breaks, as on GitHub.
 		}
 	case *ast.String:
 		content = html.EscapeString(string(node.Value))

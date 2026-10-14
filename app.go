@@ -158,6 +158,18 @@ box.giti-review-document {
   border-radius: 8px;
   padding: 24px;
 }
+box.giti-review-card {
+  background-color: #ffffff;
+  border: 1px solid #c7d7f5;
+  border-left: 3px solid #2563eb;
+  border-radius: 6px;
+  font-family: sans-serif;
+  padding: 8px 10px;
+}
+box.giti-review-card box.giti-review-document {
+  border: none;
+  padding: 0;
+}
 box.giti-review-code {
   background-color: #f3f4f5;
   border-radius: 6px;
@@ -273,7 +285,6 @@ type giti struct {
 	review                     *commitReview
 	reviewPath                 string
 	reviewLines                []displayLine
-	reviewSelectionAnchor      int
 	reviewActive               bool
 	reviewFiles                []changedFile
 	reviewFileActions          *gtk.Box
@@ -288,6 +299,18 @@ type giti struct {
 	headerMetaStack            *gtk.Stack
 	headerAuthor               *gtk.Label
 	reviewCommentButton        *gtk.Button
+	reviewPreviousButton       *gtk.Button
+	reviewNextButton           *gtk.Button
+	reviewProgressBar          *gtk.DrawingArea
+	reviewStateCounts          [4]int
+	reviewDraft                *reviewDraft
+	reviewDraftView            *gtk.TextView
+	reviewDraftSave            *gtk.Button
+	reviewCards                []*reviewCard
+	reviewCardWidth            int
+	reviewGaps                 map[int]int
+	reviewGapTags              []*gtk.TextTag
+	overviewComments           []int
 	reviewCommentCount         *gtk.Label
 	reviewColumn               *gtk.TreeViewColumn
 	reviewDocument             *gtk.Box
@@ -815,7 +838,7 @@ func (app *giti) clearRepositoryView() {
 	app.searchViewingResult = false
 	app.diffScroll = make(map[string]scrollPosition)
 	app.currentRow, app.currentFile, app.historyTargetKind, app.fileTargetPath, app.diffLoaded = nil, nil, "", "", false
-	app.review, app.reviewPath, app.reviewFiles, app.reviewActive = nil, "", nil, false
+	app.review, app.reviewPath, app.reviewFiles, app.reviewActive, app.reviewDraft = nil, "", nil, false, nil
 	app.updateReviewUI()
 	app.setSearchBusy(false)
 	app.historySearch.SetText("")

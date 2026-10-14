@@ -423,7 +423,7 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	app.setSearchBusy(true)
 	searchBusy := app.searchSpinner.GetVisible() && app.historySearch.GetIconStorageType(gtk.ENTRY_ICON_PRIMARY) == gtk.IMAGE_PIXBUF
 	app.setSearchBusy(false)
-	if expandedDetails != compactDetails+1 || titleErr != nil || metaErr != nil || referenceErr != nil || !referenceValid || !parentValid || !statisticsValid || !controlsValid || !searchIdle || !searchBusy || !headerTitle.GetSelectable() || !headerMeta.GetSelectable() || !shaLabel.GetSelectable() {
+	if expandedDetails != compactDetails || titleErr != nil || metaErr != nil || referenceErr != nil || !referenceValid || !parentValid || !statisticsValid || !controlsValid || !searchIdle || !searchBusy || !headerTitle.GetSelectable() || !headerMeta.GetSelectable() || !shaLabel.GetSelectable() {
 		t.Fatalf("commit header copy control is incomplete: compact=%d body=%d title=%v meta=%v sha=%v controls=%q/%q/%q reference=%q/%v/%v/%v copied=%q/%v notification=%q/%v content=%dx%d/%dx%d", compactDetails, expandedDetails, titleErr, metaErr, shaErr, fullFileLabel, whitespaceLabel, fullMergeLabel, referenceValue, referenceErr, labelOK, textErr, copiedReference, copyReferenceErr, copyNotification, notificationErr, contentWidth, contentHeight, app.mainPane.GetAllocatedWidth(), app.mainPane.GetAllocatedHeight())
 	}
 	details.committer, details.committerEmail, details.committed = details.author, details.authorEmail, details.authored
@@ -1353,63 +1353,70 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 		t.Fatal("line review did not expose preview and export")
 	}
 	reviewedTag, _ := must(app.diffBuffer.GetTagTable()).Lookup("reviewed-added")
+	commentTag, _ := must(app.diffBuffer.GetTagTable()).Lookup("review-comment")
 	removedTag, _ := must(app.diffBuffer.GetTagTable()).Lookup("reviewed-removed")
 	if !app.diffBuffer.GetIterAtLine(added).HasTag(reviewedTag) || app.diffBuffer.GetIterAtLine(removed).HasTag(removedTag) {
 		t.Fatal("selected line review affected the wrong lines")
 	}
-	complete, partial := app.review.Files[app.currentFile.path].status()
-	if complete || !partial {
+	if app.reviewState(app.currentFile.path) != reviewPartial {
 		t.Fatal("line review did not produce partial file state")
 	}
-	answerDialog := func(text string, response gtk.ResponseType) {
+	cardButton := func(label string) {
 		t.Helper()
-		addMainSource(0, func() bool {
-			windows := gtk.WindowListToplevels()
-			// This API installs a finalizer; disable it before freeing the list explicitly.
-			runtime.SetFinalizer(windows, nil)
-			defer windows.Free()
-			windows.Foreach(func(raw any) {
-				window := raw.(*gtk.Window)
-				title, _ := window.GetTitle()
-				if !strings.HasPrefix(title, "File comment — ") && !strings.HasPrefix(title, "Comment on ") {
-					return
+		var found *gtk.Button
+		var inspect func(gtk.IWidget)
+		inspect = func(widget gtk.IWidget) {
+			cast, _ := widget.ToWidget().Cast()
+			if button, ok := cast.(*gtk.Button); ok {
+				if text, _ := button.GetLabel(); text == label && found == nil {
+					found = button
 				}
-				cast, _ := window.Cast()
-				dialog := cast.(*gtk.Dialog)
-				area := must(dialog.GetContentArea())
-				children := area.GetChildren()
-				children.Foreach(func(raw any) {
-					cast, _ := raw.(*gtk.Widget).Cast()
-					if pane, ok := cast.(*gtk.ScrolledWindow); ok {
-						child := must(pane.GetChild())
-						if view, ok := child.(*gtk.TextView); ok && view.GetEditable() {
-							must(view.GetBuffer()).SetText(text)
-						}
-					}
-				})
+			} else if container, ok := cast.(interface{ GetChildren() *glib.List }); ok {
+				children := container.GetChildren()
+				children.Foreach(func(child any) { inspect(child.(*gtk.Widget)) })
 				children.Free()
-				dialog.Response(response)
-			})
-			return false
-		})
+			}
+		}
+		for _, card := range app.reviewCards {
+			inspect(card.widget)
+		}
+		if found == nil {
+			t.Fatalf("comment card action %q missing", label)
+		}
+		found.Clicked()
 	}
-	answerDialog("Should the new value be configurable?", gtk.RESPONSE_OK)
-	app.editReviewComment(app.currentFile.path, reviewComment{Lines: app.selectedReviewLines()})
-	answerDialog("File-wide question", gtk.RESPONSE_OK)
+	// Comments are written in inline cards; Save is the card's own button.
+	writeComment := func(text string) {
+		t.Helper()
+		if app.reviewDraftView == nil || !app.reviewDraftView.IsFocus() {
+			t.Fatal("comment editor did not open inline with focus")
+		}
+		app.reviewDraft.buffer.SetText(text)
+		cardButton("Save")
+		if app.reviewDraft != nil {
+			t.Fatal("saving did not close the comment editor")
+		}
+	}
+	activateMenu("Comment on selected lines…", false)
+	writeComment("Should the new value be configurable?")
 	app.reviewCommentButton.Clicked()
+	writeComment("File-wide question")
 	file := app.review.Files[app.currentFile.path]
 	if len(file.Comments) != 2 || len(file.Comments[0].Lines) != 1 || file.Comments[0].Lines[0].New != 1 || len(file.Comments[1].Lines) != 0 {
 		t.Fatalf("line/file comments lost anchors: %#v", file.Comments)
 	}
-	answerDialog("Updated question", gtk.RESPONSE_OK)
-	app.editReviewComment(app.currentFile.path, file.Comments[0])
+	if len(app.reviewCards) != 2 || app.reviewCards[0].line != -1 || app.reviewCards[1].line != added || !app.diffBuffer.GetIterAtLine(added).HasTag(commentTag) {
+		t.Fatalf("comments were not shown inline below their lines: %#v", app.reviewCards)
+	}
+	app.startReviewDraft(app.currentFile.path, file.Comments[0])
+	writeComment("Updated question")
 	file = app.review.Files[app.currentFile.path]
 	if file.Comments[0].Text != "Updated question" {
 		t.Fatal("comment was not edited")
 	}
 	app.reviewFileButton.Clicked()
-	if complete, _ := app.review.Files[app.currentFile.path].status(); !complete {
-		t.Fatal("file button did not mark the selected file reviewed")
+	if app.reviewState(app.currentFile.path) != reviewCommented {
+		t.Fatal("file button did not mark the selected file reviewed with comments")
 	}
 	if !app.reviewActive {
 		t.Fatal("marking a file exited review mode")
@@ -1419,7 +1426,7 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 		t.Fatal("file comment action remained enabled in the references view")
 	}
 	app.showDiffPage()
-	if !app.reviewCommentButton.GetSensitive() || !app.diffBuffer.GetIterAtLine(added).HasTag(reviewedTag) {
+	if !app.reviewCommentButton.GetSensitive() || !app.diffBuffer.GetIterAtLine(added).HasTag(commentTag) {
 		t.Fatal("returning from references lost review display")
 	}
 	app.reviewPreviewButton.Clicked()
@@ -1439,11 +1446,11 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 		t.Fatalf("hunk shortcut selected wrong lines: %d:%d", start.GetLine(), end.GetLine())
 	}
 	activateMenu("Mark selected lines unreviewed", false)
-	if complete, partial := app.review.Files[app.currentFile.path].status(); complete || !partial {
-		t.Fatal("unmarking a range in a reviewed file lost partial status")
+	if app.reviewState(app.currentFile.path) != reviewPartial || !app.diffBuffer.GetIterAtLine(added).HasTag(commentTag) {
+		t.Fatal("unmarking a range in a reviewed file lost partial status or the commented line")
 	}
-	answerDialog("", gtk.RESPONSE_REJECT)
-	app.editReviewComment(app.currentFile.path, app.review.Files[app.currentFile.path].Comments[1])
+	cardButton("Delete")
+	cardButton("Confirm Delete") // The file comment card comes first.
 	path, savedPath, revision := app.currentFile.path, app.reviewPath, app.review.Commit
 	app.openRepository(app.repository.path, historySpec{Revision: revision})
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil })
@@ -1463,7 +1470,7 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	if app.diffBuffer.GetIterAtLine(added).HasTag(reviewedTag) || app.reviewActive {
 		t.Fatal("exiting did not return to ordinary diff styling")
 	}
-	if complete, _ := app.review.Files[path].status(); complete {
+	if app.reviewState(path) >= reviewDone {
 		t.Fatal("exiting unexpectedly marked remaining lines reviewed")
 	}
 	app.reviewPreviewButton.Clicked()
@@ -1475,20 +1482,24 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 		t.Fatal("leaving preview started a review")
 	}
 	app.reviewModeButton.Clicked()
-	answerDialog("", gtk.RESPONSE_REJECT)
-	app.editReviewComment(path, app.review.Files[path].Comments[0])
+	iterateGTKUntil(t, 2*time.Second, func() bool { return app.diffLoaded && len(app.reviewCards) == 1 })
 	activateMenu("Mark Reviewed", true)   // Complete the partially reviewed file.
-	activateMenu("Unmark Reviewed", true) // Clear the complete file review.
+	activateMenu("Unmark Reviewed", true) // Marks clear, but the comment keeps the file partial.
+	if app.reviewState(path) != reviewPartial || len(app.review.Files[path].Comments) != 1 {
+		t.Fatal("unmarking a commented file removed the comment or its partial state")
+	}
+	cardButton("Delete")
+	cardButton("Confirm Delete")
 	if len(app.review.Files) != 0 {
 		t.Fatalf("cleared review left empty file records: %#v", app.review.Files)
 	}
-	if app.reviewPreviewButton.GetVisible() || app.reviewExportButton.GetVisible() {
-		t.Fatal("clearing review left preview or export visible")
+	if !app.reviewPreviewButton.GetVisible() || app.reviewPreviewButton.GetSensitive() || app.reviewExportButton.GetSensitive() {
+		t.Fatal("clearing review shifted the header or left export enabled")
 	}
-	answerDialog("Comment without review marks", gtk.RESPONSE_OK)
 	app.reviewCommentButton.Clicked()
-	if !app.reviewPreviewButton.GetVisible() || !app.reviewExportButton.GetVisible() {
-		t.Fatal("comment-only review did not expose preview and export")
+	writeComment("Comment without review marks")
+	if !app.reviewPreviewButton.GetSensitive() || !app.reviewExportButton.GetSensitive() {
+		t.Fatal("comment-only review did not enable preview and export")
 	}
 }
 
@@ -1528,20 +1539,20 @@ func TestGTKReviewFolderTicksIgnoreSearchAndWhitespaceFilter(t *testing.T) {
 		}
 		return must(value.GetString())
 	}
-	if folderTick() != "" {
+	if folderTick() != reviewStates[reviewPartial].mark {
 		t.Fatal("search hid an unreviewed sibling and incorrectly completed the folder")
 	}
 	app.toggleFileReviewed("src/alerts/b.txt")
-	if folderTick() != "" {
+	if folderTick() != reviewStates[reviewPartial].mark {
 		t.Fatal("collapsed parent incorrectly ignored the whitespace-only file")
 	}
 	app.toggleFileReviewed("src/config.txt")
-	if folderTick() != "✓" {
+	if folderTick() != reviewStates[reviewDone].mark {
 		t.Fatal("reviewing every descendant did not tick the folder")
 	}
 	progress, _ := app.reviewProgress.GetText()
 	fileProgress, _ := app.reviewFileProgress.GetText()
-	if progress != "6 of 6 lines reviewed" || !strings.Contains(fileProgress, "3 of 3 files reviewed") {
+	if progress != "Review complete" || !strings.Contains(fileProgress, "3 of 3 files reviewed") {
 		t.Fatalf("progress lost hidden whitespace changes: %q", progress)
 	}
 	app.fileSearch.SetText("")
@@ -1555,7 +1566,7 @@ func TestGTKReviewFolderTicksIgnoreSearchAndWhitespaceFilter(t *testing.T) {
 	child := must(app.fileTreeStore.GetIterFromString("0:0"))
 	rootMark := must(app.fileTreeStore.GetValue(root, fileReviewMarkColumn))
 	childMark := must(app.fileTreeStore.GetValue(child, fileReviewMarkColumn))
-	if must(rootMark.GetString()) != "" || must(childMark.GetString()) != "✓" {
+	if must(rootMark.GetString()) != reviewStates[reviewPartial].mark || must(childMark.GetString()) != reviewStates[reviewDone].mark {
 		t.Fatal("folder review did not distinguish the completed child from its incomplete parent")
 	}
 	app.reviewModeButton.Clicked()
@@ -1581,7 +1592,7 @@ func TestGTKReviewPreviewRendersMarkdownAndExportsSameDocument(t *testing.T) {
 		file.Comments = []reviewComment{{ID: "format", Text: "**Check** the *failure path*.\n\n- Keep `retry_count`\n- Do not drop <b>literal HTML</b>\n\n```diff\n-before\n+after\n```\n\n| Outcome | Action |\n| --- | --- |\n| Failure | Retry |"}}
 	})
 	app.reviewFileButton.Clicked()
-	if label, _ := app.reviewFileButton.GetLabel(); label != "Unmark Reviewed" || !app.reviewActive {
+	if label, _ := app.reviewFileButton.GetLabel(); label != "Unmark _Reviewed" || !app.reviewActive {
 		t.Fatal("file marking did not retain review mode and offer unmarking")
 	}
 	app.reviewPreviewButton.Clicked()
@@ -1609,7 +1620,7 @@ func TestGTKReviewPreviewRendersMarkdownAndExportsSameDocument(t *testing.T) {
 	}
 	inspect(app.reviewDocument)
 	output := rendered.String()
-	for _, expected := range []string{"Commit review", app.review.Commit, path, "Status: Reviewed", "Check the failure path.", "Keep retry_count", "-before\n+after", "Outcome", "Retry", "<b>literal HTML</b>"} {
+	for _, expected := range []string{"Review: commit 11", app.review.Commit, path, "Reviewed with comments", "Check the failure path.", "Keep retry_count", "-before\n+after", "Outcome", "Retry", "<b>literal HTML</b>"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("preview lost exported Markdown content %q:\n%s", expected, output)
 		}
@@ -1664,7 +1675,7 @@ func TestGTKReviewPreviewRendersMarkdownAndExportsSameDocument(t *testing.T) {
 	}
 	app.reviewPreviewExit.Clicked()
 	app.reviewFileButton.Clicked()
-	if complete, _ := app.review.Files[path].status(); complete || !app.reviewActive {
+	if app.reviewState(path) >= reviewDone || !app.reviewActive {
 		t.Fatal("unmarking a file changed the session mode or left its review mark")
 	}
 }

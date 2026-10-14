@@ -686,9 +686,6 @@ func (app *giti) buildFilePane() *gtk.Box {
 		} else if ok && index >= 0 && (column.GetTitle() == "Stage or Unstage" || column.GetTitle() == "Undo") {
 			app.changeWorkingFiles([]int{index}, column.GetTitle() == "Undo")
 			return true
-		} else if ok && index >= 0 && key == gdk.KEY_space && app.reviewActive {
-			app.toggleFileReviewed(app.files[index].path)
-			return true
 		} else if ok && index >= 0 && column.GetTitle() == "Files" {
 			app.showDiffPage()
 			return true
@@ -750,15 +747,13 @@ func (app *giti) buildFilePane() *gtk.Box {
 		if column.GetTitle() == "Reviewed" && app.review != nil {
 			value, _ := app.fileModel.GetValue(iter, fileIndexColumn)
 			raw, _ := value.GoValue()
-			if index, ok := raw.(int); ok && index >= 0 && index < len(app.files) {
-				text = app.review.Files[app.files[index].path].statusText()
-			} else {
-				value, _ := app.fileModel.GetValue(iter, fileReviewMarkColumn)
-				mark, _ := value.GetString()
-				if mark != "" {
-					text = "All changed files in this folder reviewed"
-				} else {
-					text = "Some changed files in this folder remain unreviewed"
+			mark, _ := must(app.fileModel.GetValue(iter, fileReviewMarkColumn)).GetString()
+			for _, state := range reviewStates {
+				if state.mark == mark {
+					text = state.folder
+					if index, ok := raw.(int); ok && index >= 0 {
+						text = state.file
+					}
 				}
 			}
 		} else if column.GetTitle() == "Files" || column.GetTitle() == "Changes" {
@@ -822,8 +817,7 @@ func (app *giti) buildFilePane() *gtk.Box {
 	app.fileView.AppendColumn(statColumn)
 	reviewRenderer := must(gtk.CellRendererTextNew())
 	reviewRenderer.SetProperty("xalign", 0.5)
-	reviewRenderer.SetProperty("foreground", "#2e8c47")
-	app.reviewColumn = must(gtk.TreeViewColumnNewWithAttribute("Reviewed", reviewRenderer, "text", fileReviewMarkColumn))
+	app.reviewColumn = must(gtk.TreeViewColumnNewWithAttribute("Reviewed", reviewRenderer, "markup", fileReviewMarkColumn))
 	app.reviewColumn.SetSizing(gtk.TREE_VIEW_COLUMN_FIXED)
 	app.reviewColumn.SetFixedWidth(24)
 	app.fileView.AppendColumn(app.reviewColumn)

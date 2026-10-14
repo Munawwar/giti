@@ -74,7 +74,7 @@ func TestReviewMarkdownCapturesBothSidesAndFileComments(t *testing.T) {
 	line := reviewLine{New: 2, Kind: "added", Text: "+after", Reviewed: true}
 	file.Lines[reviewLineKey(line)] = line
 	output := review.markdown([]changedFile{{path: "sample.txt", additions: 1, deletions: 1}, {path: "untouched.txt", additions: 2}})
-	for _, expected := range []string{"**Repository:** `/repo`", "**Commit:** `" + review.Commit + "`", "**Parent commits:** " + review.Parents[0], "## sample.txt", "Partially reviewed", "File-wide question", "Old line 2, new line 0 (removed)", "Old line 0, new line 2 (added)", "````diff\n-before\n+after\n ```\n````", "Why change this?", "`untouched.txt` | Unreviewed | 0", "1 of 4 lines reviewed"} {
+	for _, expected := range []string{"- **Repository:** `/repo`", "- **Commit:** `" + review.Commit + "`", "first parent `bbbbbbbbbbbb`", "### `sample.txt`\n\n> File-wide question\n\n**`sample.txt:2-3`**", "````diff\n-before\n+after\n ```\n````", "> Why change this?", "| `sample.txt` | Reviewed with comments | 2 |", "| `untouched.txt` | Not reviewed |  |", "1 of 2 files, 2 of 4 changed lines reviewed · 2 comments"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("export missing %q:\n%s", expected, output)
 		}

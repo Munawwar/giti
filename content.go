@@ -29,6 +29,7 @@ func (app *giti) setCommitHeader(details commitDetails) {
 	title.SetSelectable(true)
 	title.SetEllipsize(pango.ELLIPSIZE_END)
 	title.SetMarkup("<span size=\"large\" weight=\"bold\">" + html.EscapeString(details.subject) + "</span>")
+	title.SetTooltipText(details.subject)
 	app.headerTitleRow.PackStart(title, true, true, 0)
 	// Keep aggregate statistics outside the ellipsized title so they remain
 	// visible even for unusually long subjects.
@@ -189,9 +190,11 @@ func (app *giti) setCommitHeader(details commitDetails) {
 		}
 		app.headerDetails.PackStart(parents, false, false, 0)
 	}
-	if details.body != "" {
-		expander := must(gtk.ExpanderNew("Commit description"))
-		body := must(gtk.LabelNew(details.body))
+	// Always offer the full message: long subjects ellipsize in the title, and a
+	// constant expander keeps the header height stable between commits.
+	if text := strings.TrimSpace(details.subject + "\n\n" + details.body); text != "" {
+		expander := must(gtk.ExpanderNew("Commit message"))
+		body := must(gtk.LabelNew(text))
 		body.SetXAlign(0)
 		body.SetYAlign(0)
 		body.SetSelectable(true)
@@ -201,7 +204,7 @@ func (app *giti) setCommitHeader(details commitDetails) {
 		body.SetMarginEnd(8)
 		message := scroller(body)
 		message.SetPolicy(gtk.POLICY_NEVER, gtk.POLICY_AUTOMATIC)
-		message.SetMinContentHeight(min(180, max(48, (strings.Count(details.body, "\n")+1)*20+12)))
+		message.SetMinContentHeight(min(180, max(48, (strings.Count(text, "\n")+1)*20+12)))
 		message.SetMaxContentHeight(180)
 		message.SetPropagateNaturalHeight(true)
 		expander.Add(message)
@@ -339,7 +342,6 @@ func (app *giti) setDiff(patch string) {
 func (app *giti) clearDiff() {
 	app.diffBuffer.SetText("")
 	app.reviewLines = nil
-	app.reviewSelectionAnchor = -1
 	app.diffContextLine = -1
 	app.diffLineNumbers = app.diffLineNumbers[:0]
 	app.diffGutter.Hide()
@@ -635,27 +637,6 @@ func (app *giti) buildDiffGutter() {
 	app.diffGutter.SetVExpand(true)
 	app.diffGutter.SetTooltipText("Old and new file line numbers")
 	setAccessibility(&app.diffGutter.Widget, "Diff line numbers", "Old or first-parent line numbers followed by resulting-file line numbers")
-	app.diffGutter.AddEvents(int(gdk.BUTTON_PRESS_MASK))
-	app.diffGutter.Connect("button-press-event", func(_ *gtk.DrawingArea, event *gdk.Event) bool {
-		button := gdk.EventButtonNewFromEvent(event)
-		if !app.reviewActive || !app.diffLoaded || button.Button() != gdk.BUTTON_PRIMARY {
-			return false
-		}
-		y := int(button.Y()) + app.diffView.GetVisibleRect().GetY()
-		iter := app.diffView.GetIterAtLocation(0, y)
-		lineY, height := app.diffView.GetLineYrange(iter)
-		line := iter.GetLine()
-		if y < lineY || y >= lineY+height || line >= len(app.reviewLines) {
-			return false
-		}
-		if button.State()&uint(gdk.SHIFT_MASK) == 0 || app.reviewSelectionAnchor < 0 {
-			app.reviewSelectionAnchor = line
-		}
-		first, last := min(line, app.reviewSelectionAnchor), max(line, app.reviewSelectionAnchor)
-		app.diffBuffer.SelectRange(app.diffBuffer.GetIterAtLine(first), app.diffBuffer.GetIterAtLine(last+1))
-		app.diffView.GrabFocus()
-		return true
-	})
 	app.diffGutter.Connect("draw", func(_ *gtk.DrawingArea, context *cairo.Context) bool {
 		width, height := app.diffGutter.GetAllocatedWidth(), app.diffGutter.GetAllocatedHeight()
 		context.SetSourceRGB(.965, .97, .975)
@@ -665,14 +646,17 @@ func (app *giti) buildDiffGutter() {
 		}
 		// TextView reports line positions in buffer coordinates; subtract its
 		// visible origin so the independent gutter tracks vertical scrolling.
-		// Wrap is disabled, so every logical line has the same measured height.
+		// Wrap is disabled, so lines differ in height only by comment card space.
 		visible := app.diffView.GetVisibleRect()
-		first := app.diffBuffer.GetStartIter()
-		firstY, lineHeight := app.diffView.GetLineYrange(first)
+		first := app.diffView.GetIterAtLocation(0, visible.GetY())
+		line := first.GetLine()
+		_, lineHeight := app.diffView.GetLineYrange(first)
+		if lineHeight -= app.reviewGaps[line]; line == 0 {
+			lineHeight -= app.reviewGaps[-1]
+		}
 		if lineHeight < 1 {
 			return false
 		}
-		line := max(0, (visible.GetY()-firstY)/lineHeight)
 		context.SelectFontFace("monospace", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
 		context.SetFontSize(max(8, float64(lineHeight)*.68))
 		digitWidth := context.TextExtents("0").XAdvance
@@ -688,8 +672,11 @@ func (app *giti) buildDiffGutter() {
 		font := context.FontExtents()
 		for line < len(app.diffLineNumbers) {
 			iter := app.diffBuffer.GetIterAtLine(line)
-			bufferY, rowHeight := app.diffView.GetLineYrange(iter)
-			y := bufferY - visible.GetY()
+			bufferY, _ := app.diffView.GetLineYrange(iter)
+			if line == 0 {
+				bufferY += app.reviewGaps[-1]
+			}
+			y, rowHeight := bufferY-visible.GetY(), lineHeight
 			if y >= height {
 				break
 			}
@@ -766,6 +753,11 @@ func (app *giti) buildDiffOverview() {
 			context.Rectangle(x, float64(marker.line)/denominator*(height-markerHeight), markerWidth, markerHeight)
 			context.Fill()
 		}
+		context.SetSourceRGB(.15, .39, .92)
+		for _, line := range app.overviewComments {
+			context.Rectangle(trackX, float64(line)/denominator*(height-markerHeight), trackWidth, markerHeight)
+			context.Fill()
+		}
 		return false
 	})
 	app.diffOverview.Connect("button-press-event", func(_ *gtk.DrawingArea, event *gdk.Event) bool {
@@ -826,7 +818,7 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.diffBuffer.CreateTag("reviewed-added", map[string]any{"background": "#e7ece8", "paragraph-background": "#e7ece8"})
 	app.diffBuffer.CreateTag("reviewed-removed", map[string]any{"background": "#eee7e8", "paragraph-background": "#eee7e8"})
 	app.diffBuffer.CreateTag("reviewed-context", map[string]any{"paragraph-background": "#edf0ef"})
-	app.diffBuffer.CreateTag("review-comment", map[string]any{"underline": pango.UNDERLINE_SINGLE})
+	app.diffBuffer.CreateTag("review-comment", map[string]any{"background": "#dce8fb", "paragraph-background": "#dce8fb"})
 	app.diffBuffer.CreateTag(diffFindTag, map[string]any{"background": "#fff2a8"})
 	app.diffBuffer.CreateTag(diffFindCurrentTag, map[string]any{"background": "#f6bd4f", "foreground": "#2d2100"})
 	app.diffView = must(gtk.TextViewNewWithBuffer(app.diffBuffer))
@@ -901,8 +893,17 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.commitHeader.PackStart(app.headerDetails, false, false, 0)
 	diffBox := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 4))
 	diffBox.PackStart(app.commitHeader, false, false, 0)
+	diffBox.PackStart(app.reviewProgressBar, false, false, 0)
 	app.diffScroller = scroller(app.diffView)
 	app.diffScroller.GetVAdjustment().Connect("value-changed", app.diffGutter.QueueDraw)
+	// Card positions follow line layout, which GTK validates incrementally.
+	app.diffScroller.GetVAdjustment().Connect("changed", app.positionReviewCards)
+	app.diffScroller.GetHAdjustment().Connect("value-changed", app.positionReviewCards)
+	app.diffView.Connect("size-allocate", func() {
+		if len(app.reviewCards) > 0 && app.reviewCardWidth != max(240, app.diffView.GetVisibleRect().GetWidth()-24) {
+			addMainSource(0, func() bool { app.layoutReviewCards(); return false })
+		}
+	})
 	app.diffOverviewReveal = must(gtk.RevealerNew())
 	app.diffOverviewReveal.SetTransitionDuration(0)
 	app.diffOverviewReveal.Add(app.diffOverview)
