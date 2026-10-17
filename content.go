@@ -361,7 +361,7 @@ func (app *giti) setDiff(patch string) {
 	fullFile := app.fullFileToggle.GetActive()
 	app.diffGutter.SetVisible((fullFile && app.fullLineNumbers || !fullFile && app.compactLineNumbers) && maxLine > 0)
 	app.diffGutter.QueueDraw()
-	app.diffOverviewReveal.SetRevealChild(app.fullFileToggle.GetActive() && len(app.overviewMarkers) > 0)
+	app.diffOverviewReveal.SetRevealChild(len(app.overviewMarkers) > 0)
 	app.diffOverview.QueueDraw()
 	app.updateDiffFind()
 	app.updateReviewUI()
@@ -755,7 +755,7 @@ func (app *giti) buildDiffOverview() {
 	app.diffOverview.SetSizeRequest(targetWidth, -1)
 	app.diffOverview.SetVAlign(gtk.ALIGN_FILL)
 	app.diffOverview.SetVExpand(true)
-	app.diffOverview.SetTooltipText("Change overview — click or drag to scroll")
+	app.diffOverview.SetTooltipText("Changes and comments in this file — click or drag to scroll")
 	app.diffOverview.AddEvents(int(gdk.BUTTON_PRESS_MASK | gdk.BUTTON1_MOTION_MASK))
 	setAccessibility(&app.diffOverview.Widget, "Diff change overview", "Added and removed lines across the full file; click or drag to scroll")
 	app.diffOverview.Connect("draw", func(_ *gtk.DrawingArea, context *cairo.Context) bool {
@@ -769,7 +769,13 @@ func (app *giti) buildDiffOverview() {
 		if app.overviewLines < 1 || height < 1 {
 			return false
 		}
-		markerHeight, denominator := math.Max(2, math.Min(5, height/float64(app.overviewLines))), float64(max(1, app.overviewLines-1))
+		// Place markers by laid-out pixel position, so comment cards and hunks keep
+		// the strip in step with what scrolling there will show.
+		markerHeight, upper := math.Max(2, math.Min(5, height/float64(app.overviewLines))), math.Max(1, app.diffScroller.GetVAdjustment().GetUpper())
+		position := func(line int) float64 {
+			y, _ := app.diffView.GetLineYrange(app.diffBuffer.GetIterAtLine(line))
+			return float64(y) / upper * (height - markerHeight)
+		}
 		for _, marker := range app.overviewMarkers {
 			x, markerWidth := trackX, trackWidth/2.0
 			if marker.added {
@@ -778,12 +784,12 @@ func (app *giti) buildDiffOverview() {
 			} else {
 				context.SetSourceRGB(.78, .25, .30)
 			}
-			context.Rectangle(x, float64(marker.line)/denominator*(height-markerHeight), markerWidth, markerHeight)
+			context.Rectangle(x, position(marker.line), markerWidth, markerHeight)
 			context.Fill()
 		}
 		context.SetSourceRGB(.15, .39, .92)
 		for _, line := range app.overviewComments {
-			context.Rectangle(trackX, float64(line)/denominator*(height-markerHeight), trackWidth, markerHeight)
+			context.Rectangle(trackX, position(line), trackWidth, markerHeight)
 			context.Fill()
 		}
 		return false
@@ -1042,13 +1048,21 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.diffScroller = scroller(app.diffView)
 	app.diffScroller.GetVAdjustment().Connect("value-changed", app.diffGutter.QueueDraw)
 	// Card positions follow line layout, which GTK validates incrementally.
-	app.diffScroller.GetVAdjustment().Connect("changed", app.positionReviewCards)
+	app.diffScroller.GetVAdjustment().Connect("changed", func() {
+		app.positionReviewCards()
+		app.diffOverview.QueueDraw()
+	})
+	app.diffScroller.GetVAdjustment().Connect("value-changed", app.placeReviewAddButton)
+	app.diffBuffer.Connect("mark-set", app.placeReviewAddButton)
 	app.diffScroller.GetHAdjustment().Connect("value-changed", app.positionReviewCards)
 	app.diffView.Connect("size-allocate", func() {
 		if len(app.reviewCards) > 0 && app.reviewCardWidth != max(240, app.diffView.GetVisibleRect().GetWidth()-24) {
 			addMainSource(0, func() bool { app.layoutReviewCards(); return false })
 		}
 	})
+	// Lines are laid out lazily, so the + follows the painted layout; unchanged
+	// margins are no-ops, so this settles after one frame.
+	app.diffView.ConnectAfter("draw", func() bool { app.placeReviewAddButton(); return false })
 	app.diffOverviewReveal = must(gtk.RevealerNew())
 	app.diffOverviewReveal.SetTransitionDuration(0)
 	app.diffOverviewReveal.Add(app.diffOverview)
@@ -1062,7 +1076,23 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.referencesPage.SetMarginTop(16)
 	app.referencesPage.SetMarginBottom(16)
 	app.diffStack = must(gtk.StackNew())
-	app.diffStack.AddNamed(app.buildDiffFind(diffPage), "diff")
+	// Like GitHub, a + floats at the gutter edge beside a selection while reviewing.
+	app.diffOverlay = app.buildDiffFind(diffPage)
+	app.reviewAddButton = must(gtk.ButtonNewWithLabel("+"))
+	app.reviewAddButton.SetHAlign(gtk.ALIGN_START)
+	app.reviewAddButton.SetVAlign(gtk.ALIGN_START)
+	app.reviewAddButton.SetNoShowAll(true)
+	app.reviewAddButton.SetTooltipText("Comment on the selected lines")
+	setAccessibility(&app.reviewAddButton.Widget, "Comment on the selected lines", "Open the inline comment editor for the selection")
+	addContext, _ := app.reviewAddButton.GetStyleContext()
+	addContext.AddClass("giti-comment-add")
+	app.reviewAddButton.Connect("clicked", func() {
+		if lines := app.selectedReviewLines(); app.currentFile != nil && len(lines) > 0 {
+			app.startReviewDraft(app.currentFile.path, reviewComment{Lines: lines})
+		}
+	})
+	app.diffOverlay.AddOverlay(app.reviewAddButton)
+	app.diffStack.AddNamed(app.diffOverlay, "diff")
 	app.diffStack.AddNamed(scroller(app.referencesPage), "references")
 	preview := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0))
 	previewToolbar := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))

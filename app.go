@@ -147,6 +147,20 @@ box.giti-review-card box.giti-review-document {
   border: none;
   padding: 0;
 }
+button.giti-comment-add {
+  background: #2563eb;
+  border: none;
+  border-radius: 4px;
+  box-shadow: none;
+  color: #ffffff;
+  font-weight: bold;
+  min-height: 0;
+  min-width: 0;
+  padding: 0 5px;
+}
+button.giti-comment-add:hover {
+  background: #1d4ed8;
+}
 button.giti-glyph-button {
   background: transparent;
   border: none;
@@ -314,6 +328,8 @@ type giti struct {
 	reviewExportItem           *gtk.MenuItem
 	reviewCopyItem             *gtk.MenuItem
 	reviewNextButton           *gtk.Button
+	reviewAddButton            *gtk.Button
+	diffOverlay                *gtk.Overlay
 	reviewProgressBar          *gtk.DrawingArea
 	reviewStateCounts          [4]int
 	reviewDraft                *reviewDraft

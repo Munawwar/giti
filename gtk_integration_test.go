@@ -1357,6 +1357,9 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	if !app.reviewPreviewItem.GetSensitive() || !app.reviewExportItem.GetSensitive() {
 		t.Fatal("line review did not enable preview and export")
 	}
+	if _, _, selected := app.diffBuffer.GetSelectionBounds(); selected || app.reviewAddButton.GetVisible() {
+		t.Fatal("marking lines left the selection covering their new review colors")
+	}
 	reviewedTag, _ := must(app.diffBuffer.GetTagTable()).Lookup("reviewed-added")
 	commentTag, _ := must(app.diffBuffer.GetTagTable()).Lookup("review-comment")
 	removedTag, _ := must(app.diffBuffer.GetTagTable()).Lookup("reviewed-removed")
@@ -1402,7 +1405,24 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 			t.Fatal("saving did not close the comment editor")
 		}
 	}
-	activateMenu("Comment on selected lines…", false)
+	app.diffBuffer.SelectRange(app.diffBuffer.GetIterAtLine(added), app.diffBuffer.GetIterAtLine(added+1))
+	if !app.reviewAddButton.GetVisible() {
+		t.Fatal("selecting lines while reviewing did not offer the inline + comment button")
+	}
+	app.reviewAddButton.Clicked()
+	draftTag, _ := must(app.diffBuffer.GetTagTable()).Lookup("review-comment")
+	if !app.diffBuffer.GetIterAtLine(added).HasTag(draftTag) {
+		t.Fatal("the open comment editor did not tint its lines")
+	}
+	cardButton("Cancel")
+	if app.reviewDraft != nil || app.diffBuffer.GetIterAtLine(added).HasTag(draftTag) {
+		t.Fatal("cancelling a comment left its tint on the lines")
+	}
+	app.diffBuffer.SelectRange(app.diffBuffer.GetIterAtLine(added), app.diffBuffer.GetIterAtLine(added+1))
+	app.reviewAddButton.Clicked()
+	if app.reviewAddButton.GetVisible() {
+		t.Fatal("the + button stayed over the diff after opening the comment editor")
+	}
 	writeComment("Should the new value be configurable?")
 	app.reviewCommentItem.Activate()
 	writeComment("File-wide question")

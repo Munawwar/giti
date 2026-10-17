@@ -411,6 +411,10 @@ func (app *giti) markReviewLines(lines []reviewLine, reviewed bool) {
 		return
 	}
 	path := app.currentFile.path
+	// The marks now show the result; a leftover selection would hide them.
+	if _, end, selected := app.diffBuffer.GetSelectionBounds(); selected {
+		app.diffBuffer.PlaceCursor(end)
+	}
 	app.changeReview(func(review *commitReview) {
 		file := review.file(path)
 		for _, line := range lines {
@@ -600,6 +604,7 @@ func (app *giti) updateReviewUI() {
 	app.diffOverview.QueueDraw()
 	app.fileView.QueueDraw()
 	app.rebuildReviewCards()
+	app.placeReviewAddButton()
 	app.updateReviewFileActions()
 }
 
@@ -708,14 +713,14 @@ func (app *giti) saveReviewDraft() {
 		file.Comments = append(file.Comments, comment)
 	}) {
 		app.reviewDraft = draft
-		app.rebuildReviewCards()
+		app.updateReviewUI()
 	}
 	app.diffView.GrabFocus()
 }
 
 func (app *giti) cancelReviewDraft() {
 	app.reviewDraft = nil
-	app.rebuildReviewCards()
+	app.updateReviewUI() // Drops the draft's comment tint along with its card.
 	app.diffView.GrabFocus()
 }
 
@@ -882,6 +887,39 @@ func (app *giti) layoutReviewCards() {
 	}
 	app.positionReviewCards()
 	app.diffGutter.QueueDraw()
+}
+
+// placeReviewAddButton shows the + beside the last selected line while reviewing.
+func (app *giti) placeReviewAddButton() {
+	if app.reviewAddButton == nil {
+		return
+	}
+	start, end, selected := app.diffBuffer.GetSelectionBounds()
+	if !selected || !app.reviewActive || len(app.selectedReviewLines()) == 0 {
+		app.reviewAddButton.Hide()
+		return
+	}
+	last := end.GetLine()
+	if end.GetLineOffset() == 0 && last > start.GetLine() {
+		last--
+	}
+	lineY, height := app.diffView.GetLineYrange(app.diffBuffer.GetIterAtLine(last))
+	if height -= app.reviewGaps[last]; last == 0 {
+		lineY, height = lineY+app.reviewGaps[-1], height-app.reviewGaps[-1]
+	}
+	_, y := app.diffView.BufferToWindowCoords(gtk.TEXT_WINDOW_WIDGET, 0, lineY)
+	left, top, err := app.diffView.TranslateCoordinates(app.diffOverlay, 0, y)
+	// Preferred sizes include the margins used for placement, so take them back out.
+	_, buttonWidth := app.reviewAddButton.GetPreferredWidth()
+	_, buttonHeight := app.reviewAddButton.GetPreferredHeight()
+	buttonWidth, buttonHeight = buttonWidth-app.reviewAddButton.GetMarginStart(), buttonHeight-app.reviewAddButton.GetMarginTop()
+	if err != nil || y+height < 0 || y > app.diffView.GetAllocatedHeight() {
+		app.reviewAddButton.Hide()
+		return
+	}
+	app.reviewAddButton.SetMarginStart(max(0, left-buttonWidth/2))
+	app.reviewAddButton.SetMarginTop(max(0, top+(height-buttonHeight)/2))
+	app.reviewAddButton.Show()
 }
 
 func (app *giti) positionReviewCards() {
