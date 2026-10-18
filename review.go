@@ -604,7 +604,7 @@ func (app *giti) updateReviewUI() {
 	app.diffOverview.QueueDraw()
 	app.fileView.QueueDraw()
 	app.rebuildReviewCards()
-	app.placeReviewAddButton()
+	app.placeReviewFloaters()
 	app.updateReviewFileActions()
 }
 
@@ -889,37 +889,97 @@ func (app *giti) layoutReviewCards() {
 	app.diffGutter.QueueDraw()
 }
 
-// placeReviewAddButton shows the + beside the last selected line while reviewing.
-func (app *giti) placeReviewAddButton() {
+func reviewActionMarkup(label, color, key string) string {
+	return `<span foreground="` + color + `" weight="bold">` + label + `</span>  <span foreground="#9ca3af" size="small">` + key + `</span>`
+}
+
+// selectionReviewed reports whether every changed line in lines is already reviewed.
+func (app *giti) selectionReviewed(lines []reviewLine) bool {
+	file := app.review.Files[app.currentFile.path]
+	commented := file.commented()
+	for _, line := range lines {
+		if line.changed() && (file == nil || !file.lineReviewed(line, commented)) {
+			return false
+		}
+	}
+	return true
+}
+
+// actOnReviewSelection backs the selection toolbar and its C / M shortcuts.
+func (app *giti) actOnReviewSelection(comment bool) {
+	lines := app.selectedReviewLines()
+	if app.currentFile == nil || len(lines) == 0 {
+		return
+	}
+	if comment {
+		app.startReviewDraft(app.currentFile.path, reviewComment{Lines: lines})
+	} else {
+		app.markReviewLines(lines, !app.selectionReviewed(lines))
+	}
+}
+
+// placeReviewFloaters puts the selection toolbar just below where a selection
+// ends, or else the gutter + on the hovered line, following the painted layout.
+func (app *giti) placeReviewFloaters() {
 	if app.reviewAddButton == nil {
 		return
 	}
-	start, end, selected := app.diffBuffer.GetSelectionBounds()
-	if !selected || !app.reviewActive || len(app.selectedReviewLines()) == 0 {
+	overlayWidth := app.diffOverlay.GetAllocatedWidth()
+	place := func(widget *gtk.Widget, bufferX, bufferY int, position func(x, y, width, height int) (int, int)) {
+		windowX, windowY := app.diffView.BufferToWindowCoords(gtk.TEXT_WINDOW_WIDGET, bufferX, bufferY)
+		x, y, err := app.diffView.TranslateCoordinates(app.diffOverlay, windowX, windowY)
+		if err != nil || windowY < 0 || windowY > app.diffView.GetAllocatedHeight() {
+			widget.Hide()
+			return
+		}
+		// Preferred sizes include the margins used for placement, so take them back out.
+		_, width := widget.GetPreferredWidth()
+		_, height := widget.GetPreferredHeight()
+		x, y = position(x, y, width-widget.GetMarginStart(), height-widget.GetMarginTop())
+		widget.SetMarginStart(max(0, x))
+		widget.SetMarginTop(max(0, y))
+		widget.Show()
+	}
+	// One control at a time: a selection gets the toolbar, otherwise the hovered line gets the +.
+	_, _, selected := app.diffBuffer.GetSelectionBounds()
+	line := app.reviewHoverLine
+	if app.reviewActive && !app.diffSelecting && !selected && line >= 0 && len(reviewAnchors(app.reviewLines, line, line+1)) > 0 {
+		lineY, lineHeight := app.diffView.GetLineYrange(app.diffBuffer.GetIterAtLine(line))
+		if lineHeight -= app.reviewGaps[line]; line == 0 {
+			lineY, lineHeight = lineY+app.reviewGaps[-1], lineHeight-app.reviewGaps[-1]
+		}
+		place(&app.reviewAddButton.Widget, 0, lineY, func(x, y, width, height int) (int, int) {
+			return x - width/2, y + (lineHeight-height)/2 // Straddle the gutter edge.
+		})
+	} else {
 		app.reviewAddButton.Hide()
+	}
+	if !selected || !app.reviewActive || app.diffSelecting || len(app.selectedReviewLines()) == 0 {
+		app.reviewToolbar.Hide()
 		return
 	}
-	last := end.GetLine()
-	if end.GetLineOffset() == 0 && last > start.GetLine() {
-		last--
+	// This runs on every paint; GTK rebuilds a button's label even when it is
+	// unchanged, which would repaint forever, so only set a different one.
+	markup := reviewActionMarkup("Mark reviewed", "#174d22", "M")
+	if app.selectionReviewed(app.selectedReviewLines()) {
+		markup = reviewActionMarkup("Mark unreviewed", "#4b5563", "M")
 	}
-	lineY, height := app.diffView.GetLineYrange(app.diffBuffer.GetIterAtLine(last))
-	if height -= app.reviewGaps[last]; last == 0 {
-		lineY, height = lineY+app.reviewGaps[-1], height-app.reviewGaps[-1]
+	if markup != app.reviewMarkLabel.GetLabel() {
+		app.reviewMarkLabel.SetMarkup(markup)
 	}
-	_, y := app.diffView.BufferToWindowCoords(gtk.TEXT_WINDOW_WIDGET, 0, lineY)
-	left, top, err := app.diffView.TranslateCoordinates(app.diffOverlay, 0, y)
-	// Preferred sizes include the margins used for placement, so take them back out.
-	_, buttonWidth := app.reviewAddButton.GetPreferredWidth()
-	_, buttonHeight := app.reviewAddButton.GetPreferredHeight()
-	buttonWidth, buttonHeight = buttonWidth-app.reviewAddButton.GetMarginStart(), buttonHeight-app.reviewAddButton.GetMarginTop()
-	if err != nil || y+height < 0 || y > app.diffView.GetAllocatedHeight() {
-		app.reviewAddButton.Hide()
-		return
+	// Sit above the selection's first line so the selected lines stay visible;
+	// when that would leave the view, drop below its last line instead.
+	first, last, _ := app.diffBuffer.GetSelectionBounds()
+	above, below := app.diffView.GetIterLocation(first), app.diffView.GetIterLocation(last)
+	_, top := app.diffView.BufferToWindowCoords(gtk.TEXT_WINDOW_WIDGET, 0, above.GetY())
+	_, height := app.reviewToolbar.GetPreferredHeight()
+	anchorY, offset := above.GetY(), -(height-app.reviewToolbar.GetMarginTop())-4
+	if top+offset < 0 {
+		anchorY, offset = below.GetY()+below.GetHeight(), 4
 	}
-	app.reviewAddButton.SetMarginStart(max(0, left-buttonWidth/2))
-	app.reviewAddButton.SetMarginTop(max(0, top+(height-buttonHeight)/2))
-	app.reviewAddButton.Show()
+	place(&app.reviewToolbar.Widget, above.GetX(), anchorY, func(x, y, width, _ int) (int, int) {
+		return min(x+8, overlayWidth-width-8), y + offset
+	})
 }
 
 func (app *giti) positionReviewCards() {

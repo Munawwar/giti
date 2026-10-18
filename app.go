@@ -161,6 +161,29 @@ button.giti-comment-add {
 button.giti-comment-add:hover {
   background: #1d4ed8;
 }
+box.giti-selection-toolbar {
+  background-color: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  box-shadow: 0 1px 2px alpha(#000000, 0.10);
+  padding: 1px;
+}
+box.giti-selection-toolbar button {
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  box-shadow: none;
+  min-height: 0;
+  padding: 2px 8px;
+}
+box.giti-selection-toolbar button:hover {
+  background-color: #eef0f2;
+}
+box.giti-selection-toolbar separator {
+  background-color: #e5e7eb;
+  margin: 4px 0;
+  min-width: 1px;
+}
 button.giti-glyph-button {
   background: transparent;
   border: none;
@@ -329,6 +352,13 @@ type giti struct {
 	reviewCopyItem             *gtk.MenuItem
 	reviewNextButton           *gtk.Button
 	reviewAddButton            *gtk.Button
+	reviewHoverLine            int
+	reviewToolbar              *gtk.Box
+	reviewCommentAction        *gtk.Button
+	reviewMarkAction           *gtk.Button
+	reviewCommentLabel         *gtk.Label
+	reviewMarkLabel            *gtk.Label
+	diffSelecting              bool
 	diffOverlay                *gtk.Overlay
 	reviewProgressBar          *gtk.DrawingArea
 	reviewStateCounts          [4]int

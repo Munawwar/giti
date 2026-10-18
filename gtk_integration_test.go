@@ -1357,7 +1357,7 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	if !app.reviewPreviewItem.GetSensitive() || !app.reviewExportItem.GetSensitive() {
 		t.Fatal("line review did not enable preview and export")
 	}
-	if _, _, selected := app.diffBuffer.GetSelectionBounds(); selected || app.reviewAddButton.GetVisible() {
+	if _, _, selected := app.diffBuffer.GetSelectionBounds(); selected || app.reviewToolbar.GetVisible() {
 		t.Fatal("marking lines left the selection covering their new review colors")
 	}
 	reviewedTag, _ := must(app.diffBuffer.GetTagTable()).Lookup("reviewed-added")
@@ -1406,10 +1406,10 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 		}
 	}
 	app.diffBuffer.SelectRange(app.diffBuffer.GetIterAtLine(added), app.diffBuffer.GetIterAtLine(added+1))
-	if !app.reviewAddButton.GetVisible() {
-		t.Fatal("selecting lines while reviewing did not offer the inline + comment button")
+	if !app.reviewToolbar.GetVisible() {
+		t.Fatal("selecting lines while reviewing did not offer the selection toolbar")
 	}
-	app.reviewAddButton.Clicked()
+	app.reviewCommentAction.Clicked()
 	draftTag, _ := must(app.diffBuffer.GetTagTable()).Lookup("review-comment")
 	if !app.diffBuffer.GetIterAtLine(added).HasTag(draftTag) {
 		t.Fatal("the open comment editor did not tint its lines")
@@ -1418,10 +1418,20 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	if app.reviewDraft != nil || app.diffBuffer.GetIterAtLine(added).HasTag(draftTag) {
 		t.Fatal("cancelling a comment left its tint on the lines")
 	}
+	// Hovering a line offers the + for that line alone, but never beside a selection's toolbar.
 	app.diffBuffer.SelectRange(app.diffBuffer.GetIterAtLine(added), app.diffBuffer.GetIterAtLine(added+1))
+	app.reviewHoverLine = added
+	app.placeReviewFloaters()
+	if app.reviewAddButton.GetVisible() || !app.reviewToolbar.GetVisible() {
+		t.Fatal("the hover + competed with the selection toolbar")
+	}
+	app.diffBuffer.PlaceCursor(app.diffBuffer.GetIterAtLine(added))
+	if !app.reviewAddButton.GetVisible() || app.reviewToolbar.GetVisible() {
+		t.Fatal("hovering a line without a selection did not offer the + comment button")
+	}
 	app.reviewAddButton.Clicked()
-	if app.reviewAddButton.GetVisible() {
-		t.Fatal("the + button stayed over the diff after opening the comment editor")
+	if app.reviewToolbar.GetVisible() || app.reviewDraft == nil || len(app.reviewDraft.comment.Lines) != 1 {
+		t.Fatal("the + did not open a single-line comment editor")
 	}
 	writeComment("Should the new value be configurable?")
 	app.reviewCommentItem.Activate()

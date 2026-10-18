@@ -882,6 +882,10 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.diffView.AddEvents(int(gdk.BUTTON_PRESS_MASK))
 	app.diffView.Connect("button-press-event", func(_ *gtk.TextView, event *gdk.Event) bool {
 		button := gdk.EventButtonNewFromEvent(event)
+		if button.Type() == gdk.EVENT_BUTTON_PRESS && button.Button() == gdk.BUTTON_PRIMARY {
+			app.diffSelecting = true
+			app.placeReviewFloaters()
+		}
 		if button.Type() != gdk.EVENT_BUTTON_PRESS || button.Button() != gdk.BUTTON_SECONDARY {
 			return false
 		}
@@ -1052,17 +1056,73 @@ func (app *giti) buildContentPane() *gtk.Box {
 		app.positionReviewCards()
 		app.diffOverview.QueueDraw()
 	})
-	app.diffScroller.GetVAdjustment().Connect("value-changed", app.placeReviewAddButton)
-	app.diffBuffer.Connect("mark-set", app.placeReviewAddButton)
+	app.diffScroller.GetVAdjustment().Connect("value-changed", app.placeReviewFloaters)
+	app.diffBuffer.Connect("mark-set", app.placeReviewFloaters)
+	// Hovering a line in the text or the gutter offers the + for that line, as on GitHub.
+	hover := func(y float64) {
+		_, bufferY := app.diffView.WindowToBufferCoords(gtk.TEXT_WINDOW_WIDGET, 0, int(y))
+		iter := app.diffView.GetIterAtLocation(0, bufferY)
+		lineY, lineHeight := app.diffView.GetLineYrange(iter)
+		line := iter.GetLine()
+		if bufferY >= lineY+lineHeight-app.reviewGaps[line] {
+			line = -1 // Over a comment card's reserved space.
+		}
+		if line != app.reviewHoverLine {
+			app.reviewHoverLine = line
+			app.placeReviewFloaters()
+		}
+	}
+	unhover := func() bool {
+		// Moving onto the + itself leaves the diff; keep it while the pointer is over it.
+		addMainSource(150*time.Millisecond, func() bool {
+			if app.reviewAddButton.GetStateFlags()&gtk.STATE_FLAG_PRELIGHT == 0 {
+				app.reviewHoverLine = -1
+				app.placeReviewFloaters()
+			}
+			return false
+		})
+		return false
+	}
+	for _, widget := range []*gtk.Widget{&app.diffView.Widget, &app.diffGutter.Widget} {
+		widget.AddEvents(int(gdk.POINTER_MOTION_MASK | gdk.LEAVE_NOTIFY_MASK))
+		widget.Connect("motion-notify-event", func(_ any, event *gdk.Event) bool {
+			_, y := gdk.EventMotionNewFromEvent(event).MotionVal()
+			hover(y)
+			return false
+		})
+		widget.Connect("leave-notify-event", unhover)
+	}
+	// The selection toolbar waits until a drag ends, so it never chases the pointer.
+	app.diffView.Connect("button-release-event", func() bool {
+		app.diffSelecting = false
+		app.placeReviewFloaters()
+		return false
+	})
+	app.diffView.Connect("key-press-event", func(_ *gtk.TextView, event *gdk.Event) bool {
+		key := gdk.EventKeyNewFromEvent(event)
+		_, _, selected := app.diffBuffer.GetSelectionBounds()
+		if !app.reviewActive || !selected || key.State()&uint(gdk.CONTROL_MASK|gdk.MOD1_MASK) != 0 {
+			return false
+		}
+		switch key.KeyVal() {
+		case gdk.KEY_c, gdk.KEY_C:
+			app.actOnReviewSelection(true)
+		case gdk.KEY_m, gdk.KEY_M:
+			app.actOnReviewSelection(false)
+		default:
+			return false
+		}
+		return true
+	})
 	app.diffScroller.GetHAdjustment().Connect("value-changed", app.positionReviewCards)
 	app.diffView.Connect("size-allocate", func() {
 		if len(app.reviewCards) > 0 && app.reviewCardWidth != max(240, app.diffView.GetVisibleRect().GetWidth()-24) {
 			addMainSource(0, func() bool { app.layoutReviewCards(); return false })
 		}
 	})
-	// Lines are laid out lazily, so the + follows the painted layout; unchanged
-	// margins are no-ops, so this settles after one frame.
-	app.diffView.ConnectAfter("draw", func() bool { app.placeReviewAddButton(); return false })
+	// Lines are laid out lazily, so the floaters follow the painted layout;
+	// unchanged margins are no-ops, so this settles after one frame.
+	app.diffView.ConnectAfter("draw", func() bool { app.placeReviewFloaters(); return false })
 	app.diffOverviewReveal = must(gtk.RevealerNew())
 	app.diffOverviewReveal.SetTransitionDuration(0)
 	app.diffOverviewReveal.Add(app.diffOverview)
@@ -1076,22 +1136,53 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.referencesPage.SetMarginTop(16)
 	app.referencesPage.SetMarginBottom(16)
 	app.diffStack = must(gtk.StackNew())
-	// Like GitHub, a + floats at the gutter edge beside a selection while reviewing.
+	// While reviewing, a + floats at the gutter edge of the hovered line (as on
+	// GitHub), and a toolbar appears under a finished selection.
 	app.diffOverlay = app.buildDiffFind(diffPage)
+	app.reviewHoverLine = -1
 	app.reviewAddButton = must(gtk.ButtonNewWithLabel("+"))
-	app.reviewAddButton.SetHAlign(gtk.ALIGN_START)
-	app.reviewAddButton.SetVAlign(gtk.ALIGN_START)
-	app.reviewAddButton.SetNoShowAll(true)
-	app.reviewAddButton.SetTooltipText("Comment on the selected lines")
-	setAccessibility(&app.reviewAddButton.Widget, "Comment on the selected lines", "Open the inline comment editor for the selection")
+	app.reviewAddButton.SetTooltipText("Comment on this line")
+	setAccessibility(&app.reviewAddButton.Widget, "Comment on this line", "Open the inline comment editor for the hovered line")
 	addContext, _ := app.reviewAddButton.GetStyleContext()
 	addContext.AddClass("giti-comment-add")
 	app.reviewAddButton.Connect("clicked", func() {
-		if lines := app.selectedReviewLines(); app.currentFile != nil && len(lines) > 0 {
-			app.startReviewDraft(app.currentFile.path, reviewComment{Lines: lines})
+		line := app.reviewHoverLine
+		if app.currentFile == nil || line < 0 {
+			return
 		}
+		app.startReviewDraft(app.currentFile.path, reviewComment{Lines: reviewAnchors(app.reviewLines, line, line+1)})
 	})
-	app.diffOverlay.AddOverlay(app.reviewAddButton)
+	app.reviewToolbar = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
+	toolbarContext, _ := app.reviewToolbar.GetStyleContext()
+	toolbarContext.AddClass("giti-selection-toolbar")
+	// Colors follow the rest of review: blue comments, green reviewed; the dim
+	// letters are the keyboard shortcuts.
+	for _, action := range []struct {
+		button  **gtk.Button
+		label   **gtk.Label
+		tooltip string
+		comment bool
+	}{{&app.reviewCommentAction, &app.reviewCommentLabel, "Comment on the selected lines (C)", true}, {&app.reviewMarkAction, &app.reviewMarkLabel, "Toggle the selected lines reviewed (M)", false}} {
+		if !action.comment {
+			app.reviewToolbar.PackStart(must(gtk.SeparatorNew(gtk.ORIENTATION_VERTICAL)), false, false, 0)
+		}
+		*action.label = must(gtk.LabelNew(""))
+		*action.button = must(gtk.ButtonNew())
+		(*action.button).Add(*action.label)
+		(*action.button).SetRelief(gtk.RELIEF_NONE)
+		(*action.button).SetTooltipText(action.tooltip)
+		(*action.button).Connect("clicked", func() { app.actOnReviewSelection(action.comment) })
+		app.reviewToolbar.PackStart(*action.button, false, false, 0)
+	}
+	app.reviewCommentLabel.SetMarkup(reviewActionMarkup("Comment", "#1d4ed8", "C"))
+	for _, floater := range []*gtk.Widget{&app.reviewAddButton.Widget, &app.reviewToolbar.Widget} {
+		floater.SetHAlign(gtk.ALIGN_START)
+		floater.SetVAlign(gtk.ALIGN_START)
+		floater.ShowAll()
+		floater.Hide()
+		floater.SetNoShowAll(true)
+		app.diffOverlay.AddOverlay(floater)
+	}
 	app.diffStack.AddNamed(app.diffOverlay, "diff")
 	app.diffStack.AddNamed(scroller(app.referencesPage), "references")
 	preview := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0))
