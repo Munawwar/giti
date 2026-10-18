@@ -15,23 +15,31 @@ import (
 )
 
 func (app *giti) setCommitHeader(details commitDetails) {
-	// The title, commit identity, and detail regions change with selection. The
-	// action row stays mounted so its toggles retain their state and callbacks.
-	app.headerReferenceButtons, app.headerParentButtons = nil, nil
-	for _, box := range []*gtk.Box{app.headerTitleRow, app.headerCommit, app.headerDetails} {
+	// The title, identity, and message regions change with selection. The rows
+	// and their actions stay mounted so toggles keep their state and callbacks.
+	app.headerReferenceButtons, app.headerIdentity = nil, details
+	for _, box := range []*gtk.Box{app.headerTitleRow, app.headerStatistics, app.headerSHA, app.headerCommit, app.headerDetails} {
 		if children := box.GetChildren(); children != nil {
 			children.Foreach(func(child any) { box.Remove(child.(gtk.IWidget)) })
 			children.Free()
 		}
 	}
+	// The title stays selectable for copying; the chevron after it opens the full
+	// message, which also holds any part of the subject the ellipsis hides.
 	title := must(gtk.LabelNew(""))
 	title.SetXAlign(0)
 	title.SetSelectable(true)
 	title.SetEllipsize(pango.ELLIPSIZE_END)
+	title.SetMarginStart(4)
 	title.SetMarkup("<span size=\"large\" weight=\"bold\">" + html.EscapeString(details.subject) + "</span>")
-	app.headerTitleRow.PackStart(title, true, true, 0)
+	title.Connect("size-allocate", func() {
+		_, natural := title.GetPreferredWidth()
+		title.SetTooltipText(map[bool]string{false: "", true: details.subject}[title.GetAllocatedWidth() < natural])
+	})
+	app.headerTitleRow.PackStart(title, false, true, 0)
 	// Keep aggregate statistics outside the ellipsized title so they remain
 	// visible even for unusually long subjects.
+	app.headerStatistics.SetVisible(details.statistics)
 	if details.statistics {
 		additions := must(gtk.LabelNew(fmt.Sprintf("+%d", details.additions)))
 		deletions := must(gtk.LabelNew(fmt.Sprintf("−%d", details.deletions)))
@@ -39,7 +47,8 @@ func (app *giti) setCommitHeader(details commitDetails) {
 			context, _ := badge.GetStyleContext()
 			context.AddClass("giti-stat")
 			badge.SetTooltipText("Line totals exclude binary and untracked files")
-			app.headerTitleRow.PackStart(badge, false, false, 0)
+			app.headerStatistics.PackStart(badge, false, false, 0)
+			badge.Show()
 		}
 		additionContext, _ := additions.GetStyleContext()
 		additionContext.AddClass("giti-additions")
@@ -51,40 +60,27 @@ func (app *giti) setCommitHeader(details commitDetails) {
 			context.AddClass("giti-stat")
 			context.AddClass("giti-untracked")
 			untracked.SetTooltipText("Untracked files have no line counts")
-			app.headerTitleRow.PackStart(untracked, false, false, 0)
+			app.headerStatistics.PackStart(untracked, false, false, 0)
+			untracked.Show()
 		}
 	}
-	if details.sha == "" {
+	commit := details.sha != ""
+	app.headerIdentityButton.SetVisible(commit)
+	app.headerMenuButton.SetVisible(commit)
+	if !commit {
+		// Working-tree views have no identity, message, or parents: one commit row.
+		app.headerAuthor.SetText("")
 		app.commitHeader.ShowAll()
+		app.headerMetaRow.Hide()
+		app.updateReviewUI()
 		return
 	}
-	commitLabel := must(gtk.LabelNew(""))
-	commitLabel.SetMarkup("<span foreground=\"#4b5563\"><b>Commit</b></span>")
-	shaLabel := must(gtk.LabelNew(""))
-	shaLabel.SetXAlign(0)
-	shaLabel.SetSelectable(true)
-	shaLabel.SetEllipsize(pango.ELLIPSIZE_MIDDLE)
-	shaLabel.SetTooltipText(details.sha)
-	shaLabel.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><tt>%s</tt></span>", html.EscapeString(details.sha)))
-	app.headerCommit.PackStart(commitLabel, false, false, 0)
-	app.headerCommit.PackStart(shaLabel, true, true, 0)
-	app.headerCommit.PackStart(app.copySHAButton(details.sha), false, false, 0)
-	meta := must(gtk.LabelNew(""))
-	meta.SetXAlign(0)
-	meta.SetLineWrap(true)
-	meta.SetSelectable(true)
-	authored := formatCommitTime(details.authored, time.Local, "2 Jan 2006, 15:04 MST")
-	committed := formatCommitTime(details.committed, time.Local, "2 Jan 2006, 15:04 MST")
-	authoredUTC := formatCommitTime(details.authored, time.UTC, time.RFC3339)
-	committedUTC := formatCommitTime(details.committed, time.UTC, time.RFC3339)
-	if details.author == details.committer && details.authorEmail == details.committerEmail && details.authored == details.committed {
-		meta.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Author &amp; committer</b> %s &lt;%s&gt;  ·  %s</span>", html.EscapeString(details.author), html.EscapeString(details.authorEmail), html.EscapeString(authored)))
-		meta.SetTooltipText("Author & committer: " + authoredUTC)
-	} else {
-		meta.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>Author</b> %s &lt;%s&gt;  ·  %s\n<b>Committer</b> %s &lt;%s&gt;  ·  %s</span>", html.EscapeString(details.author), html.EscapeString(details.authorEmail), html.EscapeString(authored), html.EscapeString(details.committer), html.EscapeString(details.committerEmail), html.EscapeString(committed)))
-		meta.SetTooltipText(fmt.Sprintf("Author: %s\nCommitter: %s", authoredUTC, committedUTC))
+	sameIdentity := details.author == details.committer && details.authorEmail == details.committerEmail
+	app.headerAuthor.SetMarkup(fmt.Sprintf("<span foreground=\"#4b5563\"><b>%s</b>  ·  %s</span>", html.EscapeString(details.author), html.EscapeString(formatCommitTime(details.authored, time.Local, "2 Jan 2006, 15:04 MST"))))
+	app.headerIdentityButton.SetTooltipText("Author details")
+	if !sameIdentity {
+		app.headerIdentityButton.SetTooltipText("Committed by " + details.committer + " — show details")
 	}
-	app.headerDetails.PackStart(meta, false, false, 0)
 	if len(details.branches) > 0 || len(details.tags) > 0 {
 		refs := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 6))
 		// Reference badges are buttons because their visible text may be shortened;
@@ -159,54 +155,99 @@ func (app *giti) setCommitHeader(details commitDetails) {
 			more.Connect("clicked", func() { app.showReferences(details.branches, details.tags) })
 			refs.PackStart(more, false, false, 0)
 		}
-		app.headerDetails.PackStart(refs, false, false, 0)
+		// Clip long reference lists rather than pushing the view toggles away;
+		// the overflow chips open the complete list.
+		clip := must(gtk.ScrolledWindowNew(nil, nil))
+		clip.SetPolicy(gtk.POLICY_EXTERNAL, gtk.POLICY_NEVER)
+		clip.SetPropagateNaturalHeight(true)
+		clip.SetVAlign(gtk.ALIGN_CENTER)
+		clip.Add(refs)
+		app.headerCommit.PackStart(clip, true, true, 0)
 	}
-	if len(details.parents) > 0 {
-		parents := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 4))
-		parentLabel := must(gtk.LabelNew("Parents:"))
-		parentLabel.SetSelectable(true)
-		parents.PackStart(parentLabel, false, false, 0)
-		for _, parent := range details.parents {
-			parent := parent
-			button := must(gtk.ButtonNewWithLabel(parent[:min(7, len(parent))]))
-			button.SetRelief(gtk.RELIEF_NONE)
-			button.SetTooltipText("Open parent commit " + parent)
-			setAccessibility(&button.Widget, "Open parent commit "+parent, "Navigate to the parent commit")
-			context, _ := button.GetStyleContext()
-			context.AddClass("giti-parent-button")
-			button.Connect("clicked", func() {
-				app.historySearch.SetText("")
-				app.revealHistoryRevision(parent)
-			})
-			app.headerParentButtons = append(app.headerParentButtons, button)
-			parents.PackStart(button, false, false, 0)
-		}
-		app.headerDetails.PackStart(parents, false, false, 0)
-	}
-	if details.body != "" {
-		expander := must(gtk.ExpanderNew("Commit description"))
-		body := must(gtk.LabelNew(details.body))
-		body.SetXAlign(0)
-		body.SetYAlign(0)
-		body.SetSelectable(true)
-		body.SetLineWrap(true)
-		body.SetLineWrapMode(pango.WRAP_WORD_CHAR)
-		body.SetMarginStart(20)
-		body.SetMarginEnd(8)
-		message := scroller(body)
-		message.SetPolicy(gtk.POLICY_NEVER, gtk.POLICY_AUTOMATIC)
-		message.SetMinContentHeight(min(180, max(48, (strings.Count(details.body, "\n")+1)*20+12)))
-		message.SetMaxContentHeight(180)
-		message.SetPropagateNaturalHeight(true)
-		expander.Add(message)
-		app.headerDetails.PackStart(expander, false, false, 4)
-	}
+	shaMarkup := "<span foreground=\"#4b5563\" font_features=\"tnum\">" + html.EscapeString(details.sha[:min(7, len(details.sha))]) + "</span>"
+	app.headerSHA.PackStart(app.copyButton(shaMarkup, details.sha, "Copy full SHA: "+details.sha, "Copied commit ID to clipboard."), false, false, 0)
+	message := strings.TrimSpace(details.subject + "\n\n" + details.body)
+	icon := chevron(map[bool]string{false: "pan-down-symbolic", true: "pan-up-symbolic"}[app.headerMessageOpen], 12)
+	toggle := must(gtk.ButtonNew())
+	toggle.SetImage(icon)
+	toggle.SetVAlign(gtk.ALIGN_CENTER)
+	toggle.SetTooltipText("Show the full commit message")
+	setAccessibility(&toggle.Widget, "Commit message", "Show or hide the complete commit message")
+	squareButton(toggle)
+	app.headerTitleRow.PackStart(toggle, false, false, 0)
+	body := must(gtk.LabelNew(message))
+	body.SetXAlign(0)
+	body.SetYAlign(0)
+	body.SetSelectable(true)
+	body.SetLineWrap(true)
+	body.SetLineWrapMode(pango.WRAP_WORD_CHAR)
+	text := scroller(body)
+	text.SetPolicy(gtk.POLICY_NEVER, gtk.POLICY_AUTOMATIC)
+	text.SetMaxContentHeight(180)
+	text.SetPropagateNaturalHeight(true)
+	panel := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0))
+	panelContext, _ := panel.GetStyleContext()
+	panelContext.AddClass("giti-message-panel")
+	panel.PackStart(text, true, true, 0)
+	reveal := must(gtk.RevealerNew())
+	reveal.SetTransitionDuration(0)
+	reveal.Add(panel)
+	reveal.SetRevealChild(app.headerMessageOpen)
+	toggle.Connect("clicked", func() {
+		app.headerMessageOpen = !app.headerMessageOpen
+		reveal.SetRevealChild(app.headerMessageOpen)
+		icon.SetFromIconName(map[bool]string{false: "pan-down-symbolic", true: "pan-up-symbolic"}[app.headerMessageOpen], gtk.ICON_SIZE_MENU)
+	})
+	app.headerDetails.PackStart(reveal, false, false, 0)
 	app.commitHeader.ShowAll()
+	app.updateReviewUI()
+}
+
+// commitMenu lists parents to navigate to; merge parents show a short subject
+// excerpt so the menu stays narrow.
+func (app *giti) commitMenu() *gtk.Menu {
+	menu := must(gtk.MenuNew())
+	parents := app.headerIdentity.parents
+	add := func(label, tooltip string, activate func()) {
+		item := must(gtk.MenuItemNewWithLabel(label))
+		item.SetTooltipText(tooltip)
+		item.SetSensitive(activate != nil)
+		if activate != nil {
+			item.Connect("activate", activate)
+		}
+		menu.Append(item)
+	}
+	open := func(parent string) func() {
+		return func() {
+			app.historySearch.SetText("")
+			app.revealHistoryRevision(parent)
+		}
+	}
+	switch len(parents) {
+	case 0:
+		add("No parent commit", "", nil)
+	case 1:
+		add("Go to parent  "+parents[0][:min(7, len(parents[0]))], parents[0], open(parents[0]))
+	default:
+		add("Go to parent", "", nil)
+		for _, parent := range parents {
+			subject, _ := app.repository.run("log", "-1", "--format=%s", parent)
+			if excerpt := []rune(strings.TrimSpace(subject)); len(excerpt) > 50 {
+				subject = string(excerpt[:50]) + "…"
+			}
+			add("    "+parent[:min(7, len(parent))]+"  "+strings.TrimSpace(subject), parent, open(parent))
+		}
+	}
+	menu.ShowAll()
+	return menu
 }
 
 func (app *giti) showDiffPage() {
 	if app.diffStack != nil {
 		app.diffStack.SetVisibleChildName("diff")
+		if app.reviewFileButton != nil {
+			app.updateReviewFileActions()
+		}
 	}
 }
 
@@ -270,11 +311,13 @@ func (app *giti) showReferences(branches, tags []string) {
 	app.referencesPage.PackStart(app.referencesView, true, true, 0)
 	app.referencesPage.ShowAll()
 	app.diffStack.SetVisibleChildName("references")
+	app.updateReviewFileActions()
 }
 
 func (app *giti) setDiff(patch string) {
 	app.diffBuffer.SetText("")
 	lines := displayLines(patch)
+	app.reviewLines = lines
 	app.overviewMarkers, app.overviewLines = app.overviewMarkers[:0], len(lines)
 	if cap(app.diffLineNumbers) < len(lines) {
 		app.diffLineNumbers = make([]diffLineNumber, len(lines))
@@ -318,16 +361,20 @@ func (app *giti) setDiff(patch string) {
 	fullFile := app.fullFileToggle.GetActive()
 	app.diffGutter.SetVisible((fullFile && app.fullLineNumbers || !fullFile && app.compactLineNumbers) && maxLine > 0)
 	app.diffGutter.QueueDraw()
-	app.diffOverviewReveal.SetRevealChild(app.fullFileToggle.GetActive() && len(app.overviewMarkers) > 0)
+	app.diffOverviewReveal.SetRevealChild(len(app.overviewMarkers) > 0)
 	app.diffOverview.QueueDraw()
 	app.updateDiffFind()
+	app.updateReviewUI()
 }
 
 func (app *giti) clearDiff() {
 	app.diffBuffer.SetText("")
+	app.reviewLines = nil
+	app.diffContextLine = -1
 	app.diffLineNumbers = app.diffLineNumbers[:0]
 	app.diffGutter.Hide()
 	app.updateDiffFind()
+	app.updateReviewUI()
 }
 
 type overviewMarker struct {
@@ -627,14 +674,17 @@ func (app *giti) buildDiffGutter() {
 		}
 		// TextView reports line positions in buffer coordinates; subtract its
 		// visible origin so the independent gutter tracks vertical scrolling.
-		// Wrap is disabled, so every logical line has the same measured height.
+		// Wrap is disabled, so lines differ in height only by comment card space.
 		visible := app.diffView.GetVisibleRect()
-		first := app.diffBuffer.GetStartIter()
-		firstY, lineHeight := app.diffView.GetLineYrange(first)
+		first := app.diffView.GetIterAtLocation(0, visible.GetY())
+		line := first.GetLine()
+		_, lineHeight := app.diffView.GetLineYrange(first)
+		if lineHeight -= app.reviewGaps[line]; line == 0 {
+			lineHeight -= app.reviewGaps[-1]
+		}
 		if lineHeight < 1 {
 			return false
 		}
-		line := max(0, (visible.GetY()-firstY)/lineHeight)
 		context.SelectFontFace("monospace", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
 		context.SetFontSize(max(8, float64(lineHeight)*.68))
 		digitWidth := context.TextExtents("0").XAdvance
@@ -650,8 +700,11 @@ func (app *giti) buildDiffGutter() {
 		font := context.FontExtents()
 		for line < len(app.diffLineNumbers) {
 			iter := app.diffBuffer.GetIterAtLine(line)
-			bufferY, rowHeight := app.diffView.GetLineYrange(iter)
-			y := bufferY - visible.GetY()
+			bufferY, _ := app.diffView.GetLineYrange(iter)
+			if line == 0 {
+				bufferY += app.reviewGaps[-1]
+			}
+			y, rowHeight := bufferY-visible.GetY(), lineHeight
 			if y >= height {
 				break
 			}
@@ -702,7 +755,7 @@ func (app *giti) buildDiffOverview() {
 	app.diffOverview.SetSizeRequest(targetWidth, -1)
 	app.diffOverview.SetVAlign(gtk.ALIGN_FILL)
 	app.diffOverview.SetVExpand(true)
-	app.diffOverview.SetTooltipText("Change overview — click or drag to scroll")
+	app.diffOverview.SetTooltipText("Changes and comments in this file — click or drag to scroll")
 	app.diffOverview.AddEvents(int(gdk.BUTTON_PRESS_MASK | gdk.BUTTON1_MOTION_MASK))
 	setAccessibility(&app.diffOverview.Widget, "Diff change overview", "Added and removed lines across the full file; click or drag to scroll")
 	app.diffOverview.Connect("draw", func(_ *gtk.DrawingArea, context *cairo.Context) bool {
@@ -716,7 +769,13 @@ func (app *giti) buildDiffOverview() {
 		if app.overviewLines < 1 || height < 1 {
 			return false
 		}
-		markerHeight, denominator := math.Max(2, math.Min(5, height/float64(app.overviewLines))), float64(max(1, app.overviewLines-1))
+		// Place markers by laid-out pixel position, so comment cards and hunks keep
+		// the strip in step with what scrolling there will show.
+		markerHeight, upper := math.Max(2, math.Min(5, height/float64(app.overviewLines))), math.Max(1, app.diffScroller.GetVAdjustment().GetUpper())
+		position := func(line int) float64 {
+			y, _ := app.diffView.GetLineYrange(app.diffBuffer.GetIterAtLine(line))
+			return float64(y) / upper * (height - markerHeight)
+		}
 		for _, marker := range app.overviewMarkers {
 			x, markerWidth := trackX, trackWidth/2.0
 			if marker.added {
@@ -725,7 +784,12 @@ func (app *giti) buildDiffOverview() {
 			} else {
 				context.SetSourceRGB(.78, .25, .30)
 			}
-			context.Rectangle(x, float64(marker.line)/denominator*(height-markerHeight), markerWidth, markerHeight)
+			context.Rectangle(x, position(marker.line), markerWidth, markerHeight)
+			context.Fill()
+		}
+		context.SetSourceRGB(.15, .39, .92)
+		for _, line := range app.overviewComments {
+			context.Rectangle(trackX, position(line), trackWidth, markerHeight)
 			context.Fill()
 		}
 		return false
@@ -756,16 +820,33 @@ func scroller(child gtk.IWidget) *gtk.ScrolledWindow {
 	return scroll
 }
 
-func (app *giti) copySHAButton(sha string) *gtk.Button {
-	button := must(gtk.ButtonNewFromIconName("edit-copy-symbolic", gtk.ICON_SIZE_BUTTON))
-	setAccessibility(&button.Widget, "Copy commit SHA", "Copy "+sha+" to the clipboard")
+// chevron is the one arrow style used by menus, disclosures, and file navigation.
+func chevron(name string, size int) *gtk.Image {
+	image := must(gtk.ImageNewFromIconName(name, gtk.ICON_SIZE_MENU))
+	image.SetPixelSize(size)
+	return image
+}
+
+// squareButton styles a flat icon button so every chevron and ⋮ shares one size.
+func squareButton(button *gtk.Button) {
 	button.SetRelief(gtk.RELIEF_NONE)
 	context, _ := button.GetStyleContext()
-	context.AddClass("giti-flat-button")
-	button.SetTooltipText("Copy SHA: " + sha)
-	button.Connect("clicked", func() {
-		app.copyToClipboard(sha, "Copied commit ID to clipboard.")
-	})
+	context.AddClass("giti-glyph-button")
+	context.AddClass("giti-square-button")
+}
+
+// copyButton is the app's compact copy control: optional visible text followed by a ⧉ glyph.
+func (app *giti) copyButton(markup, value, tooltip, message string) *gtk.Button {
+	label := must(gtk.LabelNew(""))
+	label.SetMarkup(strings.TrimSpace(markup + " ⧉"))
+	button := must(gtk.ButtonNew())
+	button.Add(label)
+	button.SetRelief(gtk.RELIEF_NONE)
+	button.SetTooltipText(tooltip)
+	setAccessibility(&button.Widget, tooltip, "Copy to the clipboard")
+	context, _ := button.GetStyleContext()
+	context.AddClass("giti-glyph-button")
+	button.Connect("clicked", func() { app.copyToClipboard(value, message) })
 	return button
 }
 
@@ -785,6 +866,10 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.diffBuffer.CreateTag("added", map[string]any{"background": "#d7f5dd", "foreground": "#174d22"})
 	app.diffBuffer.CreateTag("removed", map[string]any{"background": "#f9d7d9", "foreground": "#682126"})
 	app.diffBuffer.CreateTag("hunk", map[string]any{"paragraph-background": "#eef0f2", "foreground": "#4b5563"})
+	app.diffBuffer.CreateTag("reviewed-added", map[string]any{"background": "#e7ece8", "paragraph-background": "#e7ece8"})
+	app.diffBuffer.CreateTag("reviewed-removed", map[string]any{"background": "#eee7e8", "paragraph-background": "#eee7e8"})
+	app.diffBuffer.CreateTag("reviewed-context", map[string]any{"paragraph-background": "#edf0ef"})
+	app.diffBuffer.CreateTag("review-comment", map[string]any{"background": "#dce8fb", "paragraph-background": "#dce8fb"})
 	app.diffBuffer.CreateTag(diffFindTag, map[string]any{"background": "#fff2a8"})
 	app.diffBuffer.CreateTag(diffFindCurrentTag, map[string]any{"background": "#f6bd4f", "foreground": "#2d2100"})
 	app.diffView = must(gtk.TextViewNewWithBuffer(app.diffBuffer))
@@ -797,6 +882,10 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.diffView.AddEvents(int(gdk.BUTTON_PRESS_MASK))
 	app.diffView.Connect("button-press-event", func(_ *gtk.TextView, event *gdk.Event) bool {
 		button := gdk.EventButtonNewFromEvent(event)
+		if button.Type() == gdk.EVENT_BUTTON_PRESS && button.Button() == gdk.BUTTON_PRIMARY {
+			app.diffSelecting = true
+			app.placeReviewFloaters()
+		}
 		if button.Type() != gdk.EVENT_BUTTON_PRESS || button.Button() != gdk.BUTTON_SECONDARY {
 			return false
 		}
@@ -813,10 +902,10 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.buildDiffOverview()
 	app.buildDiffGutter()
 
-	app.whitespaceToggle = must(gtk.CheckButtonNewWithLabel("Whitespace changes"))
+	app.whitespaceToggle = must(gtk.CheckButtonNewWithLabel("Whitespace"))
 	app.whitespaceToggle.SetTooltipText("Include whitespace-only changes in file lists and diffs")
 	app.whitespaceHandler = app.whitespaceToggle.Connect("toggled", app.onWhitespaceToggled)
-	app.fullFileToggle = must(gtk.CheckButtonNewWithLabel("Show full file"))
+	app.fullFileToggle = must(gtk.CheckButtonNewWithLabel("Full file"))
 	app.fullFileToggle.SetTooltipText("Show unchanged lines from the complete file")
 	app.fullFileHandler = app.fullFileToggle.Connect("toggled", func() {
 		app.fullFilePreferred = app.fullFileToggle.GetActive()
@@ -839,20 +928,201 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.commitHeader.SetMarginTop(8)
 	app.commitHeader.SetMarginBottom(8)
 	app.headerTitleRow = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
-	headerActionRow := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
+	app.headerStatistics = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
+	app.headerStatistics.SetNoShowAll(true)
+	app.headerStatistics.SetVAlign(gtk.ALIGN_CENTER)
+	app.buildReviewControls()
+	// Commit section, then a hairline, then the file row. The right-hand columns of
+	// the title row and the file row share widths, so review buttons, diff counts,
+	// and the ⋮ / › icons line up vertically.
+	app.headerMenuButton = must(gtk.ButtonNew())
+	app.headerMenuButton.SetImage(chevron("view-more-symbolic", 14))
+	squareButton(app.headerMenuButton)
+	app.headerMenuButton.SetVAlign(gtk.ALIGN_CENTER)
+	app.headerMenuButton.SetTooltipText("Commit actions")
+	setAccessibility(&app.headerMenuButton.Widget, "Commit actions", "Go to a parent commit")
+	app.headerMenuButton.Connect("clicked", func() {
+		menu := app.commitMenu()
+		menu.Connect("selection-done", menu.Destroy)
+		menu.PopupAtWidget(app.headerMenuButton, gdk.GDK_GRAVITY_SOUTH_EAST, gdk.GDK_GRAVITY_NORTH_EAST, nil)
+	})
+	app.headerMenuButton.SetNoShowAll(true)
+	titleRow := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
+	titleRow.PackStart(app.headerTitleRow, true, true, 0)
+	for _, widget := range []gtk.IWidget{app.headerMenuButton, app.headerStatistics, app.reviewSessionActions, app.reviewFilesLabel} {
+		titleRow.PackEnd(widget, false, false, 0)
+	}
+	// Author details sit behind one popover so names stay short in the header.
+	app.headerAuthor = must(gtk.LabelNew(""))
+	app.headerAuthor.SetXAlign(0)
+	app.headerAuthor.SetEllipsize(pango.ELLIPSIZE_END)
+	app.headerAuthor.SetSelectable(true)
+	app.headerAuthor.SetMarginStart(4) // Line up with the text inside the compact buttons above and below.
+	app.headerIdentityButton = must(gtk.ButtonNewFromIconName("dialog-information-symbolic", gtk.ICON_SIZE_MENU))
+	app.headerIdentityButton.SetRelief(gtk.RELIEF_NONE)
+	app.headerIdentityButton.SetVAlign(gtk.ALIGN_CENTER)
+	app.headerIdentityButton.SetNoShowAll(true)
+	identityContext, _ := app.headerIdentityButton.GetStyleContext()
+	identityContext.AddClass("giti-glyph-button")
+	setAccessibility(&app.headerIdentityButton.Widget, "Author and committer", "Show author and committer names, emails, and dates")
+	app.headerIdentityButton.Connect("clicked", func() {
+		details := app.headerIdentity
+		grid := must(gtk.GridNew())
+		grid.SetColumnSpacing(12)
+		grid.SetRowSpacing(6)
+		for _, margin := range []func(int){grid.SetMarginStart, grid.SetMarginEnd, grid.SetMarginTop, grid.SetMarginBottom} {
+			margin(10)
+		}
+		when := func(date string) string { return formatCommitTime(date, time.Local, "2 Jan 2006, 15:04 MST") }
+		identities := [][4]string{{"Author", details.author, details.authorEmail, when(details.authored)}, {"Committer", details.committer, details.committerEmail, when(details.committed)}}
+		if details.author == details.committer && details.authorEmail == details.committerEmail {
+			identities[0][0], identities = "Author & committer", identities[:1]
+			if details.authored != details.committed {
+				identities[0][3] += "  ·  committed " + when(details.committed)
+			}
+		}
+		for row, identity := range identities {
+			person := identity[1] + " <" + identity[2] + ">"
+			for column, markup := range []string{"<b>" + html.EscapeString(identity[0]) + "</b>", html.EscapeString(person), "<span foreground=\"#4b5563\">" + html.EscapeString(identity[3]) + "</span>"} {
+				label := must(gtk.LabelNew(""))
+				label.SetMarkup(markup)
+				label.SetXAlign(0)
+				label.SetSelectable(column == 1)
+				grid.Attach(label, column, row, 1, 1)
+			}
+			grid.Attach(app.copyButton("", person, "Copy "+person, "Copied "+strings.ToLower(identity[0])+" to clipboard."), 3, row, 1, 1)
+		}
+		popover := must(gtk.PopoverNew(app.headerIdentityButton))
+		popover.Add(grid)
+		popover.Connect("closed", popover.Destroy)
+		grid.ShowAll()
+		popover.Popup()
+	})
+	app.headerMetaRow = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 2))
+	app.headerMetaRow.PackStart(app.headerAuthor, false, true, 0)
+	app.headerMetaRow.PackStart(app.headerIdentityButton, false, false, 0)
+	app.headerSHA = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
+	app.headerSHA.SetMarginStart(6)
+	app.headerMetaRow.PackStart(app.headerSHA, false, false, 0)
 	app.headerCommit = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
-	app.headerDetails = must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 2))
-	headerActionRow.PackStart(app.headerCommit, false, false, 0)
-	headerActionRow.PackEnd(app.whitespaceToggle, false, false, 8)
-	headerActionRow.PackEnd(app.fullFileToggle, false, false, 0)
-	headerActionRow.PackEnd(app.fullMergeToggle, false, false, 8)
-	app.commitHeader.PackStart(app.headerTitleRow, false, false, 0)
-	app.commitHeader.PackStart(headerActionRow, false, false, 0)
-	app.commitHeader.PackStart(app.headerDetails, false, false, 0)
+	app.headerMetaRow.PackEnd(app.headerCommit, true, true, 0)
+	app.headerDetails = must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0))
+	divider := must(gtk.SeparatorNew(gtk.ORIENTATION_HORIZONTAL))
+	dividerContext, _ := divider.GetStyleContext()
+	dividerContext.AddClass("giti-hairline")
+	// Equal air on both sides lets the hairline separate the sections without weight.
+	divider.SetMarginTop(6)
+	divider.SetMarginBottom(6)
+	app.headerFileName = must(gtk.LabelNew(""))
+	app.headerFileName.SetEllipsize(pango.ELLIPSIZE_MIDDLE)
+	app.headerFileName.SetMarginStart(4)
+	fileRow := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
+	fileRow.PackStart(app.headerFileName, false, true, 0)
+	for _, toggle := range []*gtk.CheckButton{app.fullFileToggle, app.whitespaceToggle, app.fullMergeToggle} {
+		fileRow.PackStart(toggle, false, false, 0)
+	}
+	app.fileStatistics = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
+	app.fileStatistics.SetVAlign(gtk.ALIGN_CENTER)
+
+	app.fileStatistics.SetNoShowAll(true)
+	// The shared column takes the commit counts' width; packing from the end keeps
+	// the file counts against the › so both rows' bubbles end together.
+	for index, class := range []string{"giti-deletions", "giti-additions"} {
+		badge := must(gtk.LabelNew(""))
+		context, _ := badge.GetStyleContext()
+		context.AddClass("giti-stat")
+		context.AddClass(class)
+		app.fileStatistics.PackEnd(badge, false, false, 0)
+		app.fileStatisticLabels[1-index] = badge
+	}
+	for _, widget := range []gtk.IWidget{app.reviewNextButton, app.fileStatistics, app.reviewFileButton, app.reviewLinesLabel} {
+		fileRow.PackEnd(widget, false, false, 0)
+	}
+	for _, column := range [][2]gtk.IWidget{{app.headerMenuButton, app.reviewNextButton}, {app.headerStatistics, app.fileStatistics}, {app.reviewSessionActions, app.reviewFileButton}, {app.reviewFilesLabel, app.reviewLinesLabel}} {
+		group := must(gtk.SizeGroupNew(gtk.SIZE_GROUP_HORIZONTAL))
+		group.AddWidget(column[0])
+		group.AddWidget(column[1])
+	}
+	for _, row := range []gtk.IWidget{titleRow, app.headerDetails, app.headerMetaRow, divider, fileRow} {
+		app.commitHeader.PackStart(row, false, false, 0)
+	}
 	diffBox := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 4))
 	diffBox.PackStart(app.commitHeader, false, false, 0)
+	diffBox.PackStart(app.reviewProgressBar, false, false, 0)
 	app.diffScroller = scroller(app.diffView)
 	app.diffScroller.GetVAdjustment().Connect("value-changed", app.diffGutter.QueueDraw)
+	// Card positions follow line layout, which GTK validates incrementally.
+	app.diffScroller.GetVAdjustment().Connect("changed", func() {
+		app.positionReviewCards()
+		app.diffOverview.QueueDraw()
+	})
+	app.diffScroller.GetVAdjustment().Connect("value-changed", app.placeReviewFloaters)
+	app.diffBuffer.Connect("mark-set", app.placeReviewFloaters)
+	// Hovering a line in the text or the gutter offers the + for that line, as on GitHub.
+	hover := func(y float64) {
+		_, bufferY := app.diffView.WindowToBufferCoords(gtk.TEXT_WINDOW_WIDGET, 0, int(y))
+		iter := app.diffView.GetIterAtLocation(0, bufferY)
+		lineY, lineHeight := app.diffView.GetLineYrange(iter)
+		line := iter.GetLine()
+		if bufferY >= lineY+lineHeight-app.reviewGaps[line] {
+			line = -1 // Over a comment card's reserved space.
+		}
+		if line != app.reviewHoverLine {
+			app.reviewHoverLine = line
+			app.placeReviewFloaters()
+		}
+	}
+	unhover := func() bool {
+		// Moving onto the + itself leaves the diff; keep it while the pointer is over it.
+		addMainSource(150*time.Millisecond, func() bool {
+			if app.reviewAddButton.GetStateFlags()&gtk.STATE_FLAG_PRELIGHT == 0 {
+				app.reviewHoverLine = -1
+				app.placeReviewFloaters()
+			}
+			return false
+		})
+		return false
+	}
+	for _, widget := range []*gtk.Widget{&app.diffView.Widget, &app.diffGutter.Widget} {
+		widget.AddEvents(int(gdk.POINTER_MOTION_MASK | gdk.LEAVE_NOTIFY_MASK))
+		widget.Connect("motion-notify-event", func(_ any, event *gdk.Event) bool {
+			_, y := gdk.EventMotionNewFromEvent(event).MotionVal()
+			hover(y)
+			return false
+		})
+		widget.Connect("leave-notify-event", unhover)
+	}
+	// The selection toolbar waits until a drag ends, so it never chases the pointer.
+	app.diffView.Connect("button-release-event", func() bool {
+		app.diffSelecting = false
+		app.placeReviewFloaters()
+		return false
+	})
+	app.diffView.Connect("key-press-event", func(_ *gtk.TextView, event *gdk.Event) bool {
+		key := gdk.EventKeyNewFromEvent(event)
+		_, _, selected := app.diffBuffer.GetSelectionBounds()
+		if !app.reviewActive || !selected || key.State()&uint(gdk.CONTROL_MASK|gdk.MOD1_MASK) != 0 {
+			return false
+		}
+		switch key.KeyVal() {
+		case gdk.KEY_c, gdk.KEY_C:
+			app.actOnReviewSelection(true)
+		case gdk.KEY_m, gdk.KEY_M:
+			app.actOnReviewSelection(false)
+		default:
+			return false
+		}
+		return true
+	})
+	app.diffScroller.GetHAdjustment().Connect("value-changed", app.positionReviewCards)
+	app.diffView.Connect("size-allocate", func() {
+		if len(app.reviewCards) > 0 && app.reviewCardWidth != max(240, app.diffView.GetVisibleRect().GetWidth()-24) {
+			addMainSource(0, func() bool { app.layoutReviewCards(); return false })
+		}
+	})
+	// Lines are laid out lazily, so the floaters follow the painted layout;
+	// unchanged margins are no-ops, so this settles after one frame.
+	app.diffView.ConnectAfter("draw", func() bool { app.placeReviewFloaters(); return false })
 	app.diffOverviewReveal = must(gtk.RevealerNew())
 	app.diffOverviewReveal.SetTransitionDuration(0)
 	app.diffOverviewReveal.Add(app.diffOverview)
@@ -866,8 +1136,69 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.referencesPage.SetMarginTop(16)
 	app.referencesPage.SetMarginBottom(16)
 	app.diffStack = must(gtk.StackNew())
-	app.diffStack.AddNamed(app.buildDiffFind(diffPage), "diff")
+	// While reviewing, a + floats at the gutter edge of the hovered line (as on
+	// GitHub), and a toolbar appears under a finished selection.
+	app.diffOverlay = app.buildDiffFind(diffPage)
+	app.reviewHoverLine = -1
+	app.reviewAddButton = must(gtk.ButtonNewWithLabel("+"))
+	app.reviewAddButton.SetTooltipText("Comment on this line")
+	setAccessibility(&app.reviewAddButton.Widget, "Comment on this line", "Open the inline comment editor for the hovered line")
+	addContext, _ := app.reviewAddButton.GetStyleContext()
+	addContext.AddClass("giti-comment-add")
+	app.reviewAddButton.Connect("clicked", func() {
+		line := app.reviewHoverLine
+		if app.currentFile == nil || line < 0 {
+			return
+		}
+		app.startReviewDraft(app.currentFile.path, reviewComment{Lines: reviewAnchors(app.reviewLines, line, line+1)})
+	})
+	app.reviewToolbar = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
+	toolbarContext, _ := app.reviewToolbar.GetStyleContext()
+	toolbarContext.AddClass("giti-selection-toolbar")
+	// Colors follow the rest of review: blue comments, green reviewed; the dim
+	// letters are the keyboard shortcuts.
+	for _, action := range []struct {
+		button  **gtk.Button
+		label   **gtk.Label
+		tooltip string
+		comment bool
+	}{{&app.reviewCommentAction, &app.reviewCommentLabel, "Comment on the selected lines (C)", true}, {&app.reviewMarkAction, &app.reviewMarkLabel, "Toggle the selected lines reviewed (M)", false}} {
+		if !action.comment {
+			app.reviewToolbar.PackStart(must(gtk.SeparatorNew(gtk.ORIENTATION_VERTICAL)), false, false, 0)
+		}
+		*action.label = must(gtk.LabelNew(""))
+		*action.button = must(gtk.ButtonNew())
+		(*action.button).Add(*action.label)
+		(*action.button).SetRelief(gtk.RELIEF_NONE)
+		(*action.button).SetTooltipText(action.tooltip)
+		(*action.button).Connect("clicked", func() { app.actOnReviewSelection(action.comment) })
+		app.reviewToolbar.PackStart(*action.button, false, false, 0)
+	}
+	app.reviewCommentLabel.SetMarkup(reviewActionMarkup("Comment", "#1d4ed8", "C"))
+	for _, floater := range []*gtk.Widget{&app.reviewAddButton.Widget, &app.reviewToolbar.Widget} {
+		floater.SetHAlign(gtk.ALIGN_START)
+		floater.SetVAlign(gtk.ALIGN_START)
+		floater.ShowAll()
+		floater.Hide()
+		floater.SetNoShowAll(true)
+		app.diffOverlay.AddOverlay(floater)
+	}
+	app.diffStack.AddNamed(app.diffOverlay, "diff")
 	app.diffStack.AddNamed(scroller(app.referencesPage), "references")
+	preview := must(gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 0))
+	previewToolbar := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
+	previewToolbar.SetMarginStart(16)
+	previewToolbar.SetMarginEnd(16)
+	previewToolbar.SetMarginTop(8)
+	app.reviewPreviewExit = must(gtk.ButtonNewWithLabel("Exit Preview"))
+	app.reviewPreviewExit.SetRelief(gtk.RELIEF_NONE)
+	context, _ := app.reviewPreviewExit.GetStyleContext()
+	context.AddClass("giti-review-secondary")
+	app.reviewPreviewExit.Connect("clicked", app.showDiffPage)
+	previewToolbar.PackEnd(app.reviewPreviewExit, false, false, 0)
+	preview.PackStart(previewToolbar, false, false, 0)
+	preview.PackStart(scroller(app.reviewDocument), true, true, 0)
+	app.diffStack.AddNamed(preview, "review-preview")
 	diffBox.PackStart(app.diffStack, true, true, 0)
 	return diffBox
 }
@@ -898,6 +1229,7 @@ func (app *giti) populateDiffMenu(menuWidget *gtk.Widget) (*gtk.MenuItem, *gtk.C
 	selectAll := must(gtk.MenuItemNewWithLabel("Select All"))
 	selectAll.Connect("activate", func() { app.diffBuffer.SelectRange(app.diffBuffer.GetBounds()) })
 	menu.Append(selectAll)
+	app.populateReviewMenu(menu)
 	menu.Append(must(gtk.SeparatorMenuItemNew()))
 	lineNumbers := must(gtk.CheckMenuItemNewWithLabel("Show line numbers"))
 	fullFile := app.fullFileToggle.GetActive()

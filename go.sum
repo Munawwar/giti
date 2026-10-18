@@ -1,2 +1,4 @@
 github.com/gotk3/gotk3 v0.6.5-0.20251124190141-e7a9e823ca35 h1:BelWQzAzJfSMA1qbuzoV9Tp57+NCvYouEA5cWVpYcSk=
 github.com/gotk3/gotk3 v0.6.5-0.20251124190141-e7a9e823ca35/go.mod h1:/hqFpkNa9T3JgNAE2fLvCdov7c5bw//FHNZrZ3Uv9/Q=
+github.com/yuin/goldmark v1.8.6 h1:d0VcaP1sx9GkFVkoW+KtggpGi2KZ965i14b0+bDQST4=
+github.com/yuin/goldmark v1.8.6/go.mod h1:ip/1k0VRfGynBgxOz0yCqHrbZXhcjxyuS66Brc7iBKg=

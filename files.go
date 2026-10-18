@@ -28,6 +28,7 @@ func (app *giti) refreshFileView(preferredPath string) {
 	}
 	app.fileStageColumn.SetVisible(kind == "unstaged" || kind == "staged" || kind == "conflict" || kind == "resolved")
 	app.fileUndoColumn.SetVisible(kind == "unstaged")
+	app.reviewColumn.SetVisible(app.review != nil)
 	commonPrefix := ""
 	if !treeMode && len(app.files) > 1 {
 		parts := strings.Split(app.files[0].path, "/")
@@ -63,6 +64,7 @@ func (app *giti) refreshFileView(preferredPath string) {
 	directoryMembers := make(map[string][]int)
 	directoryChildren := make(map[string]map[string]bool)
 	app.fileDirectoryFiles = make(map[int][]int)
+	app.fileDirectoryReviewPaths = make(map[int]string)
 	for fileIndex, file := range app.files {
 		haystack := strings.ToLower(strings.Join([]string{file.status, file.path, file.oldPath, file.conflict}, " "))
 		matches := true
@@ -163,7 +165,7 @@ func (app *giti) refreshFileView(preferredPath string) {
 		label := status + " " + displayPath
 
 		flatIter := app.fileStore.Append()
-		app.fileStore.Set(flatIter, []int{fileLabelColumn, fileStatColumn, fileIndexColumn, fileTooltipColumn, fileStageIconColumn, fileUndoIconColumn}, []any{label, stat, fileIndex, tooltip, stageIcon, undoIcon})
+		app.fileStore.Set(flatIter, []int{fileLabelColumn, fileStatColumn, fileIndexColumn, fileTooltipColumn, fileStageIconColumn, fileUndoIconColumn, fileReviewMarkColumn}, []any{label, stat, fileIndex, tooltip, stageIcon, undoIcon, ""})
 		path, _ := app.fileStore.GetPath(flatIter)
 		if treeMode {
 			parts, parent, directoryPath := strings.Split(file.path, "/"), (*gtk.TreeIter)(nil), ""
@@ -172,6 +174,7 @@ func (app *giti) refreshFileView(preferredPath string) {
 					directoryPath += "/"
 				}
 				directoryPath += parts[directoryIndex]
+				reviewDirectory := directoryPath
 				labelParts := []string{parts[directoryIndex]}
 				for directoryFiles[directoryPath] == 0 && len(directoryChildren[directoryPath]) == 1 {
 					nextPath := ""
@@ -205,6 +208,7 @@ func (app *giti) refreshFileView(preferredPath string) {
 						}
 					}
 					app.fileDirectoryFiles[directoryIndex] = members
+					app.fileDirectoryReviewPaths[directoryIndex] = reviewDirectory
 					iter = app.fileTreeStore.Append(parent)
 					app.fileTreeStore.SetValue(iter, fileLabelColumn, html.EscapeString(strings.Join(labelParts, "/")))
 					app.fileTreeStore.SetValue(iter, fileStatColumn, "")
@@ -223,6 +227,7 @@ func (app *giti) refreshFileView(preferredPath string) {
 			}
 			iter := app.fileTreeStore.Append(parent)
 			app.fileTreeStore.SetValue(iter, fileLabelColumn, status+" "+html.EscapeString(name))
+			app.fileTreeStore.SetValue(iter, fileReviewMarkColumn, "")
 			app.fileTreeStore.SetValue(iter, fileStatColumn, stat)
 			app.fileTreeStore.SetValue(iter, fileIndexColumn, fileIndex)
 			app.fileTreeStore.SetValue(iter, fileTooltipColumn, tooltip)
@@ -248,6 +253,7 @@ func (app *giti) refreshFileView(preferredPath string) {
 		selection.SelectPath(targetPath)
 		app.fileView.ScrollToCell(targetPath, nil, false, 0, 0)
 	}
+	app.updateReviewUI()
 }
 
 func (app *giti) workingFileAction(kind string, file changedFile) (stageIcon, undoIcon, action string) {
@@ -446,7 +452,6 @@ func (app *giti) normalizeFileCursor() {
 }
 
 func (app *giti) onFileSelected() {
-	app.showDiffPage()
 	selection, _ := app.fileView.GetSelection()
 	_, iter, ok := selection.GetSelected()
 	if !ok || app.currentRow == nil {
@@ -471,6 +476,7 @@ func (app *giti) onFileSelected() {
 	file := &app.files[index]
 	app.rememberDiffScroll()
 	app.currentFile = file
+	app.showDiffPage()
 	app.diffLoaded = false
 	app.fullFileToggle.SetSensitive(false)
 	app.clearDiff()
@@ -514,10 +520,10 @@ func (app *giti) onFileSelected() {
 			if automaticWhitespace {
 				patch = "Whitespace-only merge resolution — shown automatically.\n\n" + patch
 			} else if patch == "" && ignoreWhitespace {
-				patch = "No non-whitespace changes. Turn on “Whitespace changes” to view this diff.\n"
+				patch = "No non-whitespace changes. Turn on “Whitespace” to view this diff.\n"
 			}
-			app.setDiff(patch)
 			app.diffLoaded = true
+			app.setDiff(patch)
 			addMainSource(0, func() bool {
 				if generation == app.diffGeneration && selectionGeneration == app.selectionGeneration {
 					horizontal, vertical := app.diffScroller.GetHAdjustment(), app.diffScroller.GetVAdjustment()
@@ -576,6 +582,7 @@ func (app *giti) buildFilePane() *gtk.Box {
 				return true
 			}
 			if index >= 0 {
+				app.showDiffPage()
 				if column != nil && column.GetTitle() == "Changes" {
 					app.fileView.SetCursor(path, app.fileColumn, false)
 					return true
@@ -596,6 +603,7 @@ func (app *giti) buildFilePane() *gtk.Box {
 		if fileActions {
 			selection, _ := app.fileView.GetSelection()
 			selection.SelectPath(path)
+			app.populateFileReviewMenu(menu, app.files[index].path)
 			for _, action := range fileCopyActions(app.repository.path, app.files[index].path) {
 				action := action
 				item := must(gtk.MenuItemNewWithLabel(action.label))
@@ -678,6 +686,9 @@ func (app *giti) buildFilePane() *gtk.Box {
 		} else if ok && index >= 0 && (column.GetTitle() == "Stage or Unstage" || column.GetTitle() == "Undo") {
 			app.changeWorkingFiles([]int{index}, column.GetTitle() == "Undo")
 			return true
+		} else if ok && index >= 0 && column.GetTitle() == "Files" {
+			app.showDiffPage()
+			return true
 		}
 		return false
 	})
@@ -733,7 +744,19 @@ func (app *giti) buildFilePane() *gtk.Box {
 			return false
 		}
 		text := ""
-		if column.GetTitle() == "Files" || column.GetTitle() == "Changes" {
+		if column.GetTitle() == "Reviewed" && app.review != nil {
+			value, _ := app.fileModel.GetValue(iter, fileIndexColumn)
+			raw, _ := value.GoValue()
+			mark, _ := must(app.fileModel.GetValue(iter, fileReviewMarkColumn)).GetString()
+			for _, state := range reviewStates {
+				if state.mark == mark {
+					text = state.folder
+					if index, ok := raw.(int); ok && index >= 0 {
+						text = state.file
+					}
+				}
+			}
+		} else if column.GetTitle() == "Files" || column.GetTitle() == "Changes" {
 			if value, valueErr := app.fileModel.GetValue(iter, fileTooltipColumn); valueErr == nil {
 				text, _ = value.GetString()
 			}
@@ -792,6 +815,13 @@ func (app *giti) buildFilePane() *gtk.Box {
 	statRenderer.SetProperty("xalign", 1.0)
 	statColumn := must(gtk.TreeViewColumnNewWithAttribute("Changes", statRenderer, "markup", 1))
 	app.fileView.AppendColumn(statColumn)
+	reviewRenderer := must(gtk.CellRendererTextNew())
+	reviewRenderer.SetProperty("xalign", 0.5)
+	app.reviewColumn = must(gtk.TreeViewColumnNewWithAttribute("Reviewed", reviewRenderer, "markup", fileReviewMarkColumn))
+	app.reviewColumn.SetSizing(gtk.TREE_VIEW_COLUMN_FIXED)
+	app.reviewColumn.SetFixedWidth(24)
+	app.fileView.AppendColumn(app.reviewColumn)
+	app.reviewColumn.SetVisible(false)
 	for _, action := range []struct {
 		title string
 		icon  int

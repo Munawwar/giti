@@ -539,7 +539,7 @@ func (app *giti) searchResultRow(match searchMatch) *gtk.ListBoxRow {
 	label.SetLineWrap(true)
 	label.SetMarkup(searchResultMarkup(match))
 	result.PackStart(label, true, true, 0)
-	result.PackEnd(app.copySHAButton(match.row.revision), false, false, 0)
+	result.PackEnd(app.copyButton("", match.row.revision, "Copy SHA: "+match.row.revision, "Copied commit ID to clipboard."), false, false, 0)
 	row := must(gtk.ListBoxRowNew())
 	rowContext, _ := row.GetStyleContext()
 	rowContext.AddClass("giti-selection-row")
@@ -694,6 +694,9 @@ func (app *giti) onHistorySelected() {
 		previousPath = app.currentFile.path
 	}
 	app.currentRow, app.currentFile, app.files, app.diffLoaded = &app.historyRows[index], nil, nil, false
+	keepReviewActive := app.reviewActive && sameSelection && (app.review == nil || (app.review.Comparison == "merge-resolution") == mergeResolution)
+	app.review, app.reviewPath, app.reviewFiles, app.reviewActive = nil, "", nil, keepReviewActive
+	app.updateReviewUI()
 	app.fileStore.Clear()
 	app.fileTreeStore.Clear()
 	clear(app.fileExpandedSubtrees)
@@ -709,6 +712,11 @@ func (app *giti) onHistorySelected() {
 			details, detailsErr = repo.commitDetailsContext(ctx, row.revision)
 		}
 		files, loadErr := repo.changedFilesForViewContext(ctx, row, ignoreWhitespace, mergeResolution)
+		reviewFiles := files
+		if loadErr == nil && row.kind == "commit" && ignoreWhitespace && !mergeResolution {
+			reviewFiles, loadErr = repo.changedFilesForViewContext(ctx, row, false, mergeResolution)
+		}
+		review, reviewPath, reviewErr := loadCommitReview(repo, row, mergeResolution)
 		addMainSource(0, func() bool {
 			if ctx.Err() != nil || generation != app.selectionGeneration || repo != app.repository {
 				return false
@@ -721,6 +729,11 @@ func (app *giti) onHistorySelected() {
 			if loadErr != nil {
 				app.showError(loadErr)
 				return false
+			}
+			if reviewErr != nil {
+				app.showError(fmt.Errorf("load review: %w", reviewErr))
+			} else {
+				app.review, app.reviewPath, app.reviewFiles, app.reviewActive = review, reviewPath, reviewFiles, keepReviewActive
 			}
 			// Untracked files are a distinct state: they count toward the file summary
 			// but cannot contribute reliable line totals until Git tracks them.
@@ -768,6 +781,7 @@ func (app *giti) onHistorySelected() {
 			// result, then restore the previous path when it is still present.
 			app.files = files
 			if len(files) == 0 {
+				app.updateReviewUI()
 				return false
 			}
 			app.refreshFileView(previousPath)

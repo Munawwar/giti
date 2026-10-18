@@ -61,22 +61,24 @@ func patchUIState(path string, patch func(*uiState)) error {
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 	state := loadUIState(path)
 	patch(&state)
-	temporary, err := os.CreateTemp(directory, "state-*.tmp")
+	return writeJSONAtomic(path, state)
+}
+
+// writeJSONAtomic is shared by preferences and durable review notes.
+func writeJSONAtomic(path string, value any) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), "giti-*.tmp")
 	if err != nil {
 		return err
 	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	if err = temporary.Chmod(0o600); err == nil {
-		encoder := json.NewEncoder(temporary)
-		encoder.SetIndent("", "  ")
-		err = encoder.Encode(state)
-	}
+	defer os.Remove(temporary.Name())
+	encoder := json.NewEncoder(temporary)
+	encoder.SetIndent("", "  ")
+	err = encoder.Encode(value)
 	if closeErr := temporary.Close(); err == nil {
 		err = closeErr
 	}
 	if err == nil {
-		err = os.Rename(temporaryPath, path)
+		err = os.Rename(temporary.Name(), path)
 	}
 	return err
 }

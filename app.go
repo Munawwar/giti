@@ -12,6 +12,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -43,6 +44,7 @@ const (
 	fileTooltipColumn
 	fileStageIconColumn
 	fileUndoIconColumn
+	fileReviewMarkColumn
 )
 
 //go:embed logo/giti-logo.png
@@ -89,28 +91,24 @@ button.giti-ref-copy.giti-ref-joined {
   border-width: 0;
   margin: 0;
 }
-button.giti-parent-button {
-  background-color: transparent;
-  background-image: none;
-  border-color: transparent;
+button.giti-review-secondary, button.giti-review-primary {
+  background: transparent;
+  border: none;
   box-shadow: none;
+  color: #6b7280;
+  font-weight: bold;
   min-height: 0;
   min-width: 0;
-  padding: 1px 3px;
+  padding: 1px 6px;
 }
-button.giti-parent-button > label {
-  color: #4b5563;
-  font-family: monospace;
-  text-decoration-line: underline;
+button.giti-review-secondary:hover {
+  color: #374151;
 }
-button.giti-parent-button:hover {
-  background-color: alpha(#6b7280, 0.10);
+button.giti-review-secondary:disabled, button.giti-review-primary:disabled {
+  color: #9ca3af;
 }
-button.giti-parent-button:hover > label {
-  color: #303846;
-}
-button.giti-parent-button:focus {
-  box-shadow: 0 0 0 2px #e95420;
+button.giti-review-primary {
+  color: #174d22;
 }
 .giti-flat-button {
   background-color: transparent;
@@ -130,6 +128,98 @@ button.giti-parent-button:focus {
 }
 .giti-flat-button:focus {
   box-shadow: 0 0 0 1px alpha(@theme_selected_bg_color, 0.55);
+}
+box.giti-review-document {
+  background-color: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 24px;
+}
+box.giti-review-card {
+  background-color: #ffffff;
+  border: 1px solid #c7d7f5;
+  border-left: 3px solid #2563eb;
+  border-radius: 6px;
+  font-family: sans-serif;
+  padding: 8px 10px;
+}
+box.giti-review-card box.giti-review-document {
+  border: none;
+  padding: 0;
+}
+button.giti-comment-add {
+  background: #2563eb;
+  border: none;
+  border-radius: 4px;
+  box-shadow: none;
+  color: #ffffff;
+  font-weight: bold;
+  min-height: 0;
+  min-width: 0;
+  padding: 0 5px;
+}
+button.giti-comment-add:hover {
+  background: #1d4ed8;
+}
+box.giti-selection-toolbar {
+  background-color: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  box-shadow: 0 1px 2px alpha(#000000, 0.10);
+  padding: 1px;
+}
+box.giti-selection-toolbar button {
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  box-shadow: none;
+  min-height: 0;
+  padding: 2px 8px;
+}
+box.giti-selection-toolbar button:hover {
+  background-color: #eef0f2;
+}
+box.giti-selection-toolbar separator {
+  background-color: #e5e7eb;
+  margin: 4px 0;
+  min-width: 1px;
+}
+button.giti-glyph-button {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: #4b5563;
+  min-height: 0;
+  min-width: 0;
+  padding: 1px 4px;
+}
+button.giti-glyph-button, button.giti-square-button {
+  border-radius: 4px;
+}
+button.giti-square-button {
+  padding: 3px;
+}
+button.giti-glyph-button:hover {
+  background-color: alpha(#6b7280, 0.12);
+}
+box.giti-message-panel {
+  background-color: #eef0f2;
+  border-radius: 4px;
+  margin: 2px 0 4px;
+  padding: 8px 12px;
+}
+separator.giti-hairline {
+  background-color: #e5e7eb;
+  min-height: 1px;
+}
+box.giti-review-code {
+  background-color: #f3f4f5;
+  border-radius: 6px;
+  padding: 12px;
+}
+box.giti-review-quote {
+  border-left: 2px solid #d1d5db;
+  padding-left: 12px;
 }
 box.giti-load-footer {
   padding: 4px 6px;
@@ -234,6 +324,54 @@ type giti struct {
 	fileVisible                []int
 	currentRow                 *historyRow
 	currentFile                *changedFile
+	review                     *commitReview
+	reviewPath                 string
+	reviewLines                []displayLine
+	reviewActive               bool
+	reviewFiles                []changedFile
+	reviewSessionActions       *gtk.Box
+	reviewModeButton           *gtk.Button
+	reviewFileButton           *gtk.Button
+	reviewPreviewExit          *gtk.Button
+	headerAuthor               *gtk.Label
+	headerIdentityButton       *gtk.Button
+	headerIdentity             commitDetails
+	headerMetaRow              *gtk.Box
+	headerSHA                  *gtk.Box
+	headerMenuButton           *gtk.Button
+	headerFileName             *gtk.Label
+	fileStatistics             *gtk.Box
+	fileStatisticLabels        [2]*gtk.Label
+	headerMessageOpen          bool
+	reviewFilesLabel           *gtk.Label
+	reviewLinesLabel           *gtk.Label
+	reviewSummaryItem          *gtk.MenuItem
+	reviewCommentItem          *gtk.MenuItem
+	reviewPreviewItem          *gtk.MenuItem
+	reviewExportItem           *gtk.MenuItem
+	reviewCopyItem             *gtk.MenuItem
+	reviewNextButton           *gtk.Button
+	reviewAddButton            *gtk.Button
+	reviewHoverLine            int
+	reviewToolbar              *gtk.Box
+	reviewCommentAction        *gtk.Button
+	reviewMarkAction           *gtk.Button
+	reviewCommentLabel         *gtk.Label
+	reviewMarkLabel            *gtk.Label
+	diffSelecting              bool
+	diffOverlay                *gtk.Overlay
+	reviewProgressBar          *gtk.DrawingArea
+	reviewStateCounts          [4]int
+	reviewDraft                *reviewDraft
+	reviewDraftView            *gtk.TextView
+	reviewDraftSave            *gtk.Button
+	reviewCards                []*reviewCard
+	reviewCardWidth            int
+	reviewGaps                 map[int]int
+	reviewGapTags              []*gtk.TextTag
+	overviewComments           []int
+	reviewColumn               *gtk.TreeViewColumn
+	reviewDocument             *gtk.Box
 	historyTargetKind          string
 	fileTargetPath             string
 	window                     *gtk.Window
@@ -270,6 +408,7 @@ type giti struct {
 	fileStageRenderer          *gtk.CellRendererPixbuf
 	fileUndoRenderer           *gtk.CellRendererPixbuf
 	fileDirectoryFiles         map[int][]int
+	fileDirectoryReviewPaths   map[int]string
 	normalizingFileCursor      bool
 	fileExpandedSubtrees       map[string][]string
 	mainPane, repositoryPane   *gtk.Paned
@@ -292,6 +431,7 @@ type giti struct {
 	searchLoadFooter           *loadFooter
 	commitHeader               *gtk.Box
 	headerTitleRow             *gtk.Box
+	headerStatistics           *gtk.Box
 	headerCommit               *gtk.Box
 	headerDetails              *gtk.Box
 	diffBuffer                 *gtk.TextBuffer
@@ -309,7 +449,6 @@ type giti struct {
 	referencesPage             *gtk.Box
 	referencesView             *gtk.TextView
 	headerReferenceButtons     []*gtk.Button
-	headerParentButtons        []*gtk.Button
 	whitespaceToggle           *gtk.CheckButton
 	fullFileToggle             *gtk.CheckButton
 	fullMergeToggle            *gtk.CheckButton
@@ -468,11 +607,20 @@ func newGiti(repo *repository, resident bool, applications ...*gtk.Application) 
 		}
 	}
 	app.historyStore = must(gtk.ListStoreNew(gdk.PixbufGetType(), glib.TYPE_STRING, glib.TYPE_STRING))
-	fileColumns := []glib.Type{glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_INT, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING}
+	fileColumns := []glib.Type{glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_INT, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING}
 	app.fileStore = must(gtk.ListStoreNew(fileColumns...))
 	app.fileTreeStore = must(gtk.TreeStoreNew(fileColumns...))
 	app.fileModel = &app.fileStore.TreeModel
 	app.buildWindow(application)
+	if directory, err := reviewDataDirectory(); err != nil {
+		fmt.Fprintln(os.Stderr, "review cleanup:", err)
+	} else {
+		go func() {
+			if err := cleanupCommitReviews(directory, time.Now()); err != nil {
+				fmt.Fprintln(os.Stderr, "review cleanup:", err)
+			}
+		}()
+	}
 	if resident {
 		addMainSource(time.Minute, app.expireIfIdle)
 	}
@@ -747,6 +895,8 @@ func (app *giti) clearRepositoryView() {
 	app.searchViewingResult = false
 	app.diffScroll = make(map[string]scrollPosition)
 	app.currentRow, app.currentFile, app.historyTargetKind, app.fileTargetPath, app.diffLoaded = nil, nil, "", "", false
+	app.review, app.reviewPath, app.reviewFiles, app.reviewActive, app.reviewDraft = nil, "", nil, false, nil
+	app.updateReviewUI()
 	app.setSearchBusy(false)
 	app.historySearch.SetText("")
 	app.searchBack.Hide()
