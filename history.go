@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"sort"
@@ -1117,6 +1118,86 @@ func (app *giti) renderBranchSelector() {
 	app.branchLimitLabel.Show()
 }
 
+func addMenuItem(menu *gtk.Menu, label, tooltip string, activate func()) {
+	item := must(gtk.MenuItemNewWithLabel(label))
+	item.SetTooltipText(tooltip)
+	item.SetSensitive(activate != nil)
+	if activate != nil {
+		item.Connect("activate", activate)
+	}
+	menu.Append(item)
+}
+
+func (app *giti) goToParent(parent string) {
+	app.historySearch.SetText("")
+	app.revealHistoryRevision(parent)
+}
+
+// addParentItems lists parents to navigate to; merge parents show a short subject
+// excerpt so the menu stays narrow.
+func (app *giti) addParentItems(menu *gtk.Menu, parents []string) {
+	open := func(parent string) func() { return func() { app.goToParent(parent) } }
+	switch len(parents) {
+	case 0:
+		addMenuItem(menu, "No parent commit", "", nil)
+	case 1:
+		addMenuItem(menu, "Go to parent  "+parents[0][:min(7, len(parents[0]))], parents[0], open(parents[0]))
+	default:
+		addMenuItem(menu, "Go to parent", "", nil)
+		for _, parent := range parents {
+			subject, _ := app.repository.run("log", "-1", "--format=%s", parent)
+			if excerpt := []rune(strings.TrimSpace(subject)); len(excerpt) > 50 {
+				subject = string(excerpt[:50]) + "…"
+			}
+			addMenuItem(menu, "    "+parent[:min(7, len(parent))]+"  "+strings.TrimSpace(subject), parent, open(parent))
+		}
+	}
+}
+
+// commitMenu offers a history commit's actions.
+func (app *giti) commitMenu(row historyRow) *gtk.Menu {
+	repo, menu := app.repository, must(gtk.MenuNew())
+	// Unopened merges default to the merge-resolution view, as on selection.
+	current := app.currentRow != nil && app.currentRow.kind == "commit" && app.currentRow.revision == row.revision
+	mergeResolution := len(row.parents) > 1 && !(current && app.fullMergeToggle.GetActive())
+	files, err := repo.changedFilesForViewContext(context.Background(), row, false, mergeResolution)
+	review, reviewPath, reviewErr := loadCommitReview(repo, row, mergeResolution)
+	if err = errors.Join(err, reviewErr); err != nil {
+		addMenuItem(menu, "Mark Reviewed", err.Error(), nil)
+	} else {
+		// Only a fully reviewed commit offers unmarking, so a partial review can't be lost by accident.
+		_, _, states := review.progress(files)
+		reviewed := len(files) == 0 || states[reviewDone]+states[reviewCommented] != len(files)
+		label, done := "Mark Reviewed", "reviewed"
+		if !reviewed {
+			label, done = "Mark Unreviewed", "unreviewed"
+		}
+		addMenuItem(menu, label, "", func() {
+			change := func(review *commitReview) {
+				for _, changed := range files {
+					// Comments survive unmarking, so their lines keep the file partially reviewed.
+					file := review.file(changed.path)
+					file.Reviewed, file.Lines = reviewed, make(map[string]reviewLine)
+				}
+			}
+			if reviewPath == app.reviewPath {
+				if !app.changeReview(change) {
+					return
+				}
+			} else if _, err := saveCommitReview(reviewPath, review, change); err != nil {
+				app.showError(fmt.Errorf("save review: %w", err))
+				return
+			}
+			app.showNotification("Marked "+row.revision[:7]+" "+done+".", 2*time.Second)
+		})
+	}
+	addMenuItem(menu, "Copy Commit SHA (short)", "", func() { app.copyToClipboard(row.revision[:7], "Copied commit SHA to clipboard.") })
+	menu.Append(must(gtk.SeparatorMenuItemNew()))
+	app.addParentItems(menu, row.parents)
+	menu.ShowAll()
+	return menu
+}
+
 func (app *giti) buildHistoryPane(state uiState) *gtk.Box {
 	// History graph and commit metadata share a row so graph geometry remains
 	// aligned with text after GTK applies font and scale settings.
@@ -1149,6 +1230,20 @@ func (app *giti) buildHistoryPane(state uiState) *gtk.Box {
 		return kind != ""
 	})
 	app.historySelectionHandler = historySelection.Connect("changed", app.onHistorySelected)
+	app.historyView.Connect("button-press-event", func(_ *gtk.TreeView, event *gdk.Event) bool {
+		button := gdk.EventButtonNewFromEvent(event)
+		if button.Type() != gdk.EVENT_BUTTON_PRESS || button.Button() != gdk.BUTTON_SECONDARY {
+			return false
+		}
+		path, _, _, _, ok := app.historyView.GetPathAtPos(int(button.X()), int(button.Y()))
+		if !ok || len(path.GetIndices()) != 1 || path.GetIndices()[0] >= len(app.historyRows) || app.historyRows[path.GetIndices()[0]].kind != "commit" {
+			return false
+		}
+		menu := app.commitMenu(app.historyRows[path.GetIndices()[0]])
+		menu.Connect("selection-done", menu.Destroy)
+		menu.PopupAtPointer(event)
+		return true
+	})
 	app.historyView.Connect("button-release-event", func(_ *gtk.TreeView, event *gdk.Event) bool {
 		button := gdk.EventButtonNewFromEvent(event)
 		if button.Button() != gdk.BUTTON_PRIMARY {

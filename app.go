@@ -53,6 +53,9 @@ var appIconPNG []byte
 //go:embed logo/file-tree-symbolic.svg
 var fileTreeIconSVG []byte
 
+//go:embed logo/go-to-parent-symbolic.svg
+var goToParentIconSVG []byte
+
 const appCSS = `
 treeview.giti-list.view {
   -GtkTreeView-vertical-separator: 0;
@@ -338,7 +341,7 @@ type giti struct {
 	headerIdentity             commitDetails
 	headerMetaRow              *gtk.Box
 	headerSHA                  *gtk.Box
-	headerMenuButton           *gtk.Button
+	headerParentButton         *gtk.Button
 	headerFileName             *gtk.Label
 	fileStatistics             *gtk.Box
 	fileStatisticLabels        [2]*gtk.Label

@@ -1194,7 +1194,7 @@ func (app *giti) buildReviewControls() {
 	}
 	app.reviewSessionActions.ShowAll()
 	app.reviewSessionActions.SetNoShowAll(true)
-	// The next-file chevron matches the ⋮ button above it in size.
+	// The next-file chevron matches the go-to-parent button above it in size.
 	app.reviewNextButton = must(gtk.ButtonNew())
 	app.reviewNextButton.SetImage(chevron("pan-end-symbolic", 14))
 	app.reviewNextButton.SetVAlign(gtk.ALIGN_CENTER)

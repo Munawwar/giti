@@ -368,8 +368,8 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	compactDetails := detailChildren.Length()
 	detailChildren.Free()
 	referenceButton := app.headerReferenceButtons[0]
-	parentItems := app.commitMenu().GetChildren()
-	parentCast, _ := parentItems.NthData(0).(*gtk.Widget).Cast()
+	parentItems := app.commitMenu(historyRow{kind: "commit", revision: details.sha, parents: details.parents}).GetChildren()
+	parentCast, _ := parentItems.NthData(3).(*gtk.Widget).Cast()
 	parentItem, parentOK := parentCast.(*gtk.MenuItem)
 	parentLabel, parentTooltip := "", ""
 	if parentOK {
@@ -429,7 +429,7 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	metaText, metaTextErr := app.headerAuthor.GetText()
 	identityTooltip, identityErr := app.headerIdentityButton.GetTooltipText()
 	referenceValid := labelOK && textErr == nil && !referenceLabel.GetSelectable() && referenceLabel.GetEllipsize() == pango.ELLIPSIZE_END && strings.Contains(referenceValue, longBranch) && referenceButton.GetCanFocus() && copiedReference == longBranch && copyReferenceErr == nil && app.notification.GetVisible() && copyNotification == "Copied branch to clipboard." && notificationErr == nil && app.mainPane.GetAllocatedWidth() == contentWidth && app.mainPane.GetAllocatedHeight() == contentHeight
-	parentValid := parentLabel == "Go to parent  "+parentSHA[:7] && parentTooltip == parentSHA && parentItem.GetSensitive() && app.headerMenuButton.GetVisible()
+	parentValid := parentLabel == "Go to parent  "+parentSHA[:7] && parentTooltip == parentSHA && parentItem.GetSensitive() && app.headerParentButton.GetVisible() && must(app.headerParentButton.GetTooltipText()) == "Go to parent "+parentSHA[:7]
 	statisticsValid := statisticsVisible && strings.Join(statLabels, ",") == "+12,−3,4 untracked"
 	controlsValid := fullFileLabel == "Full file" && whitespaceLabel == "Whitespace" && !app.whitespaceToggle.GetActive() && fullMergeLabel == "Full merge" && shaTooltip == "Copy full SHA: "+details.sha && metaTextErr == nil && identityErr == nil && metaText == "Alice  ·  "+formatCommitTime(details.authored, time.Local, "2 Jan 2006, 15:04 MST") && identityTooltip == "Committed by Bob — show details" && app.headerIdentityButton.GetVisible()
 	searchIdle := !app.searchSpinner.GetVisible() && app.historySearch.GetIconStorageType(gtk.ENTRY_ICON_PRIMARY) == gtk.IMAGE_ICON_NAME
@@ -1536,6 +1536,73 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	if !app.reviewPreviewItem.GetSensitive() || !app.reviewExportItem.GetSensitive() {
 		t.Fatal("comment-only review did not enable preview and export")
 	}
+}
+
+func TestGTKCommitMenuActions(t *testing.T) {
+	path, app := newGTKIntegrationApp(t)
+	fileHistoryWrite(t, path, "menu.txt", "before\n")
+	fileHistoryWrite(t, path, "other.txt", "before\n")
+	fileHistoryGit(t, path, "add", ".")
+	fileHistoryGit(t, path, "commit", "-m", "menu base")
+	base := fileHistoryGit(t, path, "rev-parse", "HEAD")
+	fileHistoryWrite(t, path, "menu.txt", "after\n")
+	fileHistoryWrite(t, path, "other.txt", "after\n")
+	fileHistoryGit(t, path, "commit", "-am", "menu change")
+	head := fileHistoryGit(t, path, "rev-parse", "HEAD")
+	app.openRepository(path, historySpec{Revision: head})
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil })
+	app.selectHistoryRevision(head)
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.diffLoaded && app.review != nil })
+	rows := map[string]historyRow{}
+	for _, row := range app.historyRows {
+		rows[row.revision] = row
+	}
+	menuItem := func(revision string, index int) *gtk.MenuItem {
+		t.Helper()
+		items := app.commitMenu(rows[revision]).GetChildren()
+		defer items.Free()
+		item, err := items.NthData(uint(index)).(*gtk.Widget).Cast()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return item.(*gtk.MenuItem)
+	}
+	expectReview := func(label string, states ...reviewState) {
+		t.Helper()
+		if got := menuItem(head, 0).GetLabel(); got != label {
+			t.Fatalf("review item = %q, want %q", got, label)
+		}
+		for index, name := range []string{"menu.txt", "other.txt"} {
+			if got := app.reviewState(name); got != states[index] {
+				t.Fatalf("%s state = %v, want %v", name, got, states[index])
+			}
+		}
+	}
+	expectReview("Mark Reviewed", reviewNone, reviewNone)
+	app.toggleFileReviewed("menu.txt")
+	expectReview("Mark Reviewed", reviewDone, reviewNone)
+	menuItem(head, 0).Activate()
+	expectReview("Mark Unreviewed", reviewDone, reviewDone)
+	menuItem(head, 0).Activate()
+	expectReview("Mark Reviewed", reviewNone, reviewNone)
+	menuItem(base, 0).Activate()
+	if got := menuItem(base, 0).GetLabel(); got != "Mark Unreviewed" {
+		t.Fatalf("marking an unopened commit was not saved: %q", got)
+	}
+	if app.currentRow.revision != head || app.review.Commit != head {
+		t.Fatal("marking an unopened commit changed the open review")
+	}
+	menuItem(head, 1).Activate()
+	if copied, err := must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD)).WaitForText(); err != nil || copied != head[:7] {
+		t.Fatalf("short SHA was not copied: %q, %v", copied, err)
+	}
+	menuItem(head, 3).Activate()
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.currentRow != nil && app.currentRow.revision == base })
+	// With one parent the header button navigates without opening a menu.
+	app.selectHistoryRevision(head)
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.headerIdentity.sha == head })
+	app.headerParentButton.Clicked()
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.currentRow != nil && app.currentRow.revision == base })
 }
 
 func TestGTKReviewFolderTicksIgnoreSearchAndWhitespaceFilter(t *testing.T) {
