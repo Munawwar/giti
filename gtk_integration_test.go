@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1732,6 +1733,82 @@ func TestGTKAllFilesOpensChangedFileDiff(t *testing.T) {
 		t.Fatalf("rebuilding the tree opened %q", app.openFilePath())
 	}
 	diffShows("two.txt", "+after two")
+}
+
+// clickWidget moves the real pointer and clicks a point inside widget, because
+// GrabFocus would skip the event routing a click goes through.
+func clickWidget(t *testing.T, app *giti, widget *gtk.Widget, x, y int) {
+	t.Helper()
+	windowX, windowY, err := widget.TranslateCoordinates(app.window, x, y)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originX, originY := must(app.window.GetWindow()).GetOrigin()
+	for _, args := range [][]string{{"mousemove", strconv.Itoa(originX + windowX), strconv.Itoa(originY + windowY)}, {"click", "1"}} {
+		if output, err := exec.Command("xdotool", args...).CombinedOutput(); err != nil {
+			t.Fatalf("xdotool %v: %v: %s", args, err, output)
+		}
+		for start := time.Now(); time.Since(start) < 150*time.Millisecond; {
+			for gtk.EventsPending() {
+				gtk.MainIteration()
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+}
+
+func TestGTKReviewDraftRefocusesOnClick(t *testing.T) {
+	if _, err := exec.LookPath("xdotool"); err != nil || os.Getenv("GDK_BACKEND") != "x11" {
+		t.Skip("real clicks need xdotool on an X11 display")
+	}
+	path, app := newGTKIntegrationApp(t)
+	fileHistoryWrite(t, path, "draft.txt", strings.Repeat("before\n", 30))
+	fileHistoryGit(t, path, "add", ".")
+	fileHistoryGit(t, path, "commit", "-m", "draft base")
+	fileHistoryWrite(t, path, "draft.txt", strings.Repeat("after\n", 30))
+	fileHistoryGit(t, path, "commit", "-am", "draft change")
+	head := fileHistoryGit(t, path, "rev-parse", "HEAD")
+	app.openRepository(path, historySpec{Revision: head})
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil })
+	app.selectHistoryRevision(head)
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.diffLoaded && app.review != nil && app.currentFile != nil })
+	app.reviewModeButton.Clicked()
+	for _, draft := range []struct {
+		name    string
+		comment reviewComment
+	}{
+		{"line", reviewComment{Lines: reviewAnchors(app.reviewLines, 3, 4)}},
+		{"hunk", reviewComment{Lines: reviewAnchors(app.reviewLines, 1, 6)}},
+		{"file", reviewComment{}},
+	} {
+		app.startReviewDraft(app.currentFile.path, draft.comment)
+		iterateGTKUntil(t, time.Second, func() bool {
+			return app.reviewDraftView != nil && app.reviewDraftView.GetAllocatedHeight() > 1 && app.reviewDraftView.IsFocus()
+		})
+		view := app.reviewDraftView
+		for name, away := range map[string]func(){
+			"history":   func() { clickWidget(t, app, &app.historyView.Widget, 120, 20) },
+			"diff text": func() { clickWidget(t, app, &app.diffView.Widget, 300, app.diffView.GetAllocatedHeight()-20) },
+		} {
+			away()
+			if view.IsFocus() {
+				t.Fatalf("%s: clicking %s left focus in the draft", draft.name, name)
+			}
+			clickWidget(t, app, &view.Widget, 20, 20)
+			if !view.IsFocus() {
+				t.Fatalf("%s: clicking the draft after %s did not return focus", draft.name, name)
+			}
+		}
+		if output, err := exec.Command("xdotool", "type", "--delay", "1", "hi").CombinedOutput(); err != nil {
+			t.Fatalf("xdotool type: %v: %s", err, output)
+		}
+		iterateGTKUntil(t, time.Second, func() bool {
+			start, end := app.reviewDraft.buffer.GetBounds()
+			text, _ := app.reviewDraft.buffer.GetText(start, end, true)
+			return text == "hi"
+		})
+		app.cancelReviewDraft()
+	}
 }
 
 func TestGTKReviewFolderTicksIgnoreSearchAndWhitespaceFilter(t *testing.T) {

@@ -853,6 +853,8 @@ func (app *giti) rebuildReviewCards() {
 			}
 			card := must(gtk.EventBoxNew())
 			card.Add(box)
+			// Cards sit inside the diff view, which would otherwise take the click and the focus.
+			card.Connect("button-press-event", func() bool { return true })
 			card.ShowAll()
 			app.diffView.AddChildInWindow(card, gtk.TEXT_WINDOW_TEXT, 0, 0)
 			app.reviewCards = append(app.reviewCards, &reviewCard{widget: card, line: line})
