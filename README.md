@@ -13,7 +13,7 @@ A fast Git history and diff viewer for Linux, built for switching between the te
 - Browse commit graphs and local or remote branches without checking them out.
 - View staged and unstaged changes; stage, unstage, or undo changes from the file list.
 - Search commits, descriptions, references, and file history, including across renames.
-- Filter changed files and switch between list and tree views.
+- Filter changed files, switch between list and tree views, and browse every file in a commit, the index, or the working tree.
 - Search diffs, show line numbers and full-file context, toggle whitespace changes, and inspect merge resolutions.
 - Review individual commits: mark files or lines reviewed, add comments, resume saved progress, and preview or export Markdown notes.
 - Reuse the background app for quick repeated launches.

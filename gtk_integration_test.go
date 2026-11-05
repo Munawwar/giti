@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1603,6 +1604,134 @@ func TestGTKCommitMenuActions(t *testing.T) {
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.headerIdentity.sha == head })
 	app.headerParentButton.Clicked()
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.currentRow != nil && app.currentRow.revision == base })
+}
+
+func TestGTKAllFilesView(t *testing.T) {
+	path, app := newGTKIntegrationApp(t)
+	fileHistoryWrite(t, path, "deep/er/nested.txt", "line one\nline two\n")
+	fileHistoryWrite(t, path, "deep/changed.txt", "before\n")
+	fileHistoryWrite(t, path, "stable.txt", "stable\n")
+	fileHistoryWrite(t, path, "gone.txt", "gone\n")
+	fileHistoryGit(t, path, "add", ".")
+	fileHistoryGit(t, path, "commit", "-m", "all files base")
+	fileHistoryWrite(t, path, "deep/changed.txt", "after\n")
+	fileHistoryGit(t, path, "rm", "-q", "gone.txt")
+	fileHistoryGit(t, path, "add", ".")
+	fileHistoryGit(t, path, "commit", "-m", "all files change")
+	head := fileHistoryGit(t, path, "rev-parse", "HEAD")
+	fileHistoryWrite(t, path, "stable.txt", "later\n")
+	fileHistoryGit(t, path, "commit", "-am", "all files later")
+	later := fileHistoryGit(t, path, "rev-parse", "HEAD")
+	app.openRepository(path, historySpec{Revision: later})
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil })
+	app.selectHistoryRevision(head)
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.diffLoaded && app.review != nil })
+	rows := func() map[string]string {
+		found := map[string]string{}
+		app.allFilesStore.TreeModel.ForEach(func(model *gtk.TreeModel, _ *gtk.TreePath, iter *gtk.TreeIter) bool {
+			name, _ := app.allFileRow(iter)
+			found[name], _ = must(model.GetValue(iter, allFileLabelColumn)).GetString()
+			return false
+		})
+		return found
+	}
+	app.allFilesToggle.SetActive(true)
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.allFilesRoot != nil })
+	// The open changed file's folder is filled; a sibling folder is not until expanded.
+	found := rows()
+	if found["stable.txt"] == "" || found["gone.txt"] == "" || !strings.Contains(found["deep/changed.txt"], "M") || found["deep/er/nested.txt"] != "" || app.currentFile == nil || app.currentFile.path != "deep/changed.txt" {
+		t.Fatalf("unexpected lazy rows with %v: %#v", app.currentFile, found)
+	}
+	summary, _ := app.fileSummary.GetText()
+	progress, total, _ := app.review.progress(app.reviewFiles)
+	app.reviewModeButton.Clicked()
+	app.revealAllFile("deep/er/nested.txt")
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.plainFile == "deep/er/nested.txt" && app.diffLoaded })
+	if app.currentFile != nil || !strings.HasPrefix(summary, fmt.Sprintf("%d files", len(app.allFilesPaths))) {
+		t.Fatalf("unchanged file left currentFile=%v summary=%q", app.currentFile, summary)
+	}
+	if text, _ := app.diffBuffer.GetText(app.diffBuffer.GetStartIter(), app.diffBuffer.GetEndIter(), true); text != "line one\nline two\n" {
+		t.Fatalf("plain content = %q", text)
+	}
+	if number := app.diffLineNumbers[1]; number.new != 2 || number.kind != diffLineContext {
+		t.Fatalf("plain line number = %#v", number)
+	}
+	// Unchanged files sit outside review, and the diff-only controls step aside.
+	reviewed, reviewTotal, _ := app.review.progress(app.reviewFiles)
+	if app.reviewFileButton.GetSensitive() || reviewed != progress || reviewTotal != total || app.review.Files["deep/er/nested.txt"] != nil || app.fullFileToggle.GetVisible() || app.whitespaceToggle.GetVisible() {
+		t.Fatal("unchanged file took part in review or kept diff controls")
+	}
+	// Search over every path, not only loaded rows.
+	app.fileSearch.SetText("nested")
+	if found = rows(); found["deep/er/nested.txt"] == "" || found["stable.txt"] != "" {
+		t.Fatalf("search rows: %#v", found)
+	}
+	app.fileSearch.SetText("")
+	// The file stays open across commits while it exists there.
+	app.selectHistoryRevision(later)
+	iterateGTKUntil(t, 3*time.Second, func() bool {
+		return app.headerIdentity.sha == later && app.plainFile == "deep/er/nested.txt" && app.diffLoaded
+	})
+	// Back to changed files drops the unchanged file and restores the diff controls.
+	app.fileTreeToggle.SetActive(true)
+	if app.plainFile != "" || !app.fullFileToggle.GetVisible() {
+		t.Fatal("leaving all files kept the unchanged file open")
+	}
+	// Working-tree rows list untracked files and read them from disk; the index does not.
+	fileHistoryWrite(t, path, "stable.txt", "edited\n")
+	fileHistoryWrite(t, path, "fresh.txt", "fresh\n")
+	worktree, err := app.repository.allFilesContext(context.Background(), historyRow{kind: "unstaged"})
+	if err != nil || !slices.Contains(worktree, "fresh.txt") {
+		t.Fatalf("working tree files: %v, %v", worktree, err)
+	}
+	index, err := app.repository.allFilesContext(context.Background(), historyRow{kind: "staged"})
+	if err != nil || slices.Contains(index, "fresh.txt") || !slices.Contains(index, "stable.txt") {
+		t.Fatalf("index files: %v, %v", index, err)
+	}
+	if content, _, err := app.repository.fileContentContext(context.Background(), historyRow{kind: "unstaged"}, "stable.txt"); err != nil || content != "edited\n" {
+		t.Fatalf("working tree content: %q, %v", content, err)
+	}
+	if content, _, err := app.repository.fileContentContext(context.Background(), historyRow{kind: "staged"}, "stable.txt"); err != nil || content != "later\n" {
+		t.Fatalf("index content: %q, %v", content, err)
+	}
+}
+
+func TestGTKAllFilesOpensChangedFileDiff(t *testing.T) {
+	path, app := newGTKIntegrationApp(t)
+	for _, name := range []string{"one.txt", "two.txt", "plain.txt"} {
+		fileHistoryWrite(t, path, name, "before\n")
+	}
+	fileHistoryGit(t, path, "add", ".")
+	fileHistoryGit(t, path, "commit", "-m", "base")
+	fileHistoryWrite(t, path, "one.txt", "after one\n")
+	fileHistoryWrite(t, path, "two.txt", "after two\n")
+	fileHistoryGit(t, path, "commit", "-am", "change two files")
+	head := fileHistoryGit(t, path, "rev-parse", "HEAD")
+	app.openRepository(path, historySpec{Revision: head})
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.historyCancel == nil })
+	app.selectHistoryRevision(head)
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.diffLoaded && app.currentFile != nil })
+	app.allFilesToggle.SetActive(true)
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.allFilesRoot != nil })
+	diffShows := func(name, added string) {
+		t.Helper()
+		app.revealAllFile(name)
+		iterateGTKUntil(t, 3*time.Second, func() bool {
+			text, _ := app.diffBuffer.GetText(app.diffBuffer.GetStartIter(), app.diffBuffer.GetEndIter(), true)
+			return app.currentFile != nil && app.currentFile.path == name && app.diffLoaded && strings.Contains(text, added)
+		})
+	}
+	diffShows("two.txt", "+after two")
+	diffShows("one.txt", "+after one")
+	app.revealAllFile("plain.txt")
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.plainFile == "plain.txt" && app.diffLoaded })
+	// Rebuilding rows moves GTK's selection as they go; that must not open other files.
+	app.fileSearch.SetText("txt")
+	app.fileSearch.SetText("")
+	if app.plainFile != "plain.txt" {
+		t.Fatalf("rebuilding the tree opened %q", app.openFilePath())
+	}
+	diffShows("two.txt", "+after two")
 }
 
 func TestGTKReviewFolderTicksIgnoreSearchAndWhitespaceFilter(t *testing.T) {

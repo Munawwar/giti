@@ -285,8 +285,11 @@ func (app *giti) showReferences(branches, tags []string) {
 }
 
 func (app *giti) setDiff(patch string) {
+	app.setDiffLines(displayLines(patch))
+}
+
+func (app *giti) setDiffLines(lines []displayLine) {
 	app.diffBuffer.SetText("")
-	lines := displayLines(patch)
 	app.reviewLines = lines
 	app.overviewMarkers, app.overviewLines = app.overviewMarkers[:0], len(lines)
 	if cap(app.diffLineNumbers) < len(lines) {
@@ -328,7 +331,7 @@ func (app *giti) setDiff(patch string) {
 		start = end
 	}
 	app.diffGutterDigits = max(2, len(strconv.Itoa(maxLine)))
-	fullFile := app.fullFileToggle.GetActive()
+	fullFile := app.fullFileToggle.GetActive() || app.plainFile != ""
 	app.diffGutter.SetVisible((fullFile && app.fullLineNumbers || !fullFile && app.compactLineNumbers) && maxLine > 0)
 	app.diffGutter.QueueDraw()
 	app.diffOverviewReveal.SetRevealChild(len(app.overviewMarkers) > 0)

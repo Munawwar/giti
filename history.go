@@ -691,10 +691,10 @@ func (app *giti) onHistorySelected() {
 	focusFile := app.fileTargetPath != ""
 	if focusFile {
 		previousPath, app.fileTargetPath = app.fileTargetPath, ""
-	} else if app.currentFile != nil {
-		previousPath = app.currentFile.path
+	} else {
+		previousPath = app.openFilePath()
 	}
-	app.currentRow, app.currentFile, app.files, app.diffLoaded = &app.historyRows[index], nil, nil, false
+	app.currentRow, app.currentFile, app.plainFile, app.files, app.diffLoaded = &app.historyRows[index], nil, "", nil, false
 	keepReviewActive := app.reviewActive && sameSelection && (app.review == nil || (app.review.Comparison == "merge-resolution") == mergeResolution)
 	app.review, app.reviewPath, app.reviewFiles, app.reviewActive = nil, "", nil, keepReviewActive
 	app.updateReviewUI()
@@ -777,10 +777,14 @@ func (app *giti) onHistorySelected() {
 				markup += fmt.Sprintf(" · <span foreground=\"#4b5563\">%d untracked</span>", untracked)
 			}
 			app.fileSummary.SetMarkup(markup)
+			app.changedSummary = markup
 			app.fileSummary.SetTooltipText(summary)
 			// Replace the model only after its summary and header agree with the same
 			// result, then restore the previous path when it is still present.
 			app.files = files
+			if app.allFilesMode() {
+				app.loadAllFiles(previousPath)
+			}
 			if len(files) == 0 {
 				app.updateReviewUI()
 				return false

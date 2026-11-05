@@ -457,10 +457,15 @@ func (app *giti) updateReviewFileActions() {
 	file := app.currentFile
 	app.headerFileName.SetMarkup(`<span foreground="#9ca3af">No file selected</span>`)
 	app.headerFileName.SetTooltipText("")
-	if file != nil {
-		app.headerFileName.SetMarkup("<b>" + html.EscapeString(filepath.Base(file.path)) + "</b>")
-		app.headerFileName.SetTooltipText(file.path)
+	if path := app.openFilePath(); path != "" {
+		app.headerFileName.SetMarkup("<b>" + html.EscapeString(filepath.Base(path)) + "</b>")
+		app.headerFileName.SetTooltipText(path)
 	}
+	// Unchanged files have no diff for these to adjust.
+	diffControls := app.plainFile == ""
+	app.fullFileToggle.SetVisible(diffControls)
+	app.whitespaceToggle.SetVisible(diffControls)
+	app.fullMergeToggle.SetVisible(diffControls && app.currentRow != nil && app.currentRow.kind == "commit" && len(app.currentRow.parents) > 1)
 	// Untracked and binary files have no line counts; working-tree views list them beside each file already.
 	app.fileStatistics.SetVisible(file != nil && !file.binary && file.status != "??" && app.currentRow != nil && app.currentRow.kind == "commit")
 	if file != nil {
@@ -943,7 +948,7 @@ func (app *giti) placeReviewFloaters() {
 	// One control at a time: a selection gets the toolbar, otherwise the hovered line gets the +.
 	_, _, selected := app.diffBuffer.GetSelectionBounds()
 	line := app.reviewHoverLine
-	if app.reviewActive && !app.diffSelecting && !selected && line >= 0 && len(reviewAnchors(app.reviewLines, line, line+1)) > 0 {
+	if app.reviewActive && app.currentFile != nil && !app.diffSelecting && !selected && line >= 0 && len(reviewAnchors(app.reviewLines, line, line+1)) > 0 {
 		lineY, lineHeight := app.diffView.GetLineYrange(app.diffBuffer.GetIterAtLine(line))
 		if lineHeight -= app.reviewGaps[line]; line == 0 {
 			lineY, lineHeight = lineY+app.reviewGaps[-1], lineHeight-app.reviewGaps[-1]

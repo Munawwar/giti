@@ -101,21 +101,7 @@ func (app *giti) refreshFileView(preferredPath string) {
 	for _, fileIndex := range visibleFiles {
 		file := app.files[fileIndex]
 		stageIcon, undoIcon, _ := app.workingFileAction(kind, file)
-		stat := fmt.Sprintf("<span foreground=\"#2e8c47\">+%d</span>  <span foreground=\"#c7404d\">−%d</span>", file.additions, file.deletions)
-		switch {
-		case file.status == "??":
-			stat = "<span foreground=\"#6b7280\">Untracked</span>"
-		case file.conflict != "":
-			color := "#c7404d"
-			if file.status == "✓" {
-				color = "#2e8c47"
-			}
-			stat = fmt.Sprintf("<span foreground=\"%s\">%s</span>", color, html.EscapeString(file.conflict))
-		case mergeResolution:
-			stat = "<span foreground=\"#6b7280\">Combined</span>"
-		case file.binary:
-			stat = "<span foreground=\"#6b7280\">Binary</span>"
-		}
+		status, stat := fileRowMarkup(file, mergeResolution)
 		sourcePath, tooltip := "", file.status+" "+file.path
 		switch {
 		case file.status == "??":
@@ -142,15 +128,6 @@ func (app *giti) refreshFileView(preferredPath string) {
 		case strings.Contains(file.status, "T"):
 			tooltip = "Type changed " + file.path
 		}
-		statusText, statusColor := file.status, "#6b7280"
-		if strings.Contains(file.status, "D") {
-			statusColor = "#b42318"
-		} else if strings.Contains(file.status, "A") {
-			statusColor = "#2e8c47"
-		} else if strings.HasPrefix(file.status, "R") {
-			statusText, statusColor = "R", "#24527a"
-		}
-		status := fmt.Sprintf("<span size=\"small\" foreground=\"%s\">%s</span>", statusColor, html.EscapeString(statusText))
 		displayPath := html.EscapeString(file.path)
 		if commonPrefix != "" && strings.HasPrefix(file.path, commonPrefix) {
 			displayPath = `<span foreground="#9ca3af">…/</span>` + html.EscapeString(strings.TrimPrefix(file.path, commonPrefix))
@@ -242,7 +219,8 @@ func (app *giti) refreshFileView(preferredPath string) {
 			targetPath = path
 		}
 	}
-	if targetPath == nil {
+	// All files keeps the open file itself and may be showing an unchanged one.
+	if targetPath == nil && !app.allFilesMode() {
 		targetPath = firstPath
 	}
 	if treeMode {
@@ -254,6 +232,39 @@ func (app *giti) refreshFileView(preferredPath string) {
 		app.fileView.ScrollToCell(targetPath, nil, false, 0, 0)
 	}
 	app.updateReviewUI()
+	if app.allFilesMode() {
+		app.renderAllFiles()
+		app.revealAllFile(app.openFilePath())
+	}
+}
+
+// fileRowMarkup renders a changed file's status letter and its change counts or state.
+func fileRowMarkup(file changedFile, mergeResolution bool) (status, stat string) {
+	stat = fmt.Sprintf("<span foreground=\"#2e8c47\">+%d</span>  <span foreground=\"#c7404d\">−%d</span>", file.additions, file.deletions)
+	switch {
+	case file.status == "??":
+		stat = "<span foreground=\"#6b7280\">Untracked</span>"
+	case file.conflict != "":
+		color := "#c7404d"
+		if file.status == "✓" {
+			color = "#2e8c47"
+		}
+		stat = fmt.Sprintf("<span foreground=\"%s\">%s</span>", color, html.EscapeString(file.conflict))
+	case mergeResolution:
+		stat = "<span foreground=\"#6b7280\">Combined</span>"
+	case file.binary:
+		stat = "<span foreground=\"#6b7280\">Binary</span>"
+	}
+	statusText, statusColor := file.status, "#6b7280"
+	if strings.Contains(file.status, "D") {
+		statusColor = "#b42318"
+	} else if strings.Contains(file.status, "A") {
+		statusColor = "#2e8c47"
+	} else if strings.HasPrefix(file.status, "R") {
+		statusText, statusColor = "R", "#24527a"
+	}
+	status = fmt.Sprintf("<span size=\"small\" foreground=\"%s\">%s</span>", statusColor, html.EscapeString(statusText))
+	return status, stat
 }
 
 func (app *giti) workingFileAction(kind string, file changedFile) (stageIcon, undoIcon, action string) {
@@ -475,7 +486,7 @@ func (app *giti) onFileSelected() {
 	}
 	file := &app.files[index]
 	app.rememberDiffScroll()
-	app.currentFile = file
+	app.currentFile, app.plainFile = file, ""
 	app.showDiffPage()
 	app.diffLoaded = false
 	app.fullFileToggle.SetSensitive(false)
@@ -489,6 +500,9 @@ func (app *giti) onFileSelected() {
 	position := app.diffScroll[diffKey(row, selectedFile)]
 	ignoreWhitespace, preferFullFile := !app.whitespaceToggle.GetActive(), app.fullFilePreferred
 	mergeResolution := row.kind == "commit" && len(row.parents) > 1 && !app.fullMergeToggle.GetActive()
+	if app.allFilesMode() {
+		app.revealAllFile(selectedFile.path)
+	}
 	go func() {
 		size := repo.fileSizeContext(ctx, row, selectedFile)
 		fullFile := preferFullFile && size <= fullFileLimit
@@ -604,12 +618,7 @@ func (app *giti) buildFilePane() *gtk.Box {
 			selection, _ := app.fileView.GetSelection()
 			selection.SelectPath(path)
 			app.populateFileReviewMenu(menu, app.files[index].path)
-			for _, action := range fileCopyActions(app.repository.path, app.files[index].path) {
-				action := action
-				item := must(gtk.MenuItemNewWithLabel(action.label))
-				item.Connect("activate", func() { app.copyToClipboard(action.text, action.message) })
-				menu.Append(item)
-			}
+			app.addFileCopyItems(menu, app.files[index].path)
 		}
 		if treeMode {
 			if fileActions {
@@ -894,6 +903,33 @@ func (app *giti) buildFilePane() *gtk.Box {
 	setAccessibility(&app.fileTreeToggle.Widget, "Tree view", "Toggle between the unchanged file list and a folder tree")
 	app.fileTreeToggle.SetActive(true)
 	app.fileTreeToggle.Connect("toggled", func() { app.refreshFileView("") })
+	app.allFilesToggle = must(gtk.RadioButtonNewFromWidget(app.fileListToggle))
+	app.allFilesToggle.SetMode(false)
+	allFilesToggleContext, _ := app.allFilesToggle.GetStyleContext()
+	allFilesToggleContext.AddClass("giti-view-option")
+	allFilesToggleContext.AddClass("giti-view-all")
+	app.allFilesToggle.SetImage(must(gtk.ImageNewFromIconName("folder-symbolic", gtk.ICON_SIZE_BUTTON)))
+	app.allFilesToggle.SetTooltipText("All files in this snapshot")
+	setAccessibility(&app.allFilesToggle.Widget, "All files", "Browse every file in the selected history entry as a tree")
+	fileStack := must(gtk.StackNew())
+	fileStack.AddNamed(scroller(app.fileView), "changed")
+	fileStack.AddNamed(scroller(app.buildAllFilesView()), "all")
+	app.allFilesToggle.Connect("toggled", func() {
+		if app.allFilesToggle.GetActive() {
+			fileStack.SetVisibleChildName("all")
+			app.fileSearch.SetPlaceholderText("Search all files")
+			app.loadAllFiles(app.openFilePath())
+			return
+		}
+		fileStack.SetVisibleChildName("changed")
+		app.fileSearch.SetPlaceholderText("Search changed files")
+		app.fileSummary.SetMarkup(app.changedSummary)
+		if app.plainFile != "" {
+			app.plainFile = ""
+			app.clearDiff()
+		}
+		app.refreshFileView("")
+	})
 
 	app.fileSummary = must(gtk.LabelNew("Select a history entry to see changed files"))
 	app.fileSummary.SetXAlign(0)
@@ -913,6 +949,7 @@ func (app *giti) buildFilePane() *gtk.Box {
 	fileViewButtonsContext.AddClass("giti-view-switcher")
 	fileViewButtons.PackStart(app.fileListToggle, false, false, 0)
 	fileViewButtons.PackStart(app.fileTreeToggle, false, false, 0)
+	fileViewButtons.PackStart(app.allFilesToggle, false, false, 0)
 	fileHeader.PackEnd(fileViewButtons, false, false, 8)
 	fileHeader.PackEnd(app.fileSearchToggle, false, false, 0)
 	fileBox.PackStart(fileHeader, false, false, 0)
@@ -927,6 +964,6 @@ func (app *giti) buildFilePane() *gtk.Box {
 	fileSearchBox.PackStart(app.fileSearch, true, true, 0)
 	app.fileSearchReveal.Add(fileSearchBox)
 	fileBox.PackStart(app.fileSearchReveal, false, false, 0)
-	fileBox.PackStart(scroller(app.fileView), true, true, 0)
+	fileBox.PackStart(fileStack, true, true, 0)
 	return fileBox
 }

@@ -255,10 +255,12 @@ label.giti-secondary-label {
 .giti-view-list {
   border-radius: 5px 0 0 5px;
 }
-.giti-view-tree {
+.giti-view-tree, .giti-view-all {
   border-left-color: #d1d5db;
   border-left-style: solid;
   border-left-width: 1px;
+}
+.giti-view-all {
   border-radius: 0 5px 5px 0;
 }
 label.giti-stat {
@@ -403,6 +405,14 @@ type giti struct {
 	fileSearchToggle           *gtk.ToggleButton
 	fileListToggle             *gtk.RadioButton
 	fileTreeToggle             *gtk.RadioButton
+	allFilesToggle             *gtk.RadioButton
+	allFilesView               *gtk.TreeView
+	allFilesStore              *gtk.TreeStore
+	allFilesCancel             context.CancelFunc
+	allFilesRoot               *fileNode
+	allFilesPaths              []string
+	allFilesChanged            map[string]*changedFile
+	plainFile, changedSummary  string
 	workingDialog              *gtk.MessageDialog
 	graphColumn                *gtk.TreeViewColumn
 	fileColumn                 *gtk.TreeViewColumn
@@ -897,6 +907,12 @@ func (app *giti) clearRepositoryView() {
 	app.historyHasMore, app.searchLimit = false, initialHistoryLimit
 	app.searchViewingResult = false
 	app.diffScroll = make(map[string]scrollPosition)
+	if app.allFilesCancel != nil {
+		app.allFilesCancel()
+		app.allFilesCancel = nil
+	}
+	app.allFilesRoot, app.allFilesPaths, app.plainFile = nil, nil, ""
+	app.allFilesStore.Clear()
 	app.currentRow, app.currentFile, app.historyTargetKind, app.fileTargetPath, app.diffLoaded = nil, nil, "", "", false
 	app.review, app.reviewPath, app.reviewFiles, app.reviewActive, app.reviewDraft = nil, "", nil, false, nil
 	app.updateReviewUI()
@@ -1019,6 +1035,12 @@ func (app *giti) showNotification(message string, duration time.Duration) {
 func (app *giti) copyToClipboard(text, message string) {
 	must(gtk.ClipboardGet(gdk.SELECTION_CLIPBOARD)).SetText(text)
 	app.showNotification(message, 2*time.Second)
+}
+
+func (app *giti) addFileCopyItems(menu *gtk.Menu, path string) {
+	for _, action := range fileCopyActions(app.repository.path, path) {
+		addMenuItem(menu, action.label, "", func() { app.copyToClipboard(action.text, action.message) })
+	}
 }
 
 type clipboardAction struct{ label, text, message string }
