@@ -179,7 +179,7 @@ func TestCommitDetailsIncludesRefsAndMergeParents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if details.sha != repo.revision || details.author != "Test User" || !strings.Contains(details.body, "1. Keep both changes") || len(details.parents) != 2 || strings.Join(details.tags, ",") != "four,one,three,two" || !strings.Contains(strings.Join(details.branches, " "), remoteRefPrefix+"origin/main") || details.upstreams["main"] != remoteRefPrefix+"origin/main" {
+	if details.sha != repo.revision || details.author != "Test User" || !strings.Contains(details.body, "1. Keep both changes") || strings.Join(details.tags, ",") != "four,one,three,two" || !strings.Contains(strings.Join(details.branches, " "), remoteRefPrefix+"origin/main") || details.upstreams["main"] != remoteRefPrefix+"origin/main" {
 		t.Fatalf("unexpected commit details: %#v", details)
 	}
 	rows, _, err := repo.history(5, true, true)

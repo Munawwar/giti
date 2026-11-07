@@ -53,9 +53,6 @@ var appIconPNG []byte
 //go:embed logo/file-tree-symbolic.svg
 var fileTreeIconSVG []byte
 
-//go:embed logo/go-to-parent-symbolic.svg
-var goToParentIconSVG []byte
-
 const appCSS = `
 treeview.giti-list.view {
   -GtkTreeView-vertical-separator: 0;
@@ -334,7 +331,6 @@ type giti struct {
 	reviewLines                []displayLine
 	reviewActive               bool
 	reviewFiles                []changedFile
-	reviewSessionActions       *gtk.Box
 	reviewModeButton           *gtk.Button
 	reviewFileButton           *gtk.Button
 	reviewPreviewExit          *gtk.Button
@@ -343,14 +339,13 @@ type giti struct {
 	headerIdentity             commitDetails
 	headerMetaRow              *gtk.Box
 	headerSHA                  *gtk.Box
-	headerParentButton         *gtk.Button
+	reviewMenuButton           *gtk.MenuButton
 	headerFileName             *gtk.Label
 	fileStatistics             *gtk.Box
 	fileStatisticLabels        [2]*gtk.Label
 	headerMessageOpen          bool
 	reviewFilesLabel           *gtk.Label
 	reviewLinesLabel           *gtk.Label
-	reviewSummaryItem          *gtk.MenuItem
 	reviewCommentItem          *gtk.MenuItem
 	reviewPreviewItem          *gtk.MenuItem
 	reviewExportItem           *gtk.MenuItem

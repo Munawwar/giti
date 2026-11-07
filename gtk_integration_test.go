@@ -364,13 +364,13 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	}
 	longBranch := "feature/" + strings.Repeat("copyable-reference-", 8)
 	parentSHA := strings.Repeat("c", 40)
-	details := commitDetails{sha: strings.Repeat("a", 40), subject: "subject", branches: []string{longBranch}, parents: []string{parentSHA}, author: "Alice", authorEmail: "alice@example.com", authored: "2026-08-08T23:26:45+05:30", committer: "Bob", committerEmail: "bob@example.com", committed: "2026-08-08T17:56:45Z", additions: 12, deletions: 3, untracked: 4, statistics: true}
+	details := commitDetails{sha: strings.Repeat("a", 40), subject: "subject", branches: []string{longBranch}, author: "Alice", authorEmail: "alice@example.com", authored: "2026-08-08T23:26:45+05:30", committer: "Bob", committerEmail: "bob@example.com", committed: "2026-08-08T17:56:45Z", additions: 12, deletions: 3, untracked: 4, statistics: true}
 	app.setCommitHeader(details)
 	detailChildren := app.headerDetails.GetChildren()
 	compactDetails := detailChildren.Length()
 	detailChildren.Free()
 	referenceButton := app.headerReferenceButtons[0]
-	parentItems := app.commitMenu(historyRow{kind: "commit", revision: details.sha, parents: details.parents}).GetChildren()
+	parentItems := app.commitMenu(historyRow{kind: "commit", revision: details.sha, parents: []string{parentSHA}}).GetChildren()
 	parentCast, _ := parentItems.NthData(3).(*gtk.Widget).Cast()
 	parentItem, parentOK := parentCast.(*gtk.MenuItem)
 	parentLabel, parentTooltip := "", ""
@@ -431,7 +431,7 @@ func TestGTKInitialLayoutAndHeaderControls(t *testing.T) {
 	metaText, metaTextErr := app.headerAuthor.GetText()
 	identityTooltip, identityErr := app.headerIdentityButton.GetTooltipText()
 	referenceValid := labelOK && textErr == nil && !referenceLabel.GetSelectable() && referenceLabel.GetEllipsize() == pango.ELLIPSIZE_END && strings.Contains(referenceValue, longBranch) && referenceButton.GetCanFocus() && copiedReference == longBranch && copyReferenceErr == nil && app.notification.GetVisible() && copyNotification == "Copied branch to clipboard." && notificationErr == nil && app.mainPane.GetAllocatedWidth() == contentWidth && app.mainPane.GetAllocatedHeight() == contentHeight
-	parentValid := parentLabel == "Go to parent  "+parentSHA[:7] && parentTooltip == parentSHA && parentItem.GetSensitive() && app.headerParentButton.GetVisible() && must(app.headerParentButton.GetTooltipText()) == "Go to parent "+parentSHA[:7]
+	parentValid := parentLabel == "Go to parent  "+parentSHA[:7] && parentTooltip == parentSHA && parentItem.GetSensitive()
 	statisticsValid := statisticsVisible && strings.Join(statLabels, ",") == "+12,−3,4 untracked"
 	controlsValid := fullFileLabel == "Full file" && whitespaceLabel == "Whitespace" && !app.whitespaceToggle.GetActive() && fullMergeLabel == "Full merge" && shaTooltip == "Copy full SHA: "+details.sha && metaTextErr == nil && identityErr == nil && metaText == "Alice  ·  "+formatCommitTime(details.authored, time.Local, "2 Jan 2006, 15:04 MST") && identityTooltip == "Committed by Bob — show details" && app.headerIdentityButton.GetVisible()
 	searchIdle := !app.searchSpinner.GetVisible() && app.historySearch.GetIconStorageType(gtk.ENTRY_ICON_PRIMARY) == gtk.IMAGE_ICON_NAME
@@ -1600,11 +1600,16 @@ func TestGTKCommitMenuActions(t *testing.T) {
 	}
 	menuItem(head, 3).Activate()
 	iterateGTKUntil(t, 3*time.Second, func() bool { return app.currentRow != nil && app.currentRow.revision == base })
-	// With one parent the header button navigates without opening a menu.
+	// The header's ⋮ menu: adding a file comment starts a review when browsing.
 	app.selectHistoryRevision(head)
-	iterateGTKUntil(t, 3*time.Second, func() bool { return app.headerIdentity.sha == head })
-	app.headerParentButton.Clicked()
-	iterateGTKUntil(t, 3*time.Second, func() bool { return app.currentRow != nil && app.currentRow.revision == base })
+	iterateGTKUntil(t, 3*time.Second, func() bool { return app.diffLoaded && app.review != nil && app.currentFile != nil })
+	if app.reviewActive || !app.reviewMenuButton.GetVisible() || !app.reviewCommentItem.GetSensitive() {
+		t.Fatal("the commit actions menu was not ready while browsing")
+	}
+	app.reviewCommentItem.Activate()
+	if !app.reviewActive || app.reviewDraft == nil || app.reviewDraftView == nil || len(app.reviewDraft.comment.Lines) != 0 {
+		t.Fatal("adding a file comment did not start a review with a file comment open")
+	}
 }
 
 func TestGTKAllFilesView(t *testing.T) {

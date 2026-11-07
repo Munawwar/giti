@@ -36,7 +36,7 @@ type historyRow struct {
 
 type commitDetails struct {
 	sha, subject, body, author, authorEmail, authored, committer, committerEmail, committed string
-	parents, branches, tags                                                                 []string
+	branches, tags                                                                          []string
 	upstreams                                                                               map[string]string
 	additions, deletions, untracked                                                         int
 	statistics                                                                              bool
@@ -469,16 +469,16 @@ func (repo *repository) streamCommitHistoryContext(ctx context.Context, batchSiz
 }
 
 func (repo *repository) commitDetailsContext(ctx context.Context, revision string) (commitDetails, error) {
-	format := strings.Join([]string{"%H", "%s", "%an", "%ae", "%aI", "%cn", "%ce", "%cI", "%P", "%b"}, "%x00")
+	format := strings.Join([]string{"%H", "%s", "%an", "%ae", "%aI", "%cn", "%ce", "%cI", "%b"}, "%x00")
 	output, err := repo.runContext(ctx, "show", "-s", "--format="+format, revision)
 	if err != nil {
 		return commitDetails{}, err
 	}
-	parts := strings.SplitN(strings.TrimSuffix(output, "\n"), "\x00", 10)
-	for len(parts) < 10 {
+	parts := strings.SplitN(strings.TrimSuffix(output, "\n"), "\x00", 9)
+	for len(parts) < 9 {
 		parts = append(parts, "")
 	}
-	details := commitDetails{sha: parts[0], subject: parts[1], author: parts[2], authorEmail: parts[3], authored: parts[4], committer: parts[5], committerEmail: parts[6], committed: parts[7], parents: strings.Fields(parts[8]), body: strings.TrimSpace(parts[9])}
+	details := commitDetails{sha: parts[0], subject: parts[1], author: parts[2], authorEmail: parts[3], authored: parts[4], committer: parts[5], committerEmail: parts[6], committed: parts[7], body: strings.TrimSpace(parts[8])}
 	refs, err := repo.runContext(ctx, "for-each-ref", "--format=%(refname)%00%(upstream)%00%(HEAD)", "--points-at="+revision)
 	if err != nil {
 		return commitDetails{}, err

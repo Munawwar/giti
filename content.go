@@ -66,16 +66,6 @@ func (app *giti) setCommitHeader(details commitDetails) {
 	}
 	commit := details.sha != ""
 	app.headerIdentityButton.SetVisible(commit)
-	app.headerParentButton.SetVisible(commit)
-	app.headerParentButton.SetSensitive(len(details.parents) > 0)
-	switch len(details.parents) {
-	case 0:
-		app.headerParentButton.SetTooltipText("No parent commit")
-	case 1:
-		app.headerParentButton.SetTooltipText("Go to parent " + details.parents[0][:min(7, len(details.parents[0]))])
-	default:
-		app.headerParentButton.SetTooltipText("Choose a parent commit")
-	}
 	if !commit {
 		// Working-tree views have no identity, message, or parents: one commit row.
 		app.headerAuthor.SetText("")
@@ -907,29 +897,10 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.buildReviewControls()
 	// Commit section, then a hairline, then the file row. The right-hand columns of
 	// the title row and the file row share widths, so review buttons, diff counts,
-	// and the ⤴ / › icons line up vertically.
-	app.headerParentButton = must(gtk.ButtonNew())
-	parentIconLoader := must(gdk.PixbufLoaderNewWithType("svg"))
-	app.headerParentButton.SetImage(must(gtk.ImageNewFromPixbuf(must(parentIconLoader.WriteAndReturnPixbuf(goToParentIconSVG)))))
-	squareButton(app.headerParentButton)
-	app.headerParentButton.SetVAlign(gtk.ALIGN_CENTER)
-	setAccessibility(&app.headerParentButton.Widget, "Go to parent", "Go to a parent commit")
-	app.headerParentButton.Connect("clicked", func() {
-		parents := app.headerIdentity.parents
-		if len(parents) == 1 {
-			app.goToParent(parents[0])
-			return
-		}
-		menu := must(gtk.MenuNew())
-		app.addParentItems(menu, parents)
-		menu.ShowAll()
-		menu.Connect("selection-done", menu.Destroy)
-		menu.PopupAtWidget(app.headerParentButton, gdk.GDK_GRAVITY_SOUTH_EAST, gdk.GDK_GRAVITY_NORTH_EAST, nil)
-	})
-	app.headerParentButton.SetNoShowAll(true)
+	// and the ⋮ / › icons line up vertically.
 	titleRow := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 8))
 	titleRow.PackStart(app.headerTitleRow, true, true, 0)
-	for _, widget := range []gtk.IWidget{app.headerParentButton, app.headerStatistics, app.reviewSessionActions, app.reviewFilesLabel} {
+	for _, widget := range []gtk.IWidget{app.reviewMenuButton, app.headerStatistics, app.reviewModeButton, app.reviewFilesLabel} {
 		titleRow.PackEnd(widget, false, false, 0)
 	}
 	// Author details sit behind one popover so names stay short in the header.
@@ -1018,7 +989,7 @@ func (app *giti) buildContentPane() *gtk.Box {
 	for _, widget := range []gtk.IWidget{app.reviewNextButton, app.fileStatistics, app.reviewFileButton, app.reviewLinesLabel} {
 		fileRow.PackEnd(widget, false, false, 0)
 	}
-	for _, column := range [][2]gtk.IWidget{{app.headerParentButton, app.reviewNextButton}, {app.headerStatistics, app.fileStatistics}, {app.reviewSessionActions, app.reviewFileButton}, {app.reviewFilesLabel, app.reviewLinesLabel}} {
+	for _, column := range [][2]gtk.IWidget{{app.reviewMenuButton, app.reviewNextButton}, {app.headerStatistics, app.fileStatistics}, {app.reviewModeButton, app.reviewFileButton}, {app.reviewFilesLabel, app.reviewLinesLabel}} {
 		group := must(gtk.SizeGroupNew(gtk.SIZE_GROUP_HORIZONTAL))
 		group.AddWidget(column[0])
 		group.AddWidget(column[1])

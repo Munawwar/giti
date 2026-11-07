@@ -479,7 +479,7 @@ func (app *giti) updateReviewFileActions() {
 	app.reviewFileButton.SetVisible(visible)
 	app.reviewLinesLabel.SetVisible(visible)
 	app.reviewFileButton.SetSensitive(visible && file != nil && app.diffLoaded)
-	app.reviewCommentItem.SetSensitive(app.reviewFileButton.GetSensitive())
+	app.reviewCommentItem.SetSensitive(app.review != nil && file != nil && app.diffLoaded && app.diffStack.GetVisibleChildName() == "diff")
 	next := app.reviewFileTarget()
 	app.reviewNextButton.SetSensitive(next != nil)
 	app.reviewNextButton.SetTooltipText(map[bool]string{false: "Next file", true: "Next file to review"}[app.reviewActive])
@@ -510,7 +510,8 @@ func (app *giti) updateReviewUI() {
 	}
 	available := app.review != nil
 	active := available && app.reviewActive
-	app.reviewSessionActions.SetVisible(available)
+	app.reviewModeButton.SetVisible(available)
+	app.reviewMenuButton.SetVisible(available)
 	app.reviewColumn.SetVisible(available)
 	app.reviewFilesLabel.SetVisible(active)
 	app.reviewModeButton.SetLabel("Review")
@@ -543,13 +544,13 @@ func (app *giti) updateReviewUI() {
 	for _, item := range []*gtk.MenuItem{app.reviewPreviewItem, app.reviewExportItem, app.reviewCopyItem} {
 		item.SetSensitive(hasContent)
 	}
-	app.reviewSummaryItem.SetLabel(fmt.Sprintf("%d of %d lines reviewed · %s", reviewedLines, totalLines, plural(comments, "comment")))
 	complete := app.reviewStateCounts[reviewDone] + app.reviewStateCounts[reviewCommented]
+	details := fmt.Sprintf(" · %d of %d lines · %s", reviewedLines, totalLines, plural(comments, "comment"))
 	app.reviewFilesLabel.SetText(fmt.Sprintf("%d/%d files", complete, len(app.reviewFiles)))
-	app.reviewFilesLabel.SetTooltipText("Files reviewed in this commit")
+	app.reviewFilesLabel.SetTooltipText("Files reviewed in this commit" + details)
 	if complete == len(app.reviewFiles) && complete > 0 {
 		app.reviewFilesLabel.SetMarkup(fmt.Sprintf(`<span foreground="#2e8c47">✓ %d/%d files</span>`, complete, complete))
-		app.reviewFilesLabel.SetTooltipText("Review complete: every changed file is reviewed")
+		app.reviewFilesLabel.SetTooltipText("Review complete: every changed file is reviewed" + details)
 	}
 	app.reviewProgressBar.SetTooltipText(fmt.Sprintf("%d good to go · %d with comments · %d partial · %d not reviewed", app.reviewStateCounts[reviewDone], app.reviewStateCounts[reviewCommented], app.reviewStateCounts[reviewPartial], app.reviewStateCounts[reviewNone]))
 	app.reviewProgressBar.QueueDraw()
@@ -1154,11 +1155,9 @@ func (app *giti) buildReviewControls() {
 		menu.Append(item)
 		return item
 	}
-	app.reviewSummaryItem = add("", func() {})
-	app.reviewSummaryItem.SetSensitive(false)
-	menu.Append(must(gtk.SeparatorMenuItemNew()))
 	app.reviewCommentItem = add("Add file comment", func() {
 		if app.currentFile != nil {
+			app.reviewActive = true // Commenting is part of a review, so it starts one.
 			app.startReviewDraft(app.currentFile.path, reviewComment{})
 		}
 	})
@@ -1183,25 +1182,21 @@ func (app *giti) buildReviewControls() {
 		app.copyToClipboard(app.review.markdown(app.reviewFiles), "Copied review to clipboard.")
 	})
 	menu.ShowAll()
-	more := must(gtk.MenuButtonNew())
-	more.SetPopup(menu)
-	more.SetImage(chevron("pan-down-symbolic", 12))
-	more.SetTooltipText("Review actions")
-	setAccessibility(&more.Widget, "Review actions", "Comment on the file, preview, export, or copy the review")
-	app.reviewSessionActions = must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 0))
-	app.reviewSessionActions.SetVAlign(gtk.ALIGN_CENTER)
-	for _, widget := range []gtk.IWidget{app.reviewModeButton, more} {
-		app.reviewSessionActions.PackStart(widget, false, false, 0)
-	}
+	app.reviewMenuButton = must(gtk.MenuButtonNew())
+	app.reviewMenuButton.SetPopup(menu)
+	app.reviewMenuButton.SetImage(chevron("view-more-symbolic", 14))
+	app.reviewMenuButton.SetTooltipText("Commit actions")
+	setAccessibility(&app.reviewMenuButton.Widget, "Commit actions", "Comment on the file, preview, export, or copy the review")
+	squareButton(&app.reviewMenuButton.ToggleButton.Button)
 	// Flat like the rest of the header: bold text marks the primary action.
-	for _, button := range []*gtk.Button{app.reviewModeButton, &more.ToggleButton.Button} {
-		button.SetRelief(gtk.RELIEF_NONE)
-		context, _ := button.GetStyleContext()
-		context.AddClass("giti-review-primary")
+	app.reviewModeButton.SetRelief(gtk.RELIEF_NONE)
+	modeContext, _ := app.reviewModeButton.GetStyleContext()
+	modeContext.AddClass("giti-review-primary")
+	for _, button := range []*gtk.Button{app.reviewModeButton, &app.reviewMenuButton.ToggleButton.Button} {
+		button.SetVAlign(gtk.ALIGN_CENTER)
+		button.SetNoShowAll(true)
 	}
-	app.reviewSessionActions.ShowAll()
-	app.reviewSessionActions.SetNoShowAll(true)
-	// The next-file chevron matches the go-to-parent button above it in size.
+	// The next-file chevron matches the ⋮ above it in size.
 	app.reviewNextButton = must(gtk.ButtonNew())
 	app.reviewNextButton.SetImage(chevron("pan-end-symbolic", 14))
 	app.reviewNextButton.SetVAlign(gtk.ALIGN_CENTER)

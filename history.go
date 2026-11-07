@@ -1132,32 +1132,6 @@ func addMenuItem(menu *gtk.Menu, label, tooltip string, activate func()) {
 	menu.Append(item)
 }
 
-func (app *giti) goToParent(parent string) {
-	app.historySearch.SetText("")
-	app.revealHistoryRevision(parent)
-}
-
-// addParentItems lists parents to navigate to; merge parents show a short subject
-// excerpt so the menu stays narrow.
-func (app *giti) addParentItems(menu *gtk.Menu, parents []string) {
-	open := func(parent string) func() { return func() { app.goToParent(parent) } }
-	switch len(parents) {
-	case 0:
-		addMenuItem(menu, "No parent commit", "", nil)
-	case 1:
-		addMenuItem(menu, "Go to parent  "+parents[0][:min(7, len(parents[0]))], parents[0], open(parents[0]))
-	default:
-		addMenuItem(menu, "Go to parent", "", nil)
-		for _, parent := range parents {
-			subject, _ := app.repository.run("log", "-1", "--format=%s", parent)
-			if excerpt := []rune(strings.TrimSpace(subject)); len(excerpt) > 50 {
-				subject = string(excerpt[:50]) + "…"
-			}
-			addMenuItem(menu, "    "+parent[:min(7, len(parent))]+"  "+strings.TrimSpace(subject), parent, open(parent))
-		}
-	}
-}
-
 // commitMenu offers a history commit's actions.
 func (app *giti) commitMenu(row historyRow) *gtk.Menu {
 	repo, menu := app.repository, must(gtk.MenuNew())
@@ -1197,7 +1171,28 @@ func (app *giti) commitMenu(row historyRow) *gtk.Menu {
 	}
 	addMenuItem(menu, "Copy Commit SHA (short)", "", func() { app.copyToClipboard(row.revision[:7], "Copied commit SHA to clipboard.") })
 	menu.Append(must(gtk.SeparatorMenuItemNew()))
-	app.addParentItems(menu, row.parents)
+	open := func(parent string) func() {
+		return func() {
+			app.historySearch.SetText("")
+			app.revealHistoryRevision(parent)
+		}
+	}
+	// Merge parents show a short subject excerpt so the menu stays narrow.
+	switch len(row.parents) {
+	case 0:
+		addMenuItem(menu, "No parent commit", "", nil)
+	case 1:
+		addMenuItem(menu, "Go to parent  "+row.parents[0][:min(7, len(row.parents[0]))], row.parents[0], open(row.parents[0]))
+	default:
+		addMenuItem(menu, "Go to parent", "", nil)
+		for _, parent := range row.parents {
+			subject, _ := repo.run("log", "-1", "--format=%s", parent)
+			if excerpt := []rune(strings.TrimSpace(subject)); len(excerpt) > 50 {
+				subject = string(excerpt[:50]) + "…"
+			}
+			addMenuItem(menu, "    "+parent[:min(7, len(parent))]+"  "+strings.TrimSpace(subject), parent, open(parent))
+		}
+	}
 	menu.ShowAll()
 	return menu
 }
