@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest supported Ubuntu keeps the binary compatible with older glibc.
+          - { os: ubuntu-22.04, asset: giti-linux-x86_64 }
+          - { os: macos-15, asset: giti-macos-arm64 }
+          - { os: macos-15-intel, asset: giti-macos-x86_64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # A tag can only read caches saved by its own ref or main, so a cache would never hit.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install GTK
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install gtk+3 adwaita-icon-theme pkg-config
+          else
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libgtk-3-dev xvfb xdotool
+          fi
+      - run: ./build.sh
+      - name: Test
+        env:
+          GITI_REVIEW_SCREENSHOT: ${{ runner.temp }}/screenshots/review.png
+        run: mkdir -p "$RUNNER_TEMP/screenshots" && ./test.sh
+      # The GTK suite cannot run on macOS (see test.sh), so start the real app instead:
+      # it must still be running after startup, and the screenshot shows how it looks.
+      - name: Start the app
+        if: runner.os == 'macOS'
+        run: |
+          bin/giti --foreground HEAD & pid=$!
+          sleep 20
+          kill -0 "$pid" || { echo "giti exited during startup"; exit 1; }
+          screencapture -x "$RUNNER_TEMP/screenshots/window.png" || echo "::warning::screencapture failed"
+          kill "$pid"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: screenshots-${{ matrix.os }}
+          path: ${{ runner.temp }}/screenshots
+          if-no-files-found: ignore
+      - name: Name the binary
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: mkdir dist && mv bin/giti "dist/$ASSET"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: giti-*
+          path: dist
+          merge-multiple: true
+      - run: cd dist && sha256sum giti-* > SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --verify-tag --generate-notes dist/*

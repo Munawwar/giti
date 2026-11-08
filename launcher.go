@@ -195,20 +195,18 @@ func stopResident(runtimeDir, executable string) error {
 	data, readErr := os.ReadFile(pidPath)
 	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
 	if readErr == nil && parseErr == nil && pid != os.Getpid() {
-		executablePath := filepath.Join("/proc", strconv.Itoa(pid), "exe")
-		target, linkErr := os.Readlink(executablePath)
-		target = strings.TrimSuffix(target, " (deleted)")
+		target, linkErr := processExecutable(pid)
 		name := filepath.Base(target)
 		legacy := filepath.Dir(target) == filepath.Dir(executable) && (name == "giti-app" || name == "giti-app-debug")
 		if linkErr == nil && (target == executable || legacy) {
 			if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 				return fmt.Errorf("stop Giti resident %d: %w", pid, err)
 			}
-			if !waitForExit(executablePath, 2*time.Second) {
+			if !waitForExit(pid, 2*time.Second) {
 				if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 					return fmt.Errorf("kill Giti resident %d: %w", pid, err)
 				}
-				if !waitForExit(executablePath, time.Second) {
+				if !waitForExit(pid, time.Second) {
 					return fmt.Errorf("could not stop Giti resident %d", pid)
 				}
 			}
@@ -232,12 +230,12 @@ func stopResident(runtimeDir, executable string) error {
 	return nil
 }
 
-func waitForExit(executablePath string, timeout time.Duration) bool {
+func waitForExit(pid int, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
-	_, err := os.Readlink(executablePath)
+	_, err := processExecutable(pid)
 	for err == nil && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
-		_, err = os.Readlink(executablePath)
+		_, err = processExecutable(pid)
 	}
 	return err != nil
 }

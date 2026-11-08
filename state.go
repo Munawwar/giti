@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 )
 
@@ -15,8 +16,21 @@ type uiState struct {
 	CompactLineNumbers     bool `json:"compact_line_numbers"`
 }
 
+// userDirectory honours an XDG override on every platform; otherwise macOS keeps
+// settings and reviews together in ~/Library/Application Support.
+func userDirectory(variable, fallback string) (string, error) {
+	if path := os.Getenv(variable); filepath.IsAbs(path) {
+		return path, nil
+	}
+	if runtime.GOOS == "darwin" {
+		return os.UserConfigDir()
+	}
+	home, err := os.UserHomeDir()
+	return filepath.Join(home, fallback), err
+}
+
 func uiStatePath() string {
-	config, err := os.UserConfigDir()
+	config, err := userDirectory("XDG_CONFIG_HOME", ".config")
 	if err != nil {
 		return ""
 	}

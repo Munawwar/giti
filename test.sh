@@ -4,6 +4,12 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 pkg-config --atleast-version=3.24 gtk+-3.0 || { echo "GTK 3.24 or newer development files are required." >&2; exit 1; }
 
+# go test runs each test off the main thread, which Cocoa refuses for windows, so
+# macOS runs only the tests that need no display.
+if [ "$(uname -s)" = Darwin ]; then
+	exec go test ./...
+fi
+
 # Keep test windows off the desktop on a virtual display; GITI_TEST_VISIBLE=1 shows them.
 if [ -z "${GITI_TEST_VISIBLE:-}" ] && command -v xvfb-run >/dev/null; then
 	unset WAYLAND_DISPLAY

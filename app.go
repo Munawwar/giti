@@ -1,13 +1,5 @@
 package main
 
-/*
-#cgo pkg-config: gdk-x11-3.0
-#include <stdint.h>
-typedef struct _GdkWindow GdkWindow;
-uint32_t gdk_x11_get_server_time(GdkWindow *window);
-*/
-import "C"
-
 import (
 	"context"
 	_ "embed"
@@ -18,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/gotk3/gotk3/gdk"
 	"github.com/gotk3/gotk3/glib"
@@ -680,7 +671,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		application.AddAction(refresh)
 		application.SetAccelsForAction("app.refresh", []string{"<Primary>r"})
 		findDiff := glib.SimpleActionNew("find-diff", nil)
-		findDiff.Connect("activate", func() { app.handleDiffFindKey(gdk.KEY_f, gdk.CONTROL_MASK) })
+		findDiff.Connect("activate", func() { app.handleDiffFindKey(gdk.KEY_f, primaryMask) })
 		application.AddAction(findDiff)
 		application.SetAccelsForAction("app.find-diff", []string{"<Primary>f"})
 		app.mainMenu = must(gtk.MenuButtonNew())
@@ -696,8 +687,8 @@ func (app *giti) buildWindow(application *gtk.Application) {
 			label, shortcut string
 			action          *glib.SimpleAction
 		}{
-			{"Find in Diff", "Ctrl+F", findDiff},
-			{"Refresh", "Ctrl+R", refresh},
+			{"Find in Diff", primaryLabel + "F", findDiff},
+			{"Refresh", primaryLabel + "R", refresh},
 		} {
 			row := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 24))
 			label, shortcut := must(gtk.LabelNew(command.label)), must(gtk.LabelNew(command.shortcut))
@@ -790,6 +781,7 @@ func (app *giti) buildWindow(application *gtk.Application) {
 		app.windowHeader.PackStart(app.branchButton)
 		app.windowHeader.PackEnd(app.mainMenu)
 		app.window.SetTitlebar(app.windowHeader)
+		setupPlatformWindow(app)
 	}
 	app.mainPane = must(gtk.PanedNew(gtk.ORIENTATION_HORIZONTAL))
 	app.mainPane.SetWideHandle(true)
@@ -978,12 +970,7 @@ func (app *giti) openRepository(path string, history historySpec) bool {
 	app.notificationGeneration++
 	app.notification.Hide()
 	app.window.Maximize()
-	window, windowErr := app.window.GetWindow()
-	if windowErr == nil && window.IsA(glib.TypeFromName("GdkX11Window")) {
-		app.window.PresentWithTime(uint32(C.gdk_x11_get_server_time((*C.GdkWindow)(unsafe.Pointer(window.Native())))))
-	} else {
-		app.window.Present()
-	}
+	presentWindow(app.window)
 	app.loadHistory(false)
 	return false
 }

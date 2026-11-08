@@ -525,7 +525,7 @@ func (app *giti) buildDiffFind(diffPage gtk.IWidget) *gtk.Overlay {
 
 func (app *giti) handleDiffFindKey(key uint, modifiers gdk.ModifierType) bool {
 	switch {
-	case modifiers&gdk.CONTROL_MASK != 0 && modifiers&gdk.SHIFT_MASK == 0 && (key == gdk.KEY_f || key == gdk.KEY_F):
+	case modifiers&primaryMask != 0 && modifiers&gdk.SHIFT_MASK == 0 && (key == gdk.KEY_f || key == gdk.KEY_F):
 		if app.diffStack == nil || app.diffStack.GetVisibleChildName() != "diff" {
 			return false
 		}
@@ -1052,7 +1052,7 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.diffView.Connect("key-press-event", func(_ *gtk.TextView, event *gdk.Event) bool {
 		key := gdk.EventKeyNewFromEvent(event)
 		_, _, selected := app.diffBuffer.GetSelectionBounds()
-		if !app.reviewActive || !selected || key.State()&uint(gdk.CONTROL_MASK|gdk.MOD1_MASK) != 0 {
+		if !app.reviewActive || !selected || key.State()&uint(gdk.CONTROL_MASK|gdk.MOD1_MASK|primaryMask) != 0 {
 			return false
 		}
 		switch key.KeyVal() {

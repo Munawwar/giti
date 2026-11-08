@@ -12,6 +12,9 @@ import (
 
 const applicationID = "io.github.Munawwar.Giti"
 
+// GTK must run on the process's main thread, which macOS enforces; init runs on it.
+func init() { runtime.LockOSThread() }
+
 func main() {
 	if err := gtk.CheckVersion(3, 24, 0); err != nil {
 		fmt.Fprintln(os.Stderr, "giti: GTK 3.24 or newer is required:", err)
@@ -28,7 +31,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "usage: %s [--resident|--ephemeral] path history-json\n", os.Args[0])
 		os.Exit(2)
 	}
-	runtime.LockOSThread()
 	resident, path, history := os.Args[1] == "--resident", os.Args[2], historySpec{}
 	if err := json.Unmarshal([]byte(os.Args[3]), &history); err != nil {
 		fmt.Fprintln(os.Stderr, "giti:", err)

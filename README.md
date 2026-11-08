@@ -44,6 +44,19 @@ Requires GTK 3.24 or newer. The bundled Linux x86_64 binary can be installed wit
 
 Choose the bundled binary when prompted, or use `./install.sh --build` to build from source with Go 1.24+ and GTK development files. Use `--system` for a system-wide installation. The default installation is under `~/.local`.
 
+### macOS
+
+Install GTK with [Homebrew](https://brew.sh), then download the release binary for your Mac (`arm64` for Apple Silicon, `x86_64` for Intel):
+
+```sh
+brew install gtk+3 adwaita-icon-theme
+mkdir -p ~/.local/bin
+curl -fL https://github.com/Munawwar/giti/releases/latest/download/giti-macos-$(uname -m) -o ~/.local/bin/giti
+chmod +x ~/.local/bin/giti
+```
+
+`./install.sh` does the same and also installs the shell completions. A binary downloaded with a browser instead of `curl` is blocked by Gatekeeper until you run `xattr -d com.apple.quarantine giti`. Releases include `SHA256SUMS` for checking downloads.
+
 To uninstall:
 
 ```sh

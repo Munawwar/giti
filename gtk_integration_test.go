@@ -127,7 +127,7 @@ func TestGTKApplicationMenu(t *testing.T) {
 	}
 	findShortcut, _ := app.mainMenuShortcuts[0].GetText()
 	refreshShortcut, _ := app.mainMenuShortcuts[1].GetText()
-	if findShortcut != "Ctrl+F" || refreshShortcut != "Ctrl+R" {
+	if findShortcut != primaryLabel+"F" || refreshShortcut != primaryLabel+"R" {
 		t.Fatalf("unexpected menu shortcuts: %q/%q", findShortcut, refreshShortcut)
 	}
 	branchLabel, _ := app.branchLabel.GetText()
@@ -565,10 +565,10 @@ func TestGTKDiffFindShortcutNavigationAndFileSwitch(t *testing.T) {
 		t.Fatal("repository-opening ShowAll revealed the diff search")
 	}
 	app.diffView.GrabFocus()
-	if !app.handleDiffFindKey(gdk.KEY_f, gdk.CONTROL_MASK) {
+	if !app.handleDiffFindKey(gdk.KEY_f, primaryMask) {
 		t.Fatal("Ctrl+F was not handled in the diff")
 	}
-	if app.handleDiffFindKey(gdk.KEY_F, gdk.CONTROL_MASK|gdk.SHIFT_MASK) {
+	if app.handleDiffFindKey(gdk.KEY_F, primaryMask|gdk.SHIFT_MASK) {
 		t.Fatal("Ctrl+Shift+F was consumed by diff search")
 	}
 	iterateGTKUntil(t, time.Second, func() bool { return app.diffFindBox.GetVisible() && app.diffFind.IsFocus() })

@@ -70,15 +70,8 @@ func loadCommitReview(repo *repository, row historyRow, combined bool) (*commitR
 }
 
 func reviewDataDirectory() (string, error) {
-	data := os.Getenv("XDG_DATA_HOME")
-	if !filepath.IsAbs(data) {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		data = filepath.Join(home, ".local", "share")
-	}
-	return filepath.Join(data, "giti", "reviews"), nil
+	data, err := userDirectory("XDG_DATA_HOME", filepath.Join(".local", "share"))
+	return filepath.Join(data, "giti", "reviews"), err
 }
 
 func lockReviewData(path string, flags int) (*os.File, error) {
@@ -819,7 +812,7 @@ func (app *giti) rebuildReviewCards() {
 					key := gdk.EventKeyNewFromEvent(event)
 					if key.KeyVal() == gdk.KEY_Escape {
 						app.cancelReviewDraft()
-					} else if (key.KeyVal() == gdk.KEY_Return || key.KeyVal() == gdk.KEY_KP_Enter) && key.State()&uint(gdk.CONTROL_MASK) != 0 {
+					} else if (key.KeyVal() == gdk.KEY_Return || key.KeyVal() == gdk.KEY_KP_Enter) && key.State()&uint(primaryMask) != 0 {
 						app.saveReviewDraft()
 					} else {
 						return false
@@ -828,7 +821,7 @@ func (app *giti) rebuildReviewCards() {
 				})
 				box.PackStart(view, false, false, 0)
 				actions := must(gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 4))
-				hint := must(gtk.LabelNew("Markdown · Ctrl+Enter to save · Esc to cancel"))
+				hint := must(gtk.LabelNew("Markdown · " + primaryLabel + "Enter to save · Esc to cancel"))
 				hintContext, _ := hint.GetStyleContext()
 				hintContext.AddClass("giti-secondary-label")
 				actions.PackStart(hint, false, false, 0)
