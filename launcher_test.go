@@ -102,7 +102,13 @@ func TestContactResident(t *testing.T) {
 }
 
 func TestResidentStalledClientDoesNotBlockLaunches(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	// t.TempDir embeds this long test name, overflowing macOS's 104-byte socket path limit.
+	runtimeDir, err := os.MkdirTemp("", "giti")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(runtimeDir)
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 	server := newResidentServer(&giti{busy: true})
 	if err := server.start(); err != nil {
 		t.Fatal(err)
