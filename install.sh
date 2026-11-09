@@ -60,9 +60,10 @@ fi
 OS=$(uname -s)
 GITI_BIN=$ROOT/bin/giti
 if [ "$BUILD_FRESH" = false ] && [ "$OS" = Darwin ]; then
+    test "$(uname -m)" = arm64 || { echo "Release binaries are for Apple Silicon; rerun with --build on this Mac." >&2; exit 1; }
     GITI_BIN=$(mktemp)
     trap 'rm -f "$GITI_BIN"' EXIT
-    curl -fL "https://github.com/Munawwar/giti/releases/latest/download/giti-macos-$(uname -m)" -o "$GITI_BIN"
+    curl -fL "https://github.com/Munawwar/giti/releases/latest/download/giti-macos-arm64" -o "$GITI_BIN"
     chmod +x "$GITI_BIN"
 elif [ "$BUILD_FRESH" = false ]; then
     test "$OS" = Linux && test "$(uname -m)" = x86_64 || { echo "The included binary is Linux x86_64; rerun with --build on this platform." >&2; exit 1; }

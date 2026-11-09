@@ -46,12 +46,12 @@ Choose the bundled binary when prompted, or use `./install.sh --build` to build 
 
 ### macOS
 
-Install GTK with [Homebrew](https://brew.sh), then download the release binary for your Mac (`arm64` for Apple Silicon, `x86_64` for Intel):
+Install GTK with [Homebrew](https://brew.sh), then download the Apple Silicon release binary:
 
 ```sh
 brew install gtk+3 adwaita-icon-theme
 mkdir -p ~/.local/bin
-curl -fL https://github.com/Munawwar/giti/releases/latest/download/giti-macos-$(uname -m) -o ~/.local/bin/giti
+curl -fL https://github.com/Munawwar/giti/releases/latest/download/giti-macos-arm64 -o ~/.local/bin/giti
 chmod +x ~/.local/bin/giti
 ```
 
