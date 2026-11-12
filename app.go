@@ -129,7 +129,6 @@ box.giti-review-document {
 box.giti-review-card {
   background-color: #ffffff;
   border: 1px solid #c7d7f5;
-  border-left: 3px solid #2563eb;
   border-radius: 6px;
   font-family: sans-serif;
   padding: 8px 10px;
@@ -324,7 +323,7 @@ type giti struct {
 	reviewFiles                []changedFile
 	reviewModeButton           *gtk.Button
 	reviewFileButton           *gtk.Button
-	reviewPreviewExit          *gtk.Button
+	reviewPreviewBack          *gtk.Button
 	headerAuthor               *gtk.Label
 	headerIdentityButton       *gtk.Button
 	headerIdentity             commitDetails

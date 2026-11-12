@@ -1522,7 +1522,7 @@ func TestGTKCommitReviewSelectionCommentsAndReopen(t *testing.T) {
 	if app.diffStack.GetVisibleChildName() != "review-preview" {
 		t.Fatal("saved review could not be previewed outside review mode")
 	}
-	app.reviewPreviewExit.Clicked()
+	app.reviewPreviewBack.Clicked()
 	if app.reviewActive || app.diffStack.GetVisibleChildName() != "diff" {
 		t.Fatal("leaving preview started a review")
 	}
@@ -1992,7 +1992,7 @@ func TestGTKReviewPreviewRendersMarkdownAndExportsSameDocument(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	app.reviewPreviewExit.Clicked()
+	app.reviewPreviewBack.Clicked()
 	app.reviewFileButton.Clicked()
 	if app.reviewState(path) >= reviewDone || !app.reviewActive {
 		t.Fatal("unmarking a file changed the session mode or left its review mark")

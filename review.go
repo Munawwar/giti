@@ -849,6 +849,12 @@ func (app *giti) rebuildReviewCards() {
 			card.Add(box)
 			// Cards sit inside the diff view, which would otherwise take the click and the focus.
 			card.Connect("button-press-event", func() bool { return true })
+			// Without its own cursor the card shows the diff view's text cursor over its buttons.
+			card.Connect("realize", func() {
+				if window, err := card.GetWindow(); err == nil {
+					window.SetCursor(must(gdk.CursorNewFromName(must(gdk.DisplayGetDefault()), "default")))
+				}
+			})
 			card.ShowAll()
 			app.diffView.AddChildInWindow(card, gtk.TEXT_WINDOW_TEXT, 0, 0)
 			app.reviewCards = append(app.reviewCards, &reviewCard{widget: card, line: line})
