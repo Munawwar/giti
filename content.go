@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gotk3/gotk3/cairo"
 	"github.com/gotk3/gotk3/gdk"
@@ -320,6 +321,11 @@ func (app *giti) setDiffLines(lines []displayLine) {
 		}
 		start = end
 	}
+	for index, line := range lines {
+		if line.change[1] > line.change[0] {
+			app.diffBuffer.ApplyTagByName(line.tag+"-change", app.diffBuffer.GetIterAtLineOffset(index, line.change[0]), app.diffBuffer.GetIterAtLineOffset(index, line.change[1]))
+		}
+	}
 	app.diffGutterDigits = max(2, len(strconv.Itoa(maxLine)))
 	fullFile := app.fullFileToggle.GetActive() || app.plainFile != ""
 	app.diffGutter.SetVisible((fullFile && app.fullLineNumbers || !fullFile && app.compactLineNumbers) && maxLine > 0)
@@ -348,11 +354,43 @@ type overviewMarker struct {
 type displayLine struct {
 	text, tag string
 	old, new  int
+	change    [2]int // character range that differs from the paired line, if any
 }
 
 func displayLines(patch string) []displayLine {
 	lines := make([]displayLine, 0)
 	inHeader, prefixWidth, oldLine, newLine := true, 1, 0, 0
+	// Like Git's contrib diff-highlight, a run of removed lines followed by an equally
+	// long run of added lines is paired in order, and each pair marks the characters
+	// between their common prefix and suffix. Spans over 1000 characters or half the
+	// line are left plain: the line was rewritten rather than edited.
+	removed, added := -1, -1
+	pairChanges := func() {
+		for index := removed; added >= 0 && added-removed == len(lines)-added && index < added; index++ {
+			before, after := &lines[index], &lines[index+added-removed]
+			if !utf8.ValidString(before.text) || !utf8.ValidString(after.text) {
+				continue
+			}
+			old, new := []rune(strings.TrimSuffix(before.text, "\n")), []rune(strings.TrimSuffix(after.text, "\n"))
+			start, end := 1, 0
+			for start < min(len(old), len(new)) && old[start] == new[start] {
+				start++
+			}
+			for end < min(len(old), len(new))-start && old[len(old)-1-end] == new[len(new)-1-end] {
+				end++
+			}
+			oldSpan, newSpan := len(old)-end-start, len(new)-end-start
+			if max(oldSpan, newSpan) <= 1000 && 2*oldSpan <= len(old)-1 && 2*newSpan <= len(new)-1 {
+				if oldSpan > 0 {
+					before.change = [2]int{start, start + oldSpan}
+				}
+				if newSpan > 0 {
+					after.change = [2]int{start, start + newSpan}
+				}
+			}
+		}
+		removed, added = -1, -1
+	}
 	for _, line := range splitAfterLines(patch) {
 		if strings.HasPrefix(line, "diff --") {
 			inHeader, prefixWidth, oldLine, newLine = true, 1, 0, 0
@@ -408,8 +446,24 @@ func displayLines(patch string) []displayLine {
 				}
 			}
 		}
+		switch {
+		case display.tag == "removed" && prefixWidth == 1:
+			if added >= 0 {
+				pairChanges()
+			}
+			if removed < 0 {
+				removed = len(lines)
+			}
+		case display.tag == "added" && prefixWidth == 1 && removed >= 0:
+			if added < 0 {
+				added = len(lines)
+			}
+		default:
+			pairChanges()
+		}
 		lines = append(lines, display)
 	}
+	pairChanges()
 	return lines
 }
 
@@ -828,6 +882,8 @@ func (app *giti) buildContentPane() *gtk.Box {
 	app.diffBuffer = must(gtk.TextBufferNew(nil))
 	app.diffBuffer.CreateTag("added", map[string]any{"background": "#d7f5dd", "foreground": "#174d22"})
 	app.diffBuffer.CreateTag("removed", map[string]any{"background": "#f9d7d9", "foreground": "#682126"})
+	app.diffBuffer.CreateTag("added-change", map[string]any{"background": "#a8e6b6"})
+	app.diffBuffer.CreateTag("removed-change", map[string]any{"background": "#f2b1b6"})
 	app.diffBuffer.CreateTag("hunk", map[string]any{"paragraph-background": "#eef0f2", "foreground": "#4b5563"})
 	app.diffBuffer.CreateTag("reviewed-added", map[string]any{"background": "#e7ece8", "paragraph-background": "#e7ece8"})
 	app.diffBuffer.CreateTag("reviewed-removed", map[string]any{"background": "#eee7e8", "paragraph-background": "#eee7e8"})

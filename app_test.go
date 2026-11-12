@@ -19,6 +19,29 @@ func TestDesktopEntryMatchesApplicationID(t *testing.T) {
 	}
 }
 
+func TestDisplayLinesMarkChangedCharacters(t *testing.T) {
+	x, y := strings.Repeat("x", 3000), strings.Repeat("y", 3000)
+	for _, test := range []struct {
+		name, patch string
+		want        map[int][2]int // line index to change range; others must be unmarked
+	}{
+		{"one character in a long line", "@@ -1 +1 @@\n-" + x + "a" + y + "\n+" + x + "b" + y + "\n", map[int][2]int{1: {3001, 3002}, 2: {3001, 3002}}},
+		{"pairs in order, counting characters", "@@ -1,2 +1,2 @@\n-héllo wörld\n-x = 1\n+héllo wórld\n+x = 2\n", map[int][2]int{1: {8, 9}, 2: {5, 6}, 3: {8, 9}, 4: {5, 6}}},
+		{"insertion marks only the new side", "@@ -1 +1 @@\n-call(a)\n+call(a, b)\n", map[int][2]int{2: {7, 10}}},
+		{"rewritten line", "@@ -1 +1 @@\n-foo()\n+barBaz()\n", nil},
+		{"over 1000 changed characters", "@@ -1 +1 @@\n-a" + x + x + "a\n+b" + x + x + "b\n", nil},
+		{"unequal runs", "@@ -1,2 +1 @@\n-a = 1\n-b = 1\n+a = 2\n", nil},
+		{"separated by context", "@@ -1,3 +1,3 @@\n-a = 1\n same\n+a = 2\n", nil},
+		{"combined diff", "@@@ -1 -1 +1 @@@\n- a = 1\n -a = 1\n++a = 2\n", nil},
+	} {
+		for index, line := range displayLines(test.patch) {
+			if line.change != test.want[index] {
+				t.Fatalf("%s: line %d change = %v, want %v", test.name, index, line.change, test.want[index])
+			}
+		}
+	}
+}
+
 func TestDisplayLines(t *testing.T) {
 	{
 		patch := "diff --git a/old.go b/new.go\nindex 123..456 100644\n--- a/old.go\n+++ b/new.go\n@@ -1 +1 @@\n-old\n+new\n"

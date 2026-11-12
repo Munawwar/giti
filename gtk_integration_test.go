@@ -803,6 +803,14 @@ func TestGTKDiffInteraction(t *testing.T) {
 			t.Fatalf("file copy action %q copied %q/%v and notified %q/%v", action.label, copiedPath, copyErr, message, messageErr)
 		}
 	}
+	app.setDiff("@@ -1 +1 @@\n-count = 1\n+count = 2\n")
+	tags := must(app.diffBuffer.GetTagTable())
+	for line, name := range map[int]string{1: "removed-change", 2: "added-change"} {
+		tag := must(tags.Lookup(name))
+		if marked := [3]bool{app.diffBuffer.GetIterAtLineOffset(line, 8).HasTag(tag), app.diffBuffer.GetIterAtLineOffset(line, 9).HasTag(tag), app.diffBuffer.GetIterAtLineOffset(line, 10).HasTag(tag)}; marked != [3]bool{false, true, false} {
+			t.Fatalf("%s covers the wrong characters around the changed digit: %v", name, marked)
+		}
+	}
 }
 
 func TestGTKChangedFileSearchAndTreeView(t *testing.T) {
