@@ -1986,8 +1986,11 @@ func TestGTKReviewPreviewRendersMarkdownAndExportsSameDocument(t *testing.T) {
 			}
 			time.Sleep(time.Millisecond)
 		}
-		window := must(app.window.GetWindow())
-		pixbuf := must(window.PixbufGetFromWindow(0, 0, app.window.GetAllocatedWidth(), app.window.GetAllocatedHeight()))
+		// Read the area from the root window: reading the toplevel's own surface
+		// trips a cairo assertion on Ubuntu 22.04.
+		x, y := must(app.window.GetWindow()).GetOrigin()
+		root := must(must(gdk.ScreenGetDefault()).GetRootWindow())
+		pixbuf := must(root.PixbufGetFromWindow(x, y, app.window.GetAllocatedWidth(), app.window.GetAllocatedHeight()))
 		if err := pixbuf.SavePNG(screenshot, 0); err != nil {
 			t.Fatal(err)
 		}
