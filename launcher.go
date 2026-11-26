@@ -26,6 +26,13 @@ func launch(args []string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+	// A detached resident logs startup errors to giti.log, so report them here.
+	if !force {
+		if _, err = newRepository(path, history); err != nil {
+			fmt.Fprintln(os.Stderr, "giti:", err)
+			os.Exit(1)
+		}
+	}
 	runtimeDir := runtimeDirectory()
 	executable, err := os.Executable()
 	if err != nil {
